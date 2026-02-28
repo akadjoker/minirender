@@ -1,0 +1,13 @@
+class Node {
+public:
+    virtual Node3D         *asNode3D()         { return nullptr; }
+    virtual MeshNode       *asMeshNode()       { return nullptr; }
+    virtual Light          *asLight()          { return nullptr; }
+    virtual ParticleSystem *asParticleSystem() { return nullptr; } // ← adicionar
+};
+
+// e no ParticleSystem
+class ParticleSystem : public Node3D, public IDrawable {
+public:
+    ParticleSystem *asParticleSystem() override { return this; }
+};

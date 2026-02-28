@@ -1,0 +1,5 @@
+build/
+bin/mini_pipeline
+*.o
+*.d
+.cache/

@@ -21,7 +21,8 @@ public:
     const std::vector<Camera *> &cameras() const { return cameras_; }
 
     // --- Node management ---
-    MeshNode *createMeshNode(const std::string &name = "", Mesh *mesh = nullptr);
+    MeshNode         *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
+    AnimatedMeshNode *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
 
     // Creates a light node, adds it to the root of the scene tree.
     // Example: auto *sun = scene.createLight<DirectionalLight>("sun");
@@ -43,6 +44,9 @@ public:
     void clearTechniques()          { techniques_.clear(); }
 
     // --- Per-frame API ---
+    // Update animators — call BEFORE render()
+    void update(float dt);
+
     // Gather visible nodes (frustum cull) + render all cameras
     void render();
 
@@ -55,6 +59,8 @@ private:
     void renderCamera(Camera *cam);
     // Frustum-cull traverse: only adds nodes whose world AABB is inside frustum
     void gatherNode(Node *node, const Frustum &frustum);
+    // Animator update traverse
+    void updateNode(Node *node, float dt);
 
     std::vector<Camera *>    cameras_;    // owned
     std::vector<Node *>      roots_;

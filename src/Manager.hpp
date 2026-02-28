@@ -180,6 +180,8 @@ public:
                     const std::string &texture_dir = "");
     Mesh *load_gltf(const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
+    Mesh *load_h3d (const std::string &name, const std::string &path,
+                    const std::string &texture_dir = "");
 
     Mesh *create_cube(const std::string &name, float size = 1.0f);
     Mesh *create_wire_cube(const std::string &name, float size = 1.0f);

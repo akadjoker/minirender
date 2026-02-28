@@ -11,6 +11,7 @@
 
 struct Texture
 {
+    std::string name;                   // key used in TextureManager
     GLuint id = 0;
     int width = 0;
     int height = 0;
@@ -120,6 +121,25 @@ public:
 
     Shader *getShader() const { return shader; }
     const std::vector<TextureSlot> &getTextures() const { return textures; }
+
+    // Get first texture bound to the given uniform slot (nullptr if absent)
+    Texture *getTexture(const std::string &uniform) const
+    {
+        for (const auto &slot : textures)
+            if (slot.uniform == uniform)
+                return slot.texture;
+        return nullptr;
+    }
+
+    // Get a vec3 uniform value (returns default if not found)
+    glm::vec3 getVec3(const std::string &uniform,
+                      glm::vec3 defaultVal = glm::vec3(0.f)) const
+    {
+        auto it = uniforms.find(uniform);
+        if (it != uniforms.end() && it->second.type == UniformType::Vec3)
+            return it->second.v3;
+        return defaultVal;
+    }
     void applyStates() const;
     void bindTextures() const;              // uses material's own shader
     void bindTexturesTo(Shader *sh) const;  // uses given shader (for pass override)

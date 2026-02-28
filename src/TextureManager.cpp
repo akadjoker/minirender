@@ -409,7 +409,7 @@ Texture *TextureManager::createFromMemory(const std::string &name,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, opts.filterMag);
 
     glBindTexture(GL_TEXTURE_2D, 0);
-
+    t->name = name;    t->name = name;
     cache[name] = t;
     return t;
 }
@@ -524,6 +524,7 @@ Texture *TextureManager::loadCubemap(const std::string &name,
 
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
 
+    t->name = name;
     cache[name] = t;
     SDL_Log("[TextureManager] Loaded cubemap '%s' (%dx%d)", name.c_str(), t->width, t->height);
     return t;

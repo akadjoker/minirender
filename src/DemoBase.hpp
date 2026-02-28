@@ -31,6 +31,7 @@ public:
     void update(float dt) override
     {
         camera->update(dt);
+        scene.update(dt);
     }
 
     // ── Chamado pela subclasse no seu render() ───────────────

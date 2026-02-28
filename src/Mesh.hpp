@@ -10,6 +10,7 @@
 #include <string>
 
 class Material;
+class Shader;
 
 // ============================================================
 //  Vertex — static geometry  (48 bytes)
@@ -103,8 +104,9 @@ struct Surface
 struct Bone
 {
     std::string name;
-    glm::mat4 offset; // inverse bind pose
-    int parent = -1;  // index into skeleton bone array (-1 = root)
+    glm::mat4 offset;    // inverse bind pose (model→bone space)
+    glm::mat4 localPose; // rest pose in parent-local space (from file)
+    int parent = -1;     // index into skeleton bone array (-1 = root)
 };
 
 // ============================================================
@@ -161,6 +163,9 @@ public:
     virtual BoundingBox getAABB() const = 0;
     virtual int vertexCount() const = 0;
     virtual int indexCount() const = 0;
+    // Sends bone matrices to shader (no-op for static meshes)
+    virtual void applyBoneMatrices(Shader *sh) const {}
+    virtual bool isSkinned() const { return false; }
 };
 
 // ============================================================
@@ -214,4 +219,6 @@ public:
     BoundingBox getAABB() const override { return aabb; }
     int vertexCount() const override { return (int)buffer.vertices.size(); }
     int indexCount() const override { return (int)buffer.indices.size(); }
+    void applyBoneMatrices(Shader *sh) const override;
+    bool isSkinned() const override { return true; }
 };

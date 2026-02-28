@@ -106,6 +106,7 @@ void RenderPass::drawItem(const FrameContext &ctx, const RenderItem &item, Shade
     item.material->applyStates();
     item.material->bindTexturesTo(sh);
     item.material->applyUniformsTo(sh);
+    item.drawable->applyBoneMatrices(sh);
     sh->setMat4("u_model", item.model);
 
     const uint32_t idxCount = item.indexCount > 0

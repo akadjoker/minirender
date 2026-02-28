@@ -1,4 +1,5 @@
 #include "Node.hpp"
+#include "Animator.hpp"
 #include "Manager.hpp"
 #include <algorithm>
 
@@ -55,4 +56,22 @@ MeshNode::MeshNode():Node3D(), mesh(nullptr), castShadow(true), receiveShadow(tr
 Light::Light():Node3D(), lightType(LightType::Point), color(1.f, 1.f, 1.f), intensity(1.0f), castShadow(false)
 {
     type = NodeType::Light;
+}
+
+// ─── AnimatedMeshNode ────────────────────────────────────────────────────────
+
+AnimatedMeshNode::AnimatedMeshNode() : Node3D()
+{
+    type = NodeType::MeshNode; // reuse MeshNode type
+}
+
+AnimatedMeshNode::~AnimatedMeshNode()
+{
+    delete animator;
+}
+
+void AnimatedMeshNode::setMaterial(const std::string &name)
+{
+    materialName_ = name;
+    material_     = MaterialManager::instance().get(name);
 }

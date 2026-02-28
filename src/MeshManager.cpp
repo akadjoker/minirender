@@ -3,6 +3,7 @@
 
 #include "cgltf.h"
 #include "Manager.hpp"
+#include "MeshLoader.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -76,6 +77,8 @@ Mesh *MeshManager::load(const std::string &name, const std::string &path,
         return load_obj(name, path, texture_dir);
     if (ext == "gltf" || ext == "glb")
         return load_gltf(name, path, texture_dir);
+    if (ext == "h3d" || ext == "mesh")
+        return load_h3d(name, path, texture_dir);
 
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[MeshManager] Unknown mesh format '%s': %s", ext.c_str(), path.c_str());
@@ -1211,4 +1214,33 @@ Mesh *MeshManager::create_plane(const std::string &name, float width, float dept
     return mesh;
 }
 
+// ============================================================
+//  H3D / .mesh — binary format via MeshReader
+// ============================================================
+Mesh *MeshManager::load_h3d(const std::string &name, const std::string &path,
+                             const std::string &texture_dir)
+{
+    if (auto *existing = get(name))
+        return existing;
+
+    auto *mesh = new Mesh();
+    mesh->name = name;
+
+    MeshReader reader;
+    reader.textureDir = texture_dir;
+
+    if (!reader.load(path, mesh))
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[MeshManager] Failed to load h3d '%s': %s",
+                     name.c_str(), path.c_str());
+        delete mesh;
+        return nullptr;
+    }
+
+    MaterialManager::instance().applyDefaults();
+
+    cache[name] = mesh;
+    return mesh;
+}
  

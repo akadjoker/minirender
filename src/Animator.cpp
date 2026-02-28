@@ -1,4 +1,5 @@
 #include "Animator.hpp"
+#include "MeshLoader.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <SDL2/SDL.h>
@@ -31,7 +32,8 @@ Animation *AnimationLayer::loadAnimation(const std::string &name, const std::str
     if (anims_.count(name)) return anims_[name];
 
     auto *anim = new Animation();
-    if (!anim->load(path))
+    AnimReader reader;
+    if (!reader.load(path, anim))
     {
         delete anim;
         return nullptr;
@@ -195,6 +197,7 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
             for (const auto &ch : current_->channels)
             {
                 if (ch.boneIndex < 0) continue;
+                if (!boneMask_.empty() && !boneMask_.count(ch.boneIndex)) continue;
 
                 glm::vec3 pos2 = current_->interpolatePosition(ch, time_);
                 glm::quat rot2 = current_->interpolateRotation(ch, time_);
@@ -211,11 +214,11 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
                     glm::quat r = glm::normalize(glm::slerp(rot1, rot2, blend));
                     glm::vec3 s = glm::mix(scl1, scl2, blend);
 
-                    finalMatrices[ch.boneIndex] = trsMatrix(p, r, s) * bones[ch.boneIndex].offset;
+                    finalMatrices[ch.boneIndex] = trsMatrix(p, r, s);
                 }
                 else
                 {
-                    finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2) * bones[ch.boneIndex].offset;
+                    finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2);
                 }
             }
 
@@ -246,6 +249,7 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
         for (const auto &ch : current_->channels)
         {
             if (ch.boneIndex < 0) continue;
+            if (!boneMask_.empty() && !boneMask_.count(ch.boneIndex)) continue;
 
             glm::vec3 pos2 = current_->interpolatePosition(ch, time_);
             glm::quat rot2 = current_->interpolateRotation(ch, time_);
@@ -262,11 +266,11 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
                 glm::quat r = glm::normalize(glm::slerp(rot1, rot2, blend));
                 glm::vec3 s = glm::mix(scl1, scl2, blend);
 
-                finalMatrices[ch.boneIndex] = trsMatrix(p, r, s) * bones[ch.boneIndex].offset;
+                finalMatrices[ch.boneIndex] = trsMatrix(p, r, s);
             }
             else
             {
-                finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2) * bones[ch.boneIndex].offset;
+                finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2);
             }
         }
 
@@ -318,12 +322,13 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
     for (const auto &ch : current_->channels)
     {
         if (ch.boneIndex < 0 || ch.boneIndex >= (int)finalMatrices.size()) continue;
+        if (!boneMask_.empty() && !boneMask_.count(ch.boneIndex)) continue;
 
         glm::vec3 pos = current_->interpolatePosition(ch, time_);
         glm::quat rot = current_->interpolateRotation(ch, time_);
         glm::vec3 scl = current_->interpolateScale   (ch, time_);
 
-        finalMatrices[ch.boneIndex] = trsMatrix(pos, rot, scl) * bones[ch.boneIndex].offset;
+        finalMatrices[ch.boneIndex] = trsMatrix(pos, rot, scl);
     }
 
     // OneShot return
@@ -370,14 +375,78 @@ AnimationLayer *Animator::getLayer(int index) const
     return layers_[index];
 }
 
+void Animator::setLayerMaskFromBone(int layerIndex, const std::string &rootBoneName)
+{
+    AnimationLayer *layer = getLayer(layerIndex);
+    if (!layer || !mesh_) return;
+
+    const auto &bones = mesh_->bones;
+    const int   N     = (int)bones.size();
+
+    // Find root bone index by name
+    int rootIdx = -1;
+    for (int i = 0; i < N; i++)
+        if (bones[i].name == rootBoneName) { rootIdx = i; break; }
+
+    if (rootIdx < 0)
+    {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[Animator] setLayerMaskFromBone: bone '%s' not found", rootBoneName.c_str());
+        return;
+    }
+
+    // BFS from rootIdx — collect all descendants (including root itself)
+    std::unordered_set<int> mask;
+    std::vector<int> queue = { rootIdx };
+    for (int qi = 0; qi < (int)queue.size(); qi++)
+    {
+        int p = queue[qi];
+        mask.insert(p);
+        for (int i = 0; i < N; i++)
+            if (bones[i].parent == p) queue.push_back(i);
+    }
+
+    SDL_Log("[Animator] Layer %d mask: %zu bones rooted at '%s'",
+            layerIndex, mask.size(), rootBoneName.c_str());
+
+    layer->setBoneMask(mask);
+}
+
 void Animator::initialize()
 {
     if (!mesh_) return;
     for (auto *l : layers_)
         l->bind(mesh_->bones);
 
-    // Inicializar finalMatrices com identidade
-    mesh_->finalMatrices.resize(mesh_->bones.size(), glm::mat4(1.f));
+    const auto &bones = mesh_->bones;
+    const int   N     = (int)bones.size();
+
+    // Use localPose stored directly from the file — rest pose in parent-local space.
+    restLocal_.resize(N);
+    for (int i = 0; i < N; i++)
+        restLocal_[i] = bones[i].localPose;
+
+    // Compute BFS traversal order so parents are always processed before children.
+    // Bones in sinbad.h3d are NOT sorted topologically (e.g. bone[0].parent == 16).
+    boneOrder_.clear();
+    boneOrder_.reserve(N);
+    std::vector<bool> visited(N, false);
+    for (int i = 0; i < N; i++)
+        if (bones[i].parent < 0) { boneOrder_.push_back(i); visited[i] = true; }
+    for (int qi = 0; qi < (int)boneOrder_.size(); qi++) {
+        int p = boneOrder_[qi];
+        for (int i = 0; i < N; i++)
+            if (bones[i].parent == p && !visited[i]) {
+                boneOrder_.push_back(i);
+                visited[i] = true;
+            }
+    }
+    // Any bone not reachable from a root (broken data) — append as-is
+    for (int i = 0; i < N; i++)
+        if (!visited[i]) boneOrder_.push_back(i);
+
+    localMatrices_.resize(N);
+    mesh_->finalMatrices.resize(N, glm::mat4(1.f));
     initialized_ = true;
 }
 
@@ -387,8 +456,27 @@ void Animator::update(float dt)
 
     if (!initialized_) initialize();
 
-    // Cada layer escreve nas finalMatrices — o último layer "ganha"
-    // Para blending parcial (ex: torso + pernas) precisarias de máscaras de bones
+    const auto &bones = mesh_->bones;
+    const int   N     = (int)bones.size();
+    auto       &final = mesh_->finalMatrices;
+
+    // 1. Reset local matrices to rest pose each frame
+    localMatrices_.assign(restLocal_.begin(), restLocal_.end());
+
+    // 2. Each layer overwrites animated channels with their local TRS
     for (auto *l : layers_)
-        l->update(dt, mesh_->finalMatrices, mesh_->bones);
+        l->update(dt, localMatrices_, bones);
+
+    // 3. Walk bone hierarchy in BFS order (guarantees parent processed before child)
+    for (int i : boneOrder_)
+    {
+        if (bones[i].parent < 0)
+            final[i] = localMatrices_[i];
+        else
+            final[i] = final[bones[i].parent] * localMatrices_[i];
+    }
+
+    // 4. Apply inverse bind pose to convert from bone-local space to mesh space
+    for (int i = 0; i < N; i++)
+        final[i] *= bones[i].offset;
 }

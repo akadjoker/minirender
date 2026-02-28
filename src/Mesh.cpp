@@ -1,4 +1,5 @@
 #include "Mesh.hpp"
+#include "Material.hpp"
 #include <glm/gtc/matrix_inverse.hpp>
 
 // ============================================================
@@ -302,4 +303,15 @@ void AnimatedMesh::upload()
 {
     buffer.upload();
     compute_aabb();
+}
+
+void AnimatedMesh::applyBoneMatrices(Shader *sh) const
+{
+    if (!sh) return;
+    const int count = (int)finalMatrices.size();
+    for (int i = 0; i < count && i < 100; ++i)
+    {
+        // glUniform is cheap with caching; batch all bones
+        sh->setMat4("u_boneMatrices[" + std::to_string(i) + "]", finalMatrices[i]);
+    }
 }

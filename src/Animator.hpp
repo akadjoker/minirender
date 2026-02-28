@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 class AnimatedMesh;
 
@@ -43,6 +44,12 @@ public:
     // ── Controlo de velocidade ───────────────────────────────
     void  setSpeed(float s) { speed_ = s; }
     float getSpeed()  const { return speed_; }
+
+    // ── Bone mask — empty = afecta todos os bones ──────────────
+    // Usar para split upper/lower body (ex: só Stomach + descendentes)
+    void setBoneMask(const std::unordered_set<int> &mask) { boneMask_ = mask; }
+    void clearBoneMask()                                  { boneMask_.clear(); }
+    bool hasBoneMask() const                              { return !boneMask_.empty(); }
 
     // ── Update — chamado pelo Animator ───────────────────────
     // bones: vector de Bone do AnimatedMesh (para resolver índices)
@@ -93,6 +100,8 @@ private:
     void applyChannel(const AnimationChannel &ch, float t,
                       std::vector<glm::mat4> &out,
                       const std::vector<Bone> &bones) const;
+
+    std::unordered_set<int> boneMask_; // empty = all bones
 };
 
 // ============================================================
@@ -109,6 +118,10 @@ public:
     AnimationLayer *getLayer(int index) const;
     int             layerCount() const { return (int)layers_.size(); }
 
+    // Constrói bone mask para um layer a partir do bone raiz (inclui descendentes)
+    // ex: setLayerMaskFromBone(1, "Stomach") → layer 1 só afecta upper body
+    void setLayerMaskFromBone(int layerIndex, const std::string &rootBoneName);
+
     // ── Per-frame ────────────────────────────────────────────
     void update(float dt);
 
@@ -118,6 +131,13 @@ private:
     AnimatedMesh                  *mesh_ = nullptr; // non-owning
     std::vector<AnimationLayer *>  layers_;         // owned
     bool                           initialized_ = false;
+
+    // Precomputed rest-pose local matrices (reconstructed from inverseBindPose)
+    std::vector<glm::mat4> restLocal_;
+    // Scratch buffer for local TRS written by layers each frame
+    std::vector<glm::mat4> localMatrices_;
+    // Topological (BFS) order — guarantees parent processed before child
+    std::vector<int>       boneOrder_;
 
     void initialize();
 };

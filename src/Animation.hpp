@@ -51,8 +51,7 @@ public:
     glm::quat interpolateRotation(const AnimationChannel &ch, float time) const;
     glm::vec3 interpolateScale   (const AnimationChannel &ch, float time) const;
 
-    // Load de ficheiro .anim (formato simples binário ou texto)
-    bool load(const std::string &path);
+ 
 
 private:
     template<typename TKey>

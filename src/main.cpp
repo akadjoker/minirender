@@ -16,7 +16,9 @@
 #include "DemoManager.hpp"
 #include "DemoShadow.hpp"
 #include "DemoDeferred.hpp"
-#include "DemoSimples.hpp"    
+#include "DemoSimples.hpp"
+#include "DemoH3D.hpp"
+#include "DemoSinbad.hpp"    
 
 
 const int SCREEN_W = 1024;
@@ -56,8 +58,10 @@ int main(int argc, char* argv[])
 
     DemoManager manager;
     //manager.add(new DemoShadow());
-    manager.add(new DemoDeferred());
+    //manager.add(new DemoDeferred());
     //manager.add(new DemoSimples());
+    //manager.add(new DemoH3D());
+    manager.add(new DemoSinbad());
 
     if (!manager.init())
     {

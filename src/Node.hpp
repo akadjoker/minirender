@@ -47,9 +47,10 @@ class Node
     virtual ~Node();
 
     // Fast type access — no dynamic_cast needed
-    virtual class Node3D   *asNode3D()   { return nullptr; }
-    virtual class MeshNode *asMeshNode() { return nullptr; }
-    virtual class Light    *asLight()    { return nullptr; }
+    virtual class Node3D   *asNode3D()            { return nullptr; }
+    virtual class MeshNode *asMeshNode()          { return nullptr; }
+    virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
+    virtual class Light    *asLight()             { return nullptr; }
 
     void addChild(Node *child);
     void removeChild(Node *child);
@@ -170,6 +171,28 @@ public:
 private:
     std::string  materialName_;
     Material    *material_ = nullptr;  // cached, non-owning
+};
+
+// ─── AnimatedMeshNode ────────────────────────────────────────────────────────
+class AnimatedMeshNode : public Node3D
+{
+public:
+    AnimatedMesh *mesh     = nullptr;
+    class Animator *animator = nullptr; // owned
+    uint32_t passMask      = RenderPassMask::Opaque;
+
+    AnimatedMeshNode();
+    virtual ~AnimatedMeshNode();
+
+    AnimatedMeshNode *asAnimatedMeshNode() override { return this; }
+
+    void       setMaterial(const std::string &name);
+    Material  *getMaterial() const { return material_; }
+    const std::string &getMaterialName() const { return materialName_; }
+
+private:
+    std::string  materialName_;
+    Material    *material_ = nullptr;
 };
 
 // ─── Lights ──────────────────────────────────────────────────────────────────

@@ -13,6 +13,8 @@ public:
     void process()
     {
         mouseDX = mouseDY = 0;
+        scrollY = 0;
+        memcpy(prevKeys, keys, sizeof(keys));
         SDL_Event e;
         while (SDL_PollEvent(&e))
         {
@@ -36,7 +38,9 @@ public:
         }
     }
 
-    bool isKey(SDL_Scancode key) const { return keys[key]; }
+    bool isKey    (SDL_Scancode key) const { return keys[key]; }
+    // true only on the frame the key was first pressed
+    bool isKeyDown(SDL_Scancode key) const { return keys[key] && !prevKeys[key]; }
     bool isMouseDown(int btn) const { return mouseButtons[btn]; }
     float getDeltaX() const { return mouseDX; }
     float getDeltaY() const { return mouseDY; }
@@ -44,7 +48,8 @@ public:
     float getScrollY() const { return scrollY; }
 
 private:
-    bool keys[SDL_NUM_SCANCODES] = {};
+    bool keys[SDL_NUM_SCANCODES]     = {};
+    bool prevKeys[SDL_NUM_SCANCODES] = {};
     bool mouseButtons[8] = {};
     float mouseDX = 0, mouseDY = 0;
     float scrollY = 0;

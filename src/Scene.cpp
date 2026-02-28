@@ -1,4 +1,5 @@
 #include "Scene.hpp"
+#include "Animator.hpp"
 #include "Manager.hpp"
 #include <algorithm>
 
@@ -20,6 +21,16 @@ MeshNode *Scene::createMeshNode(const std::string &name, Mesh *mesh)
     node->name = name;
     node->mesh = mesh;
 
+    add(node);
+    return node;
+}
+
+AnimatedMeshNode *Scene::createAnimatedMeshNode(const std::string &name, AnimatedMesh *mesh)
+{
+    auto *node     = new AnimatedMeshNode();
+    node->name     = name;
+    node->mesh     = mesh;
+    node->animator = mesh ? new Animator(mesh) : nullptr;
     add(node);
     return node;
 }
@@ -71,6 +82,22 @@ void Scene::render()
         renderCamera(cam);
 }
 
+void Scene::update(float dt)
+{
+    for (auto *root : roots_)
+        updateNode(root, dt);
+}
+
+void Scene::updateNode(Node *node, float dt)
+{
+    if (!node || !node->visible) return;
+    if (auto *an = node->asAnimatedMeshNode())
+        if (an->animator && an->animator->active)
+            an->animator->update(dt);
+    for (auto *child : node->getChildren())
+        updateNode(child, dt);
+}
+
 void Scene::release()
 {
     for (auto *cam : cameras_)
@@ -109,19 +136,16 @@ void Scene::gatherNode(Node *node, const Frustum &frustum)
     if (auto *light = node->asLight())
         frameCtx_.lights.push_back(light);
 
+    // ── Static mesh ─────────────────────────────────────────────────
     if (auto *meshNode = node->asMeshNode())
     {
         if (meshNode->mesh)
         {
-            // Transform the mesh AABB to world space and test against frustum
-            const glm::mat4 world = meshNode->worldMatrix();
+            const glm::mat4 world    = meshNode->worldMatrix();
             const BoundingBox worldAABB = meshNode->mesh->aabb.transformed(world);
 
             if (worldAABB.is_valid() && !frustum.contains(worldAABB))
             {
-                // Node is outside frustum — skip subtree too
-                // (children are not culled as a group here; recurse anyway for
-                //  nodes whose bounds may differ from their parent)
                 for (auto *child : node->getChildren())
                     gatherNode(child, frustum);
                 return;
@@ -129,7 +153,6 @@ void Scene::gatherNode(Node *node, const Frustum &frustum)
 
             for (const auto &surf : meshNode->mesh->surfaces)
             {
-                // Per-surface frustum cull (skip if no valid per-surface AABB)
                 if (surf.aabb.is_valid())
                 {
                     const BoundingBox surfWorld = surf.aabb.transformed(world);
@@ -137,7 +160,6 @@ void Scene::gatherNode(Node *node, const Frustum &frustum)
                         continue;
                 }
 
-                // Per-node override first, then mesh's own materials
                 Material *mat = meshNode->getMaterial();
                 if (!mat)
                 {
@@ -148,10 +170,49 @@ void Scene::gatherNode(Node *node, const Frustum &frustum)
                 if (!mat) continue;
 
                 RenderItem item;
-                item.drawable       = meshNode->mesh;
+                item.drawable   = meshNode->mesh;
                 item.material   = mat;
                 item.model      = world;
                 item.passMask   = meshNode->passMask;
+                item.indexStart = surf.index_start;
+                item.indexCount = surf.index_count;
+                item.worldAABB  = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;
+                renderQueue_.add(item);
+            }
+        }
+    }
+
+    // ── Skinned mesh ───────────────────────────────────────────────
+    if (auto *amn = node->asAnimatedMeshNode())
+    {
+        if (amn->mesh)
+        {
+            const glm::mat4 world     = amn->worldMatrix();
+            const BoundingBox worldAABB = amn->mesh->aabb.transformed(world);
+
+            if (worldAABB.is_valid() && !frustum.contains(worldAABB))
+            {
+                for (auto *child : node->getChildren())
+                    gatherNode(child, frustum);
+                return;
+            }
+
+            for (const auto &surf : amn->mesh->surfaces)
+            {
+                Material *mat = amn->getMaterial();
+                if (!mat)
+                {
+                    const auto &mats = amn->mesh->materials;
+                    if (surf.material_index >= 0 && surf.material_index < (int)mats.size())
+                        mat = mats[surf.material_index];
+                }
+                if (!mat) continue;
+
+                RenderItem item;
+                item.drawable   = amn->mesh;
+                item.material   = mat;
+                item.model      = world;
+                item.passMask   = amn->passMask;
                 item.indexStart = surf.index_start;
                 item.indexCount = surf.index_count;
                 item.worldAABB  = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;

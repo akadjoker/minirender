@@ -1,5 +1,7 @@
 build/
 bin/mini_pipeline
+bin/demores
 *.o
 *.d
 .cache/
+tmpo/

@@ -1,12 +1,12 @@
 #pragma once
 #include "DemoBase.hpp"
 // ============================================================
-//  DemoSimples — shadow map simples com luz direcional
+//  DemoCsm — Cascade Shadow Maps (3 cascatas)
 // ============================================================
-class DemoSimples : public DemoBase
+class DemoCsm : public DemoBase
 {
 public:
-    const char *name() override { return "Simple Shadow"; }
+    const char *name() override { return "CSM Shadow"; }
 
     bool init() override
     {
@@ -14,46 +14,48 @@ public:
 
         camera->setPosition({0.f, 15.f, 30.f});
         camera->lookAt({0.f, 0.f, 0.f});
+        camera->setViewPlanes(0.1f, 300.f);
         static_cast<FreeCameraController *>(camera->getController())->moveSpeed = 20.f;
 
         // ── Shaders ──────────────────────────────────────────
         auto *depthShader = shaders().load("depth",
             "assets/shaders/depth.vert", "assets/shaders/depth.frag");
-        auto *litShader   = shaders().load("lit_shadow",
-            "assets/shaders/lit_shadow.vert", "assets/shaders/lit_shadow.frag");
-        if (!depthShader || !litShader) { SDL_Log("[ERR] Failed to load shaders"); return false; }
+        auto *csmShader   = shaders().load("csm_lit",
+            "assets/shaders/csm_lit.vert", "assets/shaders/csm_lit.frag");
+        if (!depthShader || !csmShader) { SDL_Log("[ERR] Failed to load shaders"); return false; }
 
         // ── Materials ─────────────────────────────────────────
         auto *white   = textures().getWhite();
         auto *texWall = textures().load("tex_wall", "assets/wall.jpg");
 
-        auto *matGround = materials().create("sd_ground");
-        matGround->setShader(litShader)->setTexture("u_albedo", texWall ? texWall : white);
-        auto *matCube = materials().create("sd_cube");
-        matCube->setShader(litShader)->setTexture("u_albedo", white);
+        auto *matGround = materials().create("csm_ground");
+        matGround->setShader(csmShader)->setTexture("u_albedo", texWall ? texWall : white);
+        auto *matCube = materials().create("csm_cube");
+        matCube->setShader(csmShader)->setTexture("u_albedo", white);
 
         // ── Meshes ───────────────────────────────────────────
-        Mesh *plane = meshes().create_plane("ground", 40.f, 40.f, 1);
+        Mesh *plane = meshes().create_plane("ground", 80.f, 80.f, 1);
         Mesh *cube  = meshes().create_cube ("cube",   2.f);
 
         auto *ground = scene.createMeshNode("ground", plane);
-        ground->setMaterial("sd_ground");
+        ground->setMaterial("csm_ground");
 
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < 9; i++)
         {
             auto *node = scene.createMeshNode("cube_" + std::to_string(i), cube);
-            node->setMaterial("sd_cube");
-            node->setPosition({(float)(i - 2) * 5.f, 1.f, 0.f});
+            node->setMaterial("csm_cube");
+            node->setPosition({(float)(i - 4) * 8.f, 1.f, 0.f});
         }
 
-        // ── Shadow simples ────────────────────────────────────
+        // ── CSM Shadow ────────────────────────────────────────
         scene.shadow.enabled     = true;
         scene.shadow.depthShader = depthShader;
         scene.shadow.lightDir    = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
         scene.shadow.lightColor  = {1.f, 1.f, 0.95f};
-        scene.shadow.numCascades = 1;   // 1 = shadow map simples
-        scene.shadow.mapSize     = 2048;
+        scene.shadow.numCascades = 3;
+        scene.shadow.mapSize     = 1024;
         scene.shadow.bias        = 0.005f;
+        scene.shadow.lambda      = 0.75f;
 
         return true;
     }

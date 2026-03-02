@@ -438,19 +438,18 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
             sh->setMat4("u_viewProj",  viewProj);
             sh->setVec4("u_cameraPos", camPosV);
             sh->setVec4("u_clipPlane", ctx.clipPlane);
-            // CSM — inject per-cascade light space + shadow maps (harmless on shaders without these uniforms)
+            // CSM — inject per-cascade data (harmless on shaders without these uniforms)
             if (ctx.numCascades > 0)
             {
                 const int N = ctx.numCascades;
-                sh->setInt      ("u_numCascades",          N);
-                sh->setMat4Array("u_lightSpaceMatrices",   N, ctx.lightSpaceMatrices);
-                sh->setFloatArray("u_cascadeFarPlanes",    N, ctx.cascadeFarPlanes);
-                sh->setVec3     ("u_lightDir",    ctx.lightDir);
-                sh->setVec3     ("u_lightColor",  ctx.lightColor);
-                sh->setFloat    ("u_shadowBias",  ctx.shadowBias);
-                static const char *smNames[4] = {"u_shadowMap0","u_shadowMap1","u_shadowMap2","u_shadowMap3"};
+                sh->setInt       ("u_numCascades",   N);
+                sh->setMat4Array ("u_lightSpace",    N, ctx.lightSpaceMatrices);
+                sh->setFloatArray("u_cascadeSplits", N, ctx.cascadeFarPlanes);
+                sh->setVec3      ("u_lightDir",      ctx.lightDir);
+                sh->setVec3      ("u_lightColor",    ctx.lightColor);
+                sh->setFloat     ("u_shadowBias",    ctx.shadowBias);
                 for (int i = 0; i < N; i++) {
-                    sh->setInt(smNames[i], 1 + i);
+                    sh->setInt("u_shadowMap[" + std::to_string(i) + "]", 1 + i);
                     rs.bindTexture(1 + i, GL_TEXTURE_2D, ctx.shadowTextures[i]);
                 }
             }
@@ -542,8 +541,15 @@ void Scene::drawShadowPass()
     rs.setDepthTest(true);
     rs.setDepthWrite(true);
     rs.setCull(true);
-    rs.setCullFace(GL_FRONT);
+
     rs.useProgram(shadow.depthShader->getId());
+
+    // Polygon offset: pushes stored depth away from the light, preventing
+    // self-shadowing without needing a large bias in the lighting shader.
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f, 4.0f);
+
+    const float sz = (float)shadow.mapSize;
 
     for (int c = 0; c < N; c++)
     {
@@ -558,22 +564,37 @@ void Scene::drawShadowPass()
             corners[j+4] = glm::mix(frustumWS[j], frustumWS[j+4], t1);
         }
 
-        // Center → stable light view
+        // ── Sphere-fit: stable shadow area regardless of camera rotation ──
+        // (AABB changes size as the camera rotates; sphere does not.)
         glm::vec3 center(0.f);
         for (auto &v : corners) center += v;
         center /= 8.f;
+
+        float radius = 0.f;
+        for (auto &v : corners)
+            radius = std::max(radius, glm::length(v - center));
+
         const glm::mat4 lightView = glm::lookAt(center - lightDir * 100.f, center, up);
 
-        // Tight ortho bounds in light space
-        float minX= 1e9f, maxX=-1e9f, minY= 1e9f, maxY=-1e9f, minZ= 1e9f, maxZ=-1e9f;
+        // Symmetric ortho from sphere radius
+        float minX = -radius, maxX = radius;
+        float minY = -radius, maxY = radius;
+
+        // ── Texel snapping: eliminates sub-pixel shimmer on camera movement ──
+        const float worldUnitsPerTexel = (2.f * radius) / sz;
+        minX = std::floor(minX / worldUnitsPerTexel) * worldUnitsPerTexel;
+        maxX = std::floor(maxX / worldUnitsPerTexel) * worldUnitsPerTexel;
+        minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
+        maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
+
+        // Tight Z range from actual sub-frustum corners in light space
+        float minZ = 1e9f, maxZ = -1e9f;
         for (auto &v : corners) {
-            glm::vec3 lc = glm::vec3(lightView * glm::vec4(v, 1.f));
-            minX = std::min(minX, lc.x); maxX = std::max(maxX, lc.x);
-            minY = std::min(minY, lc.y); maxY = std::max(maxY, lc.y);
-            minZ = std::min(minZ, lc.z); maxZ = std::max(maxZ, lc.z);
+            float lz = (lightView * glm::vec4(v, 1.f)).z;
+            minZ = std::min(minZ, lz); maxZ = std::max(maxZ, lz);
         }
-        // Extend Z back to catch casters behind sub-frustum
-        const float zMult = 10.f;
+        // Extend Z to catch shadow casters outside the camera sub-frustum
+        constexpr float zMult = 3.f;
         if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
         if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
@@ -594,7 +615,7 @@ void Scene::drawShadowPass()
         shadowMaps_[c].unbind();
     }
 
-    rs.setCullFace(GL_BACK);
+    glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
 // ─── drawSky ────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -11,6 +12,7 @@
 #include "RenderPipeline.hpp"
 #include "RenderState.hpp"
 #include "Scene.hpp"
+#include "ShadowMap.hpp"
 #include "Input.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
@@ -25,11 +27,14 @@ const int SCREEN_H = 768;
 int main()
 {
     Device &device = Device::Instance();
-    if (!device.Create(SCREEN_W, SCREEN_H, "minirender - flat test", true, 1))
+    if (!device.Create(SCREEN_W, SCREEN_H, "minirender", true, 1))
         return 1;
 
-    auto &rs    = RenderState::instance();
-    auto &shMgr = ShaderManager::instance();
+    auto &rs      = RenderState::instance();
+    auto &shMgr   = ShaderManager::instance();
+    auto &texMgr  = TextureManager::instance();
+    auto &matMgr  = MaterialManager::instance();
+    auto &meshMgr = MeshManager::instance();
 
     RenderBatch batch;
     batch.Init();
@@ -37,60 +42,94 @@ int main()
     font.SetBatch(&batch);
     font.LoadDefaultFont();
 
-    // Shader flat: so MVP + u_color
+    // ── Shaders ──────────────────────────────────────────────────────────────
+    Shader *depthShader = shMgr.load("depth",
+        "assets/shaders/depth.vert", "assets/shaders/depth.frag");
+    Shader *litShader = shMgr.load("lit_shadow",
+        "assets/shaders/lit_shadow.vert", "assets/shaders/lit_shadow.frag");
     Shader *flatShader = shMgr.load("flat",
         "assets/shaders/flat.vert", "assets/shaders/flat.frag");
-    if (!flatShader)
+
+    if (!depthShader || !litShader || !flatShader)
     {
-        SDL_Log("[ERR] flat shader falhou");
+        SDL_Log("[ERR] shader load failed");
         device.Close();
         return 1;
     }
 
-    // Cena + camera
+    // ── Textures + materials ──────────────────────────────────────────────────
+    Texture *white   = texMgr.getWhite();
+    Texture *texWall = texMgr.load("wall", "assets/wall.jpg");
+
+    Material *matGround = matMgr.create("ground");
+    matGround->setShader(litShader)->setTexture("u_albedo", texWall ? texWall : white);
+
+    Material *matCube = matMgr.create("cube");
+    matCube->setShader(litShader)->setTexture("u_albedo", white);
+
+    // ── Scene ─────────────────────────────────────────────────────────────────
     Scene scene;
+
     Camera *cam = scene.createCamera("main");
     cam->fov       = 60.f;
     cam->nearPlane = 0.1f;
     cam->farPlane  = 500.f;
-    cam->setPosition({0.f, 5.f, 20.f});
+    cam->setPosition({0.f, 15.f, 30.f});
     cam->lookAt({0.f, 0.f, 0.f});
     cam->setAspect(SCREEN_W, SCREEN_H);
     cam->setViewport(0, 0, SCREEN_W, SCREEN_H);
 
     auto *freeCam = new FreeCameraController();
-    freeCam->moveSpeed        = 15.f;
+    freeCam->moveSpeed        = 20.f;
     freeCam->mouseSensitivity = 0.15f;
     cam->setController(freeCam);
     scene.setCurrentCamera(cam);
 
-    // Cubos — sem material, desenhamos directamente
-    auto &meshMgr = MeshManager::instance();
-    Mesh *cube = meshMgr.create_cube("cube", 2.f);
-    Mesh *plane = meshMgr.create_plane("plane", 60.f, 60.f, 1);
+    // Nodes com lit_shadow + sombras
+    Mesh *plane = meshMgr.create_plane("ground", 40.f, 40.f, 1);
+    Mesh *cube  = meshMgr.create_cube("cube", 2.f);
 
-    // Cores e posicoes
-    struct CubeEntry { glm::mat4 model; glm::vec4 color; };
-    std::vector<CubeEntry> cubes;
-
-    // chao
-    cubes.push_back({ glm::translate(glm::mat4(1.f), {0.f, -1.f, 0.f}), {0.3f,0.5f,0.3f,1.f} });
-
-    // 5 cubos coloridos
-    const glm::vec4 colors[] = {
-        {1.f, 0.2f, 0.2f, 1.f},
-        {0.2f, 1.f, 0.2f, 1.f},
-        {0.2f, 0.4f, 1.f, 1.f},
-        {1.f, 1.f, 0.2f, 1.f},
-        {1.f, 0.4f, 1.f, 1.f},
-    };
+    scene.createMeshNode("ground", plane)->setMaterial("ground");
     for (int i = 0; i < 5; i++)
     {
-        glm::mat4 m = glm::translate(glm::mat4(1.f), {(float)(i - 2) * 5.f, 1.f, 0.f});
-        cubes.push_back({ m, colors[i] });
+        auto *n = scene.createMeshNode("cube_" + std::to_string(i), cube);
+        n->setMaterial("cube");
+        n->setPosition({(float)(i - 2) * 5.f, 1.f, 0.f});
     }
 
-    // Main loop
+    // ── Shadow map ────────────────────────────────────────────────────────────
+    const int   SHADOW_SIZE = 2048;
+    const float ORTHO_SIZE  = 40.f;
+    const float LIGHT_DIST  = 100.f;
+    const float SHADOW_BIAS = 0.005f;
+    const glm::vec3 LIGHT_DIR   = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
+    const glm::vec3 LIGHT_COLOR = {1.f, 1.f, 0.95f};
+
+    ShadowMap shadowMap;
+    if (!shadowMap.create(SHADOW_SIZE))
+    {
+        SDL_Log("[ERR] shadow map failed");
+        device.Close();
+        return 1;
+    }
+
+    const glm::vec3 lightUp    = (glm::abs(glm::dot(LIGHT_DIR, {0,1,0})) > 0.99f)
+                                 ? glm::vec3(0,0,1) : glm::vec3(0,1,0);
+    const glm::mat4 lightSpace = glm::ortho(-ORTHO_SIZE, ORTHO_SIZE,
+                                            -ORTHO_SIZE, ORTHO_SIZE,
+                                             0.1f, LIGHT_DIST * 2.f)
+                               * glm::lookAt(LIGHT_DIR * LIGHT_DIST,
+                                             glm::vec3(0.f), lightUp);
+
+    // ── Cubos extras com flat shader ──────────────────────────────────────────
+    struct FlatCube { glm::vec3 pos; glm::vec4 color; };
+    const FlatCube flatCubes[] = {
+        { {-12.f, 2.f,  5.f}, {1.f, 0.2f, 0.2f, 1.f} },   // vermelho
+        { {  0.f, 2.f,  8.f}, {0.2f, 1.f, 0.2f, 1.f} },   // verde
+        { { 12.f, 2.f,  5.f}, {0.2f, 0.5f, 1.f, 1.f} },   // azul
+    };
+
+    // ── Main loop ─────────────────────────────────────────────────────────────
     while (device.Run())
     {
         const float dt = device.GetFrameTime();
@@ -103,64 +142,99 @@ int main()
             cam->setViewport(0, 0, W, H);
         }
 
-        // Update camera
         scene.update(dt);
-        cam->updateMatrices();
+        scene.gatherScene(cam);
 
-        // Clear
-        rs.setViewport(0, 0, W, H);
-        rs.setClearColor(0.1f, 0.12f, 0.18f, 1.f);
-        rs.clear(true, true);
-        rs.setDepthTest(true);
-        rs.setDepthWrite(true);
-        rs.setCull(true);
-        rs.setCullFace(GL_BACK);
-        rs.setBlend(false);
-
-        // Bind shader + camera uniforms
-        rs.useProgram(flatShader->getId());
-        flatShader->setMat4("u_view", cam->view);
-        flatShader->setMat4("u_proj", cam->projection);
-
-        // Draw cubes
-        for (const auto &c : cubes)
+        // Pass 1: shadow depth
         {
-            flatShader->setMat4("u_model", c.model);
-            flatShader->setVec4("u_color",  c.color);
-            cube->draw();
+            shadowMap.bind();
+            rs.setViewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            rs.setDepthTest(true);
+            rs.setDepthWrite(true);
+            rs.setCull(true);
+            rs.setCullFace(GL_FRONT);
+            scene.drawShadowDepth(depthShader, lightSpace);
+            rs.setCullFace(GL_BACK);
+            shadowMap.unbind();
         }
-        // Draw plane com modelo separado
+
+        // Pass 2: lit pass (scene nodes)
         {
-            flatShader->setMat4("u_model", glm::mat4(1.f));
-            flatShader->setVec4("u_color",  glm::vec4(0.3f, 0.5f, 0.3f, 1.f));
-            plane->draw();
+            rs.setViewport(0, 0, W, H);
+            rs.setClearColor(0.1f, 0.12f, 0.15f, 1.f);
+            rs.clear(true, true);
+            rs.setDepthTest(true);
+            rs.setDepthWrite(true);
+            rs.setCull(true);
+            rs.setCullFace(GL_BACK);
+            rs.setBlend(false);
+
+            rs.useProgram(litShader->getId());
+            litShader->setMat4("u_view",       cam->view);
+            litShader->setMat4("u_proj",       cam->projection);
+            litShader->setVec4("u_cameraPos",  glm::vec4(cam->position, 1.f));
+            litShader->setVec4("u_clipPlane",  glm::vec4(0.f));
+            litShader->setMat4("u_lightSpace", lightSpace);
+            litShader->setInt ("u_shadowMap",  1);
+            litShader->setVec3("u_lightDir",   LIGHT_DIR);
+            litShader->setVec3("u_lightColor", LIGHT_COLOR);
+            litShader->setFloat("u_shadowBias", SHADOW_BIAS);
+            rs.bindTexture(1, GL_TEXTURE_2D, shadowMap.depthTexId());
+
+            scene.drawPass(litShader, RenderPassMask::Opaque,
+                           RenderSortMode::FrontToBack);
+            scene.drawPass(litShader, RenderPassMask::Transparent,
+                           RenderSortMode::BackToFront);
+        }
+
+        // Pass 3: 3 cubos extras com flat shader
+        {
+            rs.useProgram(flatShader->getId());
+            flatShader->setMat4("u_view", cam->view);
+            flatShader->setMat4("u_proj", cam->projection);
+
+            for (const auto &fc : flatCubes)
+            {
+                glm::mat4 m = glm::translate(glm::mat4(1.f), fc.pos);
+                flatShader->setMat4("u_model", m);
+                flatShader->setVec4("u_color", fc.color);
+                cube->draw();
+            }
         }
 
         // HUD
-        batch.SetMatrix(cam->projection * cam->view);
-        batch.Grid(10, 1.0f, true);
-        batch.Render();
+        {
+            batch.SetMatrix(cam->projection * cam->view);
+            batch.Grid(10, 1.0f, true);
+            batch.Render();
 
-        const glm::mat4 ortho = glm::ortho(0.f, (float)W, (float)H, 0.f, -1.f, 1.f);
-        batch.SetMatrix(ortho);
-        rs.setDepthTest(false);
-        rs.setBlend(true);
-        rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        rs.setCull(false);
+            const glm::mat4 ortho = glm::ortho(0.f, (float)W, (float)H, 0.f, -1.f, 1.f);
+            batch.SetMatrix(ortho);
+            rs.setDepthTest(false);
+            rs.setBlend(true);
+            rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            rs.setCull(false);
 
-        font.SetColor(255, 255, 255);
-        font.Print(10, 10, "%d FPS | RMB:olhar  WASD:mover  Shift:rapido",
-                   device.GetFPS());
-        font.Print(10, 30, "Pos: %.1f %.1f %.1f",
-                   cam->position.x, cam->position.y, cam->position.z);
-        batch.Render();
+            font.SetColor(255, 255, 255);
+            font.Print(10, 10, "%d FPS  |  RMB: olhar  WASD/QE: mover",
+                       device.GetFPS());
+            font.Print(10, 30, "Pos: %.1f %.1f %.1f",
+                       cam->position.x, cam->position.y, cam->position.z);
+            const auto &st = scene.stats();
+            font.Print(10, 50, "DC:%u  Tris:%u", st.drawCalls, st.triangles);
+            batch.Render();
+        }
 
         device.Flip();
     }
 
+    shadowMap.destroy();
     scene.release();
     shMgr.unloadAll();
+    matMgr.unloadAll();
     meshMgr.unloadAll();
+    texMgr.unloadAll();
     font.Release();
     batch.Release();
     device.Close();

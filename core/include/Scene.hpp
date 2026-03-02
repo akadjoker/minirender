@@ -1,46 +1,49 @@
 #pragma once
 #include "Node.hpp"
 #include "RenderPipeline.hpp"
-#include "Math.hpp"
- 
 #include "RenderTarget.hpp"
-#include "WaterNode.hpp"
+#include "Math.hpp"
 #include <vector>
 
 class RenderBatch;
+class WaterNode3D;
 
-// Result of a scene-level pick: closest hit across all pickable nodes.
+// Result of a scene-level pick.
 struct ScenePickResult
 {
-    PickResult  result;           // geometry hit details (hit, distance, point, normal ...)
-    Node3D     *node    = nullptr; // the node that was hit (nullptr = no hit)
+    PickResult  result;
+    Node3D     *node = nullptr;
 };
 
-// Scene manages the node tree and dispatches per-frame rendering
-// through a configurable list of Technique* (non-owning).
+// ─── Scene ───────────────────────────────────────────────────────────────────
+// Explicit render pipeline — no passes, no techniques.
+//
+// Render order each frame:
+//   preRender (water RTs, animators)
+//   → renderOpaque
+//   → renderSky
+//   → renderTransparent
+//
+// For reflection/refraction, WaterNode calls renderToTarget() from preRender().
 class Scene
 {
 public:
-    Scene()  ;
+    Scene();
     ~Scene();
 
- 
-
-    // --- Camera management (scene owns cameras) ---
+    // ── Camera ───────────────────────────────────────────────────────────────
     Camera *createCamera(const std::string &name = "");
     void    removeCamera(Camera *cam);
-    const std::vector<Camera *> &cameras() const { return cameras_; }
     Camera *currentCamera() const { return currentCamera_; }
     void    setCurrentCamera(Camera *cam);
+    const std::vector<Camera *> &cameras() const { return cameras_; }
 
-    // --- Node management ---
+    // ── Node management ───────────────────────────────────────────────────────
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
     class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
     WaterNode3D          *createWaterNode       (const std::string &name = "");
 
-    // Creates a light node, adds it to the root of the scene tree.
-    // Example: auto *sun = scene.createLight<DirectionalLight>("sun");
     template<typename T>
     T *createLight(const std::string &nodeName = "")
     {
@@ -52,69 +55,87 @@ public:
 
     void add(Node *node);
     void remove(Node *node);
-    void clear(); // deletes owned nodes
-
-    /// Mark a node to be removed (and deleted) at the start of the next update().
-    /// Safe to call from update() callbacks (e.g. on collision, on lifetime expiry).
+    void clear();
     void markForRemoval(Node *node);
 
-    // --- Technique list (owned, executed in order) ---
-    void addTechnique(Technique *t) { techniques_.push_back(t); }
-    void clearTechniques()          { for (auto *t : techniques_) delete t; techniques_.clear(); }
-
-    // --- Per-frame API ---
-    // Update animators — call BEFORE render()
+    // ── Per-frame ─────────────────────────────────────────────────────────────
     void update(float dt);
-
-    // Gather visible nodes (frustum cull) + render all cameras
     void render();
- 
-    // Render the scene into an off-screen RenderTarget using a custom camera.
-    // secondary=true: expensive pre-passes (e.g. CSM depth) are skipped.
-    // Light/clip data are taken from sceneData at the time of the call.
-    // Debug: print which nodes are gathered into the next renderToTarget call.
-    // Resets automatically after one frame.
-    bool debugRTGather = false;
 
-    // Clip plane in world space (xyz=normal, w=offset).
-    // Active only during renderToTarget — auto-reset to {0,0,0,0} afterwards.
-    void setClipPlane(const glm::vec4 &plane) { clipPlane_ = plane; }
-    glm::vec4 getClipPlane() const { return clipPlane_; }
+    // ── Render to off-screen target ───────────────────────────────────────────
+    // Used by WaterNode during preRender for reflection/refraction.
+    // clipPlane: dot(worldPos, plane) < 0 → fragment discarded (vec4(0) = off).
+    void renderToTarget(Camera *cam, RenderTarget *rt,
+                        glm::vec4 clipPlane = glm::vec4(0.f));
 
-    void renderToTarget(Camera *cam, RenderTarget *rt);
+    // ── Sky ───────────────────────────────────────────────────────────────────
+    // Set a sky shader (procedural/gradient). Drawn after opaque, no depth write.
+    // If nullptr, sky is skipped.
+    Shader *skyShader = nullptr;
 
+    // ── Directional shadow map ────────────────────────────────────────────────
+    // Enable by setting shadow.enabled = true and shadow.depthShader.
+    // Any material using lit_shadow.vert/frag will receive u_lightSpace +
+    // u_shadowMap (unit 1) + u_lightDir/Color/Bias automatically.
+    struct ShadowConfig
+    {
+        bool      enabled     = false;
+        Shader   *depthShader = nullptr;
+        glm::vec3 lightDir    = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
+        glm::vec3 lightColor  = {1.f, 1.f, 1.f};
+        float     orthoSize   = 50.f;   // half-width of orthographic frustum
+        float     lightDist   = 100.f;  // camera distance along -lightDir
+        float     bias        = 0.005f;
+        int       mapSize     = 2048;
+    } shadow;
+
+    // ── Debug ─────────────────────────────────────────────────────────────────
     void debug(RenderBatch *batch);
 
-    // Debug stats accumulated during the last render() call
+    // ── Stats ─────────────────────────────────────────────────────────────────
     const RenderStats &stats() const { return stats_; }
 
-    // --- Picking ---
-    // Cast a world-space ray against all MeshNode / AnimatedMeshNode in the tree.
-    // Returns the closest hit across all nodes (result.node == nullptr = no hit).
-    // Use Ray::from_screen() to build the ray from a mouse position.
+    // ── Picking ───────────────────────────────────────────────────────────────
     ScenePickResult pick(const Ray &ray) const;
 
     void release();
 
+    // ── Collected lights (valid after gather, before render) ─────────────────
+    const std::vector<const Light *> &lights() const { return frameCtx_.lights; }
+
 private:
+    // Render one camera — called by render()
     void renderCamera(Camera *cam);
-    void preRenderNodes(Camera *cam);
+
+    // Gather visible items into queues
+    void gather(const Frustum &camFrustum, const Frustum &shadowFrustum,
+                RenderQueue &queue);
+    void gatherNode(Node *node, const Frustum &camFrustum,
+                    const Frustum &shadowFrustum, RenderQueue &queue);
+
+    // Draw passes
+    void drawItems(const std::vector<RenderItem> &items, const FrameContext &ctx,
+                   RenderSortMode sort = RenderSortMode::None);
+    void drawSky(const FrameContext &ctx);
+    void drawShadowPass();
+
+    // Node traversal helpers
     void preRenderNode(Node *node, Camera *cam);
-    void debugNode(Node *node, RenderBatch *batch);
-    // Frustum-cull traverse: only adds nodes whose world AABB is inside frustum
-    void gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue);
-    // Animator update traverse
-    void updateNode(Node *node, float dt);
+    void updateNode   (Node *node, float dt);
+    void debugNode    (Node *node, RenderBatch *batch);
 
-    std::vector<Camera *>    cameras_;    // owned
-    Camera                  *currentCamera_ = nullptr;
-    std::vector<Node *>      roots_;
-    std::vector<Technique *> techniques_; // owned
-    RenderQueue              renderQueue_;
-    FrameContext             frameCtx_;
-    RenderStats              stats_;
-    glm::vec4                clipPlane_ = {0.f, 0.f, 0.f, 0.f};
-   
+    std::vector<Camera *> cameras_;
+    Camera               *currentCamera_ = nullptr;
+    std::vector<Node *>   roots_;
+    std::vector<Node *>   pendingRemoval_;
 
-    std::vector<Node *>      pendingRemoval_; // flushed at the start of update()
+    RenderQueue   queue_;
+    FrameContext  frameCtx_;
+    RenderStats   stats_;
+
+    // Shadow depth map (created lazily in drawShadowPass)
+    GLuint    shadowFBO_            = 0;
+    GLuint    shadowTex_            = 0;
+    int       shadowMapCurrent_     = 0;  // current FBO size (0 = uninitialised)
+    glm::mat4 lightSpaceMatrix_     = glm::mat4(1.f);
 };

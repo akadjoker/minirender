@@ -204,18 +204,10 @@ void WaterNode3D::preRender(Scene *scene, const Camera *mainCam)
 
 
 
-    scene->setClipPlane({0, 1, 0, 0});
-
-    scene->renderToTarget(&reflCam, reflRT_);
+    scene->renderToTarget(&reflCam, reflRT_, {0.f, 1.f, 0.f, 0.f});
 
     Camera *mutableCam = const_cast<Camera *>(mainCam);
-    //scene->setClipPlane({0, -1, 0, 0});
-    scene->setClipPlane({0, -1, 0, 0});
-
-    scene->renderToTarget(mutableCam, refrRT_);
-
-
-    scene->setClipPlane({0, 0, 0, 0});
+    scene->renderToTarget(mutableCam, refrRT_, {0.f, -1.f, 0.f, 0.f});
 
     rendering_ = false;
 }

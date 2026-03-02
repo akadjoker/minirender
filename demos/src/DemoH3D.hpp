@@ -1,6 +1,5 @@
 #pragma once
 #include "DemoBase.hpp"
-#include "ShadowMap.hpp"
 #include "RenderState.hpp"
 
 // ============================================================
@@ -20,24 +19,15 @@ public:
         static_cast<FreeCameraController *>(camera->getController())->moveSpeed = 15.f;
 
         // ── Shaders ──────────────────────────────────────────
-        depthShader = shaders().load("depth",
-                                     "assets/shaders/depth.vert",
-                                     "assets/shaders/depth.frag");
         litShader = shaders().load("lit_shadow",
                                    "assets/shaders/lit_shadow.vert",
                                    "assets/shaders/lit_shadow.frag");
-        if (!depthShader || !litShader)
+        if (!litShader)
         {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "[DemoH3D] Failed to load shaders");
             return false;
         }
-
-        RenderState::instance().useProgram(litShader->getId());
-        litShader->setVec3 ("u_lightDir",   glm::normalize(glm::vec3(1.f, 2.f, 1.f)));
-        litShader->setVec3 ("u_lightColor", {1.f, 1.f, 1.f});
-        litShader->setFloat("u_shadowBias", 0.005f);
-        litShader->setInt  ("u_shadowMap",  1);
 
         materials().setDefaults(litShader, textures().getWhite());
 
@@ -58,15 +48,7 @@ public:
         auto *node = scene.createMeshNode("sponza", sponza);
         node->setScale({0.05f, 0.05f, 0.05f}); // sponza costuma ser enorme
 
-        // ── Technique ────────────────────────────────────────
-        tech = new ShadowTechnique();
-        tech->litShader             = litShader;
-        tech->shadowPass()->shader  = depthShader;
-        tech->shadowPass()->lightDir  = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
-        tech->shadowPass()->orthoSize = 60.f;
-        tech->shadowPass()->lightDist = 120.f;
 
-        scene.addTechnique(tech);
         return true;
     }
 
@@ -75,13 +57,9 @@ public:
 
     void release() override
     {
-        delete tech;
-        tech = nullptr;
         DemoBase::release();
     }
 
 private:
-    ShadowTechnique *tech        = nullptr;
-    Shader          *depthShader = nullptr;
     Shader          *litShader   = nullptr;
 };

@@ -151,10 +151,7 @@ public:
             scene.add(pyr);
         }
 
-        // ── Simple forward technique ─────────────────────────
-        auto *fwd = new ForwardTechnique();
-        fwd->opaque()->shader = litShader;
-        scene.addTechnique(fwd);
+
 
         return true;
     }

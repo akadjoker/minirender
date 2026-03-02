@@ -1,4 +1,6 @@
-#version 330 core
+#version 300 es
+precision highp float;
+
 layout(location = 0) in vec3 a_position;
 layout(location = 1) in vec3 a_normal;
 layout(location = 3) in vec2 a_uv;
@@ -6,11 +8,12 @@ layout(location = 3) in vec2 a_uv;
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec2 v_uv;
-out vec4 v_fragViewSpace;
+out vec4 v_fragViewSpace;   // view-space position (w=1), .z used for cascade selection
 
-uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
+
+uniform mat4 u_model;
 
 void main()
 {

@@ -549,7 +549,8 @@ void Scene::drawShadowPass()
     if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
     if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
-    lightSpaceMatrices_[0] = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ) * lightView;
+    // -maxZ/-minZ: convert right-handed light-space Z (negative in front) to positive near/far
+    lightSpaceMatrices_[0] = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ) * lightView;
     cascadeFarPlanes_[0]   = cam->farPlane;
 
     auto &rs = RenderState::instance();
@@ -684,7 +685,7 @@ void Scene::drawCsmShadowPass()
         if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
         if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
-        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ) * lightView;
+        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ) * lightView;
 
         // Render depth pass for this cascade
         shadowMaps_[c].bind();

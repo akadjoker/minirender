@@ -83,6 +83,7 @@ struct FrameContext
 
     // CSM — filled by Scene::drawShadowPass (numCascades=0 → disabled)
     static constexpr int MAX_CSM = 4;
+    int       shadowMapSize                = 0;
     int       numCascades                  = 0;
     glm::mat4 lightSpaceMatrices[MAX_CSM]  = {};
     GLuint    shadowTextures[MAX_CSM]       = {};

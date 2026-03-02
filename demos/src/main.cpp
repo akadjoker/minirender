@@ -164,7 +164,7 @@ int main()
     font.LoadDefaultFont();
 
     DemoManager manager;
-     manager.add(new DemoSimples());
+     //manager.add(new DemoSimples());
      manager.add(new DemoCsm());
      //manager.add(new DemoH3D());
     //manager.add(new DemoSinbad());

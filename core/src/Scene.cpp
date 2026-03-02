@@ -175,7 +175,8 @@ void Scene::renderCamera(Camera *cam)
             drawShadowPass();
         else
             drawCsmShadowPass();
-        frameCtx_.numCascades = N;
+        frameCtx_.numCascades   = N;
+        frameCtx_.shadowMapSize = shadow.mapSize;
         frameCtx_.lightDir    = glm::normalize(shadow.lightDir);
         frameCtx_.lightColor  = shadow.lightColor;
         frameCtx_.shadowBias  = shadow.bias;
@@ -454,14 +455,15 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
             }
             else if (ctx.numCascades > 1)
             {
-                // csm_lit shader: array u_lightSpace[N] + u_shadowMap[N]
+                // csm_lit shader
                 const int N = ctx.numCascades;
-                sh->setInt       ("u_numCascades",   N);
                 sh->setMat4Array ("u_lightSpace",    N, ctx.lightSpaceMatrices);
                 sh->setFloatArray("u_cascadeSplits", N, ctx.cascadeFarPlanes);
-                sh->setVec3      ("u_lightDir",      ctx.lightDir);
-                sh->setVec3      ("u_lightColor",    ctx.lightColor);
-                sh->setFloat     ("u_shadowBias",    ctx.shadowBias);
+                sh->setVec4      ("u_lightDir",   glm::vec4(ctx.lightDir,   0.f));
+                sh->setVec4      ("u_lightColor", glm::vec4(ctx.lightColor, 1.f));
+                sh->setVec4      ("u_ambient",    glm::vec4(0.15f, 0.15f, 0.15f, 1.f));
+                sh->setVec2      ("u_shadowMapSize", glm::vec2((float)ctx.shadowMapSize, (float)ctx.shadowMapSize));
+                sh->setInt       ("u_showCascades", 0);
                 for (int i = 0; i < N; i++) {
                     sh->setInt("u_shadowMap[" + std::to_string(i) + "]", 1 + i);
                     rs.bindTexture(1 + i, GL_TEXTURE_2D, ctx.shadowTextures[i]);
@@ -635,7 +637,7 @@ void Scene::drawCsmShadowPass()
         for (auto &v : corners)
             radius = std::max(radius, glm::length(v - center));
 
-        const glm::mat4 lightView = glm::lookAt(center + lightDir * 100.f, center, up);
+        const glm::mat4 lightView = glm::lookAt(center, center + lightDir, up);
 
         // Symmetric ortho from sphere radius
         float minX = -radius, maxX = radius;
@@ -659,7 +661,7 @@ void Scene::drawCsmShadowPass()
         if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
         if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
-        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ) * lightView;
+        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ) * lightView;
 
         // Render depth pass for this cascade
         shadowMaps_[c].bind();

@@ -63,10 +63,10 @@ public:
         // ── CSM Shadow ────────────────────────────────────────
         scene.shadow.enabled      = true;
         scene.shadow.depthShader  = depthShader;
-        scene.shadow.lightDir     = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
+        scene.shadow.lightDir     = glm::normalize(glm::vec3(-1.f, 3.f, -1.f));
         scene.shadow.lightColor   = {1.f, 1.f, 0.95f};
         scene.shadow.numCascades  = 4;      
-        scene.shadow.mapSize      = 1024;
+        scene.shadow.mapSize      = 2048;
         scene.shadow.bias         = 0.005f;
         scene.shadow.lambda       = 0.75f;
         scene.shadow.showCascades = true;   // vermelho=0 verde=1 azul=2 amarelo=3

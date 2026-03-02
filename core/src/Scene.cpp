@@ -642,21 +642,33 @@ void Scene::drawCsmShadowPass()
         for (auto &v : corners)
             radius = std::max(radius, glm::length(v - center));
 
-        // Camera AT the light, looking DOWN at scene center (same as simple shadow).
-        // Use radius*1.5 as the camera distance so the sphere fits in view.
-        const glm::mat4 lightView = glm::lookAt(center + lightDir * (radius * 1.5f),
-                                                center, up);
+        // ── Texel snapping ──────────────────────────────────────────────────────
+        // The shadow map trembles when world-space 'center' moves by sub-texel
+        // amounts. Fix: project center onto the light's XY plane and round to
+        // the nearest texel boundary BEFORE building lookAt.
+        //
+        // Light camera axes (match GLM lookAt internals):
+        //   forward = -lightDir   (camera looks toward scene)
+        //   right   = cross(forward, worldUp)
+        //   lup     = cross(right, forward)
+        const glm::vec3 lForward = -lightDir;
+        const glm::vec3 lRight   = glm::normalize(glm::cross(lForward, up));
+        const glm::vec3 lUp      = glm::cross(lRight, lForward);
 
-        // Symmetric ortho from sphere radius (stable regardless of camera rotation)
-        float minX = -radius, maxX = radius;
-        float minY = -radius, maxY = radius;
+        const float texSize = (2.f * radius) / sz;   // world units per texel
 
-        // ── Texel snapping: eliminates sub-pixel shimmer on camera movement ──
-        const float worldUnitsPerTexel = (2.f * radius) / sz;
-        minX = std::floor(minX / worldUnitsPerTexel) * worldUnitsPerTexel;
-        maxX = std::floor(maxX / worldUnitsPerTexel) * worldUnitsPerTexel;
-        minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
-        maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
+        // Project center onto light XY plane, snap, reconstruct world pos
+        const float cx = std::floor(glm::dot(center, lRight)   / texSize) * texSize;
+        const float cy = std::floor(glm::dot(center, lUp)      / texSize) * texSize;
+        const float cz = glm::dot(center, lightDir); // along light direction - not snapped
+        const glm::vec3 centerSnapped = lRight * cx + lUp * cy + lightDir * cz;
+
+        const glm::mat4 lightView = glm::lookAt(
+            centerSnapped + lightDir * (radius * 1.5f), centerSnapped, up);
+
+        // Symmetric ortho from sphere radius
+        const float minX = -radius, maxX = radius;
+        const float minY = -radius, maxY = radius;
 
         // Z range from corners in light space (objects in front → negative Z)
         float minZ = 1e9f, maxZ = -1e9f;

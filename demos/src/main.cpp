@@ -149,11 +149,11 @@ int main()
             rs.setDepthTest(true);
             rs.setDepthWrite(true);
             rs.setCull(true);
-            rs.setCullFace(GL_FRONT);
+   
 
             scene.drawShadowDepth(depthShader, lightSpace);
 
-            rs.setCullFace(GL_BACK);
+         
             shadowMap.unbind();
         }
 
@@ -188,7 +188,7 @@ int main()
 
         // HUD
         {
-            batch.SetMatrix(cam->viewProjection);
+            batch.SetMatrix(cam->projection * cam->view);
             batch.Grid(10, 1.0f, true);
             batch.Render();
 

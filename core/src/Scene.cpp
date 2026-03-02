@@ -393,6 +393,92 @@ void Scene::gatherNode(Node *node, const Frustum &camFrustum,
 }
 
 // ─── Draw ────────────────────────────────────────────────────────────────────
+// ── Manual pipeline: gatherScene ─────────────────────────────────────────────
+void Scene::gatherScene(Camera *cam)
+{
+    queue_.clear();
+    frameCtx_.lights.clear();
+    cam->updateMatrices();
+    frameCtx_.camera = cam;
+
+    const Frustum camFrustum    = Frustum::from_matrix(cam->viewProjection);
+    const Frustum shadowFrustum = Frustum::infinite();
+    gather(camFrustum, shadowFrustum, queue_);
+}
+
+// ── Manual pipeline: drawPass ─────────────────────────────────────────────────
+// sh is already bound and has all uniforms set by caller.
+// This call only sets u_model per item and binds material textures.
+void Scene::drawPass(Shader *sh, uint32_t passMask, RenderSortMode sort)
+{
+    auto drawList = [&](std::vector<RenderItem> items)
+    {
+        if (items.empty()) return;
+
+        if (sort == RenderSortMode::FrontToBack && frameCtx_.camera)
+        {
+            const glm::vec3 cp = frameCtx_.camera->position;
+            for (auto &i : items)
+                i.depth = glm::distance(glm::vec3(i.model[3]), cp);
+            std::sort(items.begin(), items.end(),
+                [](const RenderItem &a, const RenderItem &b){ return a.depth < b.depth; });
+        }
+        else if (sort == RenderSortMode::BackToFront && frameCtx_.camera)
+        {
+            const glm::vec3 cp = frameCtx_.camera->position;
+            for (auto &i : items)
+                i.depth = glm::distance(glm::vec3(i.model[3]), cp);
+            std::sort(items.begin(), items.end(),
+                [](const RenderItem &a, const RenderItem &b){ return a.depth > b.depth; });
+        }
+
+        const Material *lastMat = nullptr;
+        for (const auto &item : items)
+        {
+            if (!item.material || !item.drawable) continue;
+
+            if (item.material != lastMat)
+            {
+                item.material->bindTexturesTo(sh);
+                item.material->applyUniformsTo(sh);
+                lastMat = item.material;
+            }
+
+            item.drawable->applyBoneMatrices(sh);
+            sh->setMat4("u_model", item.model);
+
+            if (item.indexCount > 0)
+                item.drawable->drawRange(item.indexStart, item.indexCount);
+            else
+                item.drawable->draw();
+        }
+    };
+
+    if (passMask & RenderPassMask::Opaque)      drawList(queue_.opaque);
+    if (passMask & RenderPassMask::Transparent) drawList(queue_.transparent);
+}
+
+// ── Manual pipeline: drawShadowDepth ─────────────────────────────────────────
+// Renders the shadow-caster queue with depthSh, setting u_lightSpace.
+void Scene::drawShadowDepth(Shader *depthSh, const glm::mat4 &lightSpace)
+{
+    if (queue_.shadow.empty() || !depthSh) return;
+
+    auto &rs = RenderState::instance();
+    rs.useProgram(depthSh->getId());
+    depthSh->setMat4("u_lightSpace", lightSpace);
+
+    for (const auto &item : queue_.shadow)
+    {
+        if (!item.drawable) continue;
+        depthSh->setMat4("u_model", item.model);
+        if (item.indexCount > 0)
+            item.drawable->drawRange(item.indexStart, item.indexCount);
+        else
+            item.drawable->draw();
+    }
+}
+
 void Scene::drawItems(const std::vector<RenderItem> &items,
                       const FrameContext &ctx, RenderSortMode sort)
 {

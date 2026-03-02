@@ -92,6 +92,7 @@ public:
         float     lightDist   = 100.f; // distance of light from world origin
         // CSM only
         float     lambda      = 0.75f; // 0=uniform, 1=logarithmic split
+        bool      showCascades = false; // debug: colour each cascade
     } shadow;
 
     // ── Debug ─────────────────────────────────────────────────────────────────

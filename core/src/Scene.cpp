@@ -176,7 +176,8 @@ void Scene::renderCamera(Camera *cam)
         else
             drawCsmShadowPass();
         frameCtx_.numCascades   = N;
-        frameCtx_.shadowMapSize = shadow.mapSize;
+        frameCtx_.shadowMapSize  = shadow.mapSize;
+        frameCtx_.showCascades  = shadow.showCascades ? 1 : 0;
         frameCtx_.lightDir    = glm::normalize(shadow.lightDir);
         frameCtx_.lightColor  = shadow.lightColor;
         frameCtx_.shadowBias  = shadow.bias;
@@ -463,7 +464,7 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
                 sh->setVec4      ("u_lightColor", glm::vec4(ctx.lightColor, 1.f));
                 sh->setVec4      ("u_ambient",    glm::vec4(0.15f, 0.15f, 0.15f, 1.f));
                 sh->setVec2      ("u_shadowMapSize", glm::vec2((float)ctx.shadowMapSize, (float)ctx.shadowMapSize));
-                sh->setInt       ("u_showCascades", 0);
+                sh->setInt       ("u_showCascades", ctx.showCascades);
                 for (int i = 0; i < N; i++) {
                     sh->setInt("u_shadowMap[" + std::to_string(i) + "]", 1 + i);
                     rs.bindTexture(1 + i, GL_TEXTURE_2D, ctx.shadowTextures[i]);

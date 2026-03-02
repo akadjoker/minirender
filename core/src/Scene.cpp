@@ -303,7 +303,9 @@ void Scene::gatherNode(Node *node, const Frustum &camFrustum,
             const glm::mat4   world     = mn->worldMatrix();
             const BoundingBox worldAABB = mn->mesh->aabb.transformed(world);
 
-            if (worldAABB.is_valid() && !camFrustum.contains(worldAABB))
+            const bool nodeInCam    = !worldAABB.is_valid() || camFrustum.contains(worldAABB);
+            const bool nodeInShadow = !worldAABB.is_valid() || shadowFrustum.contains(worldAABB);
+            if (!nodeInCam && !nodeInShadow)
             {
                 for (auto *c : node->getChildren())
                     gatherNode(c, camFrustum, shadowFrustum, queue);
@@ -312,8 +314,10 @@ void Scene::gatherNode(Node *node, const Frustum &camFrustum,
 
             for (const auto &surf : mn->mesh->surfaces)
             {
-                if (surf.aabb.is_valid() && !camFrustum.contains(surf.aabb.transformed(world)))
-                    continue;
+                const BoundingBox surfWorld = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;
+                const bool surfInCam    = !surf.aabb.is_valid() || camFrustum.contains(surfWorld);
+                const bool surfInShadow = !surf.aabb.is_valid() || shadowFrustum.contains(surfWorld);
+                if (!surfInCam && !surfInShadow) continue;
 
                 Material *mat = mn->getMaterial();
                 if (!mat)
@@ -333,12 +337,12 @@ void Scene::gatherNode(Node *node, const Frustum &camFrustum,
                 item.worldAABB  = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;
 
                 item.passMask   = mn->passMask;
-                queue.add(item);
+                if (surfInCam) queue.add(item);
 
-                // Shadow casters (opaque only)
-                if (!(mn->passMask & RenderPassMask::Transparent)) queue.shadow.push_back(item);
+                // Shadow casters (opaque only, visible in shadow frustum)
+                if (surfInShadow && !(mn->passMask & RenderPassMask::Transparent)) queue.shadow.push_back(item);
 
-                if (frameCtx_.stats) frameCtx_.stats->objects++;
+                if (surfInCam && frameCtx_.stats) frameCtx_.stats->objects++;
             }
         }
     }

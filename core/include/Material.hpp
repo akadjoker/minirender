@@ -164,7 +164,7 @@ public:
     }
     void applyStates() const;
     void bindTextures() const;              // uses material's own shader
-    void bindTexturesTo(Shader *sh) const;  // uses given shader (for pass override)
+    int  bindTexturesTo(Shader *sh) const;  // uses given shader — returns # of binds
     void applyUniforms() const;             // uses material's own shader
     void applyUniformsTo(Shader *sh) const; // uses given shader (for pass override)
     void bind() const;

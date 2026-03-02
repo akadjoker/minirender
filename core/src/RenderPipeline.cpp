@@ -83,7 +83,8 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
     else
     {
         // Defer to each material's shader — batch by shader to minimise program switches
-        Shader *lastShader = nullptr;
+        Shader         *lastShader   = nullptr;
+        const Material *lastMaterial = nullptr;
         for (const auto &item : *items)
         {
             if (!item.material)
@@ -99,11 +100,48 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
                 sh->setMat4("u_viewProj", viewProj);
                 sh->setVec4("u_cameraPos", camPos);
                 sh->setVec4("u_clipPlane", ctx.clipPlane);
-                lastShader = sh;
+                lastShader   = sh;
+                lastMaterial = nullptr; // force re-bind on shader change
+                if (ctx.stats) ctx.stats->shaderChanges++;
             }
-            drawItem(ctx, item, sh);
+            if (item.material != lastMaterial)
+            {
+                item.material->applyStates();
+                int txCount = item.material->bindTexturesTo(sh);
+                item.material->applyUniformsTo(sh);
+                lastMaterial = item.material;
+                if (ctx.stats)
+                {
+                    ctx.stats->materialChanges++;
+                    ctx.stats->textureBinds += static_cast<uint32_t>(txCount);
+                }
+            }
+            drawItemNoMaterial(ctx, item, sh);
         }
     }
+}
+
+// drawItemNoMaterial: material state already applied — only bones + model matrix + draw
+void RenderPass::drawItemNoMaterial(const FrameContext &ctx, const RenderItem &item, Shader *sh) const
+{
+    if (!item.drawable || !sh)
+        return;
+    item.drawable->applyBoneMatrices(sh);
+    sh->setMat4("u_model", item.model);
+
+    const uint32_t idxCount = item.indexCount > 0
+                                  ? item.indexCount
+                                  : static_cast<uint32_t>(item.drawable->indexCount());
+    if (ctx.stats)
+    {
+        ctx.stats->drawCalls++;
+        ctx.stats->triangles += idxCount / 3;
+        ctx.stats->vertices += static_cast<uint32_t>(item.drawable->vertexCount());
+    }
+    if (item.indexCount > 0)
+        item.drawable->drawRange(item.indexStart, item.indexCount);
+    else
+        item.drawable->draw();
 }
 
 void RenderPass::drawItem(const FrameContext &ctx, const RenderItem &item, Shader *sh) const

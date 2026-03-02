@@ -950,7 +950,7 @@ TerrainRaycastResult TerrainLodNode::raycast(const Ray &ray, float maxDist) cons
 // ── Debug: draw patch AABBs coloured by LOD ─────────────────────────────────
 void TerrainLodNode::debug(RenderBatch *batch) const
 {
-    if (!batch || m_patches.empty()) return;
+    if (!batch || m_patches.empty() || !debugDraw) return;
 
     // Overall terrain AABB — white
     batch->SetColor(255, 255, 255, 180);

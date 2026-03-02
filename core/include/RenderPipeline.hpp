@@ -52,12 +52,16 @@ private:
 // ─── RenderStats ─────────────────────────────────────────────────────────────────────
 struct RenderStats
 {
-    uint32_t drawCalls = 0;
-    uint32_t triangles = 0;
-    uint32_t vertices  = 0;
-    uint32_t objects   = 0;   // render items submitted (post-cull)
+    uint32_t drawCalls      = 0;
+    uint32_t triangles      = 0;
+    uint32_t vertices       = 0;
+    uint32_t objects        = 0;   // render items submitted (post-cull)
+    uint32_t shaderChanges  = 0;   // useProgram calls
+    uint32_t materialChanges= 0;   // bindTextures/applyStates calls
+    uint32_t textureBinds   = 0;   // individual glBindTexture calls
 
-    void reset() { drawCalls = triangles = vertices = objects = 0; }
+    void reset() { drawCalls = triangles = vertices = objects =
+                   shaderChanges = materialChanges = textureBinds = 0; }
 };
 
 // ─── FrameContext ───────────────────────────────────────────────────────────────────
@@ -103,7 +107,8 @@ public:
     virtual void execute(const FrameContext &ctx, RenderQueue &queue) const;
 
 protected:
-    virtual void drawItem(const FrameContext &ctx, const RenderItem &item, Shader *sh) const;
+    virtual void drawItem          (const FrameContext &ctx, const RenderItem &item, Shader *sh) const;
+    virtual void drawItemNoMaterial(const FrameContext &ctx, const RenderItem &item, Shader *sh) const;
 };
 
 class OpaquePass : public RenderPass { public: OpaquePass(); };

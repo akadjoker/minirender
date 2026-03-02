@@ -96,7 +96,7 @@ void Material::applyUniforms() const
     }
 }
 
-void Material::bindTexturesTo(Shader *sh) const
+int Material::bindTexturesTo(Shader *sh) const
 {
     auto &rs = RenderState::instance();
     int unit = 0;
@@ -109,6 +109,7 @@ void Material::bindTexturesTo(Shader *sh) const
             unit++;
         }
     }
+    return unit; // number of texture units actually bound
 }
 
 void Material::applyUniformsTo(Shader *sh) const

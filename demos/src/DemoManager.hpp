@@ -81,6 +81,9 @@ public:
     int  count()   const { return (int)demos_.size(); }
     int  current() const { return current_; }
 
+    void switchNext() { switchTo(current_ + 1); }
+    void switchPrev() { switchTo(current_ - 1); }
+
 private:
     bool valid() const { return !demos_.empty() && current_ < (int)demos_.size(); }
 

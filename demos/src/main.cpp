@@ -25,6 +25,8 @@
 #include "DemoCannonball.hpp"
 #include "DemoWater.hpp"
 #include "DemoTerrainLod.hpp"
+#include "DemoPerformance.hpp"
+#include "Input.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
 {
@@ -173,7 +175,8 @@ int main()
     //manager.add(new DemoCascade());
     //manager.add(new DemoCannonball());
     ///manager.add(new DemoWater());
-    manager.add(new DemoTerrainLod());
+    //manager.add(new DemoTerrainLod());
+    manager.add(new DemoPerformance());
 
     
     if (!manager.init())
@@ -190,20 +193,20 @@ int main()
     
     while (device.Run())
     {
-        
         float dt = device.GetFrameTime();
-        
-        Scene& scene = manager.getScene();
-        const RenderStats &st = scene.stats();
-        const Camera *cam = scene.currentCamera();
+
+        // Switch demo with Tab key
+        static bool tabWasDown = false;
+        bool tabDown = Input::IsKeyDown(KEY_TAB);
+        if (tabDown && !tabWasDown) manager.switchNext();
+        tabWasDown = tabDown;
+
         state.clear(true, true);
         state.setViewport(0, 0, device.GetWidth(), device.GetHeight());
 
         state.setDepthTest(true);
         state.setBlend(false);
         state.setCull(true);
-
-        
 
         if (device.IsResize())
         {
@@ -214,26 +217,34 @@ int main()
         manager.update(dt);
         manager.render();
 
+        // Re-acquire scene/cam after potential demo switch
+        Scene        &scene    = manager.getScene();
+        const RenderStats &st  = scene.stats();
+        const Camera      *cam = scene.currentCamera();
+
         glm::mat4 viewProj = cam->getProjection() * cam->getView();
         batch.SetMatrix(viewProj);
-        scene.debug(&batch);
+  //      scene.debug(&batch);
         batch.Grid(10, 1.0f, true);
         batch.Render();
-
-        //state.resetCache();
 
         state.setDepthTest(false);
         state.setBlend(true);
         state.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         state.setCull(false);
 
-        glm::mat4 ortho = glm::ortho(0.0f, (float)device.GetWidth(), (float)device.GetHeight(), 0.0f, -1.0f, 1.0f);
+        glm::mat4 ortho = glm::ortho(0.0f, (float)device.GetWidth(),
+                                     (float)device.GetHeight(), 0.0f, -1.0f, 1.0f);
         state.setViewport(0, 0, device.GetWidth(), device.GetHeight());
         batch.SetMatrix(ortho);
 
         font.SetColor(255, 255, 255);
-        font.Print(10, 30, "%d FPS  |  DC:%u  Tris:%u  Verts:%u  Objs:%u",
-        device.GetFPS(), st.drawCalls, st.triangles, st.vertices, st.objects);
+        font.Print(10, 30, "[%s]  %d FPS  |  DC:%u  Tris:%u  Verts:%u",
+            manager.currentName(),
+            device.GetFPS(), st.drawCalls, st.triangles, st.vertices);
+        font.Print(10, 50, "SH:%u  MAT:%u  TX:%u  OBJ:%u",
+            st.shaderChanges, st.materialChanges, st.textureBinds, st.objects);
+        font.Print(10, 70, "[Tab] switch demo");
 
         batch.Render();
 

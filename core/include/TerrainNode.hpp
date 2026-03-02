@@ -143,7 +143,8 @@ public:
     void        setMaterial(Material *m)   { m_material = m; }
 
     // Draw patch AABBs via RenderBatch (colour-coded by LOD level).
-    // Call from Scene::debug or manually after render().
+    // Only draws when debugDraw == true (toggle from your demo/editor).
+    bool debugDraw = false;
     void debug(RenderBatch *batch) const;
 
     // ── Scene integration ────────────────────────────────────────────────────

@@ -520,7 +520,7 @@ void Scene::drawShadowPass()
                         ? glm::vec3(0.f, 0.f, -1.f)
                         : glm::vec3(0.f, 1.f,  0.f);
 
-    const glm::mat4 lightView = glm::lookAt(-dir * shadow.lightDist,
+    const glm::mat4 lightView = glm::lookAt( dir * shadow.lightDist,
                                             glm::vec3(0.f), up);
     const glm::mat4 lightProj = glm::ortho(
         -shadow.orthoSize,  shadow.orthoSize,
@@ -635,7 +635,7 @@ void Scene::drawCsmShadowPass()
         for (auto &v : corners)
             radius = std::max(radius, glm::length(v - center));
 
-        const glm::mat4 lightView = glm::lookAt(center - lightDir * 100.f, center, up);
+        const glm::mat4 lightView = glm::lookAt(center + lightDir * 100.f, center, up);
 
         // Symmetric ortho from sphere radius
         float minX = -radius, maxX = radius;

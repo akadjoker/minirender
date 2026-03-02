@@ -43,18 +43,23 @@ const vec2 poissonDisk[16] = vec2[](
     vec2( 0.19984126,  0.78641367), vec2( 0.14383161, -0.14100790)
 );
 
-// Front-face culling on the depth pass eliminates self-shadowing.
-// We only need a tiny slope bias for grazing-angle light on back faces.
+// Bias scales with cascade texel size: far cascades cover more area per texel.
+float cascadeBias(int c)
+{
+    float NdotL      = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
+    float texelWorld = u_cascadeSplits[c] / u_shadowMapSize.x;
+    float constBias  = texelWorld * 0.5;
+    float slopeBias  = texelWorld * 1.5 * (1.0 - NdotL);
+    return constBias + slopeBias;
+}
+
 float shadowDiskPCF(int c, vec4 fragLightSpace)
 {
     vec3 proj = fragLightSpace.xyz / fragLightSpace.w;
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0) return 0.0;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
-
-    float NdotL = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
-    float bias  = 0.0003 * (1.0 - NdotL);   // slope-only, no constant acne
-
+    float bias   = cascadeBias(c);
     vec2  texel  = 1.0 / u_shadowMapSize;
     float shadow = 0.0;
     for (int i = 0; i < 16; ++i)
@@ -72,10 +77,7 @@ float shadowGridPCF(int c, vec4 fragLightSpace)
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0) return 0.0;
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
-
-    float NdotL = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
-    float bias  = 0.0005 * (1.0 - NdotL);
-
+    float bias   = cascadeBias(c);
     vec2  texel  = 1.0 / u_shadowMapSize;
     float shadow = 0.0;
     for (int x = -2; x <= 2; ++x)

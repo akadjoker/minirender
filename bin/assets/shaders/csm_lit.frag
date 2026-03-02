@@ -43,13 +43,14 @@ const vec2 poissonDisk[16] = vec2[](
     vec2( 0.19984126,  0.78641367), vec2( 0.14383161, -0.14100790)
 );
 
-// Bias scales with cascade texel size: far cascades cover more area per texel.
+// Bias is in NDC depth space [0,1].
+// Far cascades have a larger Z range -> less depth precision -> scale up gently.
 float cascadeBias(int c)
 {
-    float NdotL      = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
-    float texelWorld = u_cascadeSplits[c] / u_shadowMapSize.x;
-    float constBias  = texelWorld * 0.5;
-    float slopeBias  = texelWorld * 1.5 * (1.0 - NdotL);
+    float NdotL     = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
+    float cascScale = 1.0 + float(c) * 0.5;          // 1.0 / 1.5 / 2.0 / 2.5
+    float constBias = 0.00015 * cascScale;             // always-on base
+    float slopeBias = 0.00030 * cascScale * (1.0 - NdotL);  // extra on grazing angles
     return constBias + slopeBias;
 }
 

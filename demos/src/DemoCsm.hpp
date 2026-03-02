@@ -45,15 +45,19 @@ public:
         auto *ground = scene.createMeshNode("ground", plane);
         ground->setMaterial("csm_ground");
 
-        // Cubos a distâncias crescentes para cobrir todas as cascatas
-        const float zpos[] = { 5.f, 15.f, 30.f, 50.f, 80.f,
-                                120.f, 170.f, 230.f,
-                                300.f, 380.f, 460.f, 500.f };
-        for (int i = 0; i < 12; i++)
+        // Grelha quadrada de cubos para cobrir todas as cascatas
+        constexpr int   GRID    = 5;           // 5x5 = 25 cubos
+        constexpr float SPACING = 80.f;        // distância entre cubos
+        constexpr float OFFSET  = (GRID - 1) * SPACING * 0.5f;   // centrado em X/Z
+        int ci = 0;
+        for (int row = 0; row < GRID; row++)
+        for (int col = 0; col < GRID; col++)
         {
-            auto *node = scene.createMeshNode("cube_" + std::to_string(i), cube);
+            const float x = col * SPACING - OFFSET;
+            const float z = -(row * SPACING + 30.f);   // começa a 30 unidades à frente
+            auto *node = scene.createMeshNode("cube_" + std::to_string(ci++), cube);
             node->setMaterial("csm_cube");
-            node->setPosition({(float)(i % 3 - 1) * 10.f, 1.5f, -zpos[i]});
+            node->setPosition({x, 1.5f, z});
         }
 
         // ── CSM Shadow ────────────────────────────────────────
@@ -61,7 +65,7 @@ public:
         scene.shadow.depthShader  = depthShader;
         scene.shadow.lightDir     = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
         scene.shadow.lightColor   = {1.f, 1.f, 0.95f};
-        scene.shadow.numCascades  = 4;      // coincide com #define NUM_CASCADES 4 no shader
+        scene.shadow.numCascades  = 4;      
         scene.shadow.mapSize      = 1024;
         scene.shadow.bias         = 0.005f;
         scene.shadow.lambda       = 0.75f;

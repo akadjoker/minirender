@@ -3,9 +3,7 @@
 #include <glad/glad.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
 #include <string>
-#include <vector>
 
 #include "Core.hpp"
 #include "Device.hpp"
@@ -14,16 +12,7 @@
 #include "RenderPipeline.hpp"
 #include "RenderState.hpp"
 #include "Scene.hpp"
-#include "DemoManager.hpp"
-#include "DemoSimples.hpp"
-#include "DemoCsm.hpp"
-#include "DemoH3D.hpp"
-#include "DemoSinbad.hpp"
-#include "DemoEffects.hpp"
-#include "DemoCannonball.hpp"
-#include "DemoWater.hpp"
-#include "DemoTerrainLod.hpp"
-#include "DemoPerformance.hpp"
+#include "ShadowMap.hpp"
 #include "Input.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
@@ -35,219 +24,202 @@ extern "C" const char *__lsan_default_suppressions()
 const int SCREEN_W = 1024;
 const int SCREEN_H = 768;
 
-// int main(int argc, char* argv[])
-// {
-//     SDL_Init(SDL_INIT_VIDEO);
-//     IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG);
-
-//     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-//     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-//     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-//     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-//     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-
-//     SDL_Window* window = SDL_CreateWindow(
-//         "Mini Pipeline",
-//         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-//         SCREEN_W, SCREEN_H,
-//         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-
-//     SDL_GLContext ctx = SDL_GL_CreateContext(window);
-//     SDL_GL_SetSwapInterval(1);
-
-//     if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress)) {
-//         SDL_Log("[GLAD] Failed");
-//         return -1;
-//     }
-
-//     SDL_Log("[GL]  %s", glGetString(GL_VERSION));
-//     SDL_Log("[GPU] %s", glGetString(GL_RENDERER));
-
-//     auto& shaders = ShaderManager::instance();
-//     auto &materials = MaterialManager::instance();
-//     auto& meshes = MeshManager::instance();
-
-//     DemoManager manager;
-//     //manager.add(new DemoShadow());
-//     //manager.add(new DemoDeferred());
-//     //manager.add(new DemoSimples());
-//     //manager.add(new DemoH3D());
-//     manager.add(new DemoSinbad());
-
-//     if (!manager.init())
-//     {
-//         SDL_Log("[ERR] Demo init falhou");
-
-//         return -1;
-//     }
-
-//     Uint64 now  = SDL_GetPerformanceCounter();
-//     Uint64 last = SDL_GetPerformanceCounter();
-//     float  fpsTimer   = 0.0f;
-//     int    fpsCounter = 0;
-//     int    fps        = 0;
-//     Input& input = Input::instance();
-
-//       manager.onResize(SCREEN_W, SCREEN_H);
-
-//     while (!input.shouldQuit())
-//     {
-//         last = now;
-//         now  = SDL_GetPerformanceCounter();
-//         float dt = (float)(now - last) / (float)SDL_GetPerformanceFrequency();
-
-//         input.process();
-
-//         int w, h;
-//         SDL_GetWindowSize(window, &w, &h);
-
-//       if (!manager.processEvents(window))
-//             break;
-
-//         manager.onResize(w, h);
-//         manager.update(dt);
-//         manager.render();
-
-//         // ── FPS + stats no título ─────────────────────────────────
-//         fpsCounter++;
-//         fpsTimer += dt;
-//         if (fpsTimer >= 1.0f)
-//         {
-//             fps = fpsCounter;
-//             fpsCounter = 0;
-//             fpsTimer  -= 1.0f;
-
-//             // const RenderStats &st = scene.stats();
-//             // char title[128];
-//             // snprintf(title, sizeof(title),
-//             //     "Mini Pipeline  |  %d FPS  |  DC:%u  Tris:%u  Verts:%u  Objs:%u",
-//             //     fps, st.drawCalls, st.triangles, st.vertices, st.objects);
-//             // SDL_SetWindowTitle(window, title);
-//         }
-
-//         SDL_GL_SwapWindow(window);
-//     }
-
-//     manager.releaseAll();
-//     materials.unloadAll();
-//     meshes.unloadAll();
-//     shaders.unloadAll();
-//     TextureManager::instance().unloadAll();
-//     RenderState::instance().shutdown();
-
-//     SDL_GL_DeleteContext(ctx);
-//     SDL_DestroyWindow(window);
-//     IMG_Quit();
-//     SDL_Quit();
-//     return 0;
-// }
-
 int main()
 {
-
     Device &device = Device::Instance();
-
-    if (!device.Create(SCREEN_W, SCREEN_H, "Game", true, 1))
-    {
+    if (!device.Create(SCREEN_W, SCREEN_H, "minirender", true, 1))
         return 1;
-    }
 
-    auto &state = RenderState::instance();
+    auto &rs      = RenderState::instance();
+    auto &shMgr   = ShaderManager::instance();
+    auto &texMgr  = TextureManager::instance();
+    auto &matMgr  = MaterialManager::instance();
+    auto &meshMgr = MeshManager::instance();
 
     RenderBatch batch;
     batch.Init();
-
-    state.setClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 
     Font font;
     font.SetBatch(&batch);
     font.LoadDefaultFont();
 
-    DemoManager manager;
-     //manager.add(new DemoSimples());
-     manager.add(new DemoCsm());
-     //manager.add(new DemoH3D());
-    //manager.add(new DemoSinbad());
-    //manager.add(new DemoEffects());
-   // manager.add(new DemoTerrainLod());
-    //manager.add(new DemoCannonball());
-    //manager.add(new DemoWater());
-   // manager.add(new DemoPerformance());
+    // Shaders
+    Shader *depthShader = shMgr.load("depth",
+        "assets/shaders/depth.vert", "assets/shaders/depth.frag");
+    Shader *litShader = shMgr.load("lit_shadow",
+        "assets/shaders/lit_shadow.vert", "assets/shaders/lit_shadow.frag");
 
-    
-    if (!manager.init())
+    if (!depthShader || !litShader)
     {
-        SDL_Log("[ERR] Demo init falhou");
-        manager.releaseAll();
-        font.Release();
-        batch.Release();
+        SDL_Log("[ERR] Failed to load shaders");
         device.Close();
-        return -1;
+        return 1;
     }
-    
-    manager.onResize(SCREEN_W, SCREEN_H);
-    
+
+    // Textures
+    Texture *white   = texMgr.getWhite();
+    Texture *texWall = texMgr.load("wall", "assets/wall.jpg");
+
+    // Materials
+    Material *matGround = matMgr.create("ground");
+    matGround->setShader(litShader)->setTexture("u_albedo", texWall ? texWall : white);
+
+    Material *matCube = matMgr.create("cube");
+    matCube->setShader(litShader)->setTexture("u_albedo", white);
+
+    // Scene + camera
+    Scene scene;
+
+    Camera *cam = scene.createCamera("main");
+    cam->fov       = 60.f;
+    cam->nearPlane = 0.1f;
+    cam->farPlane  = 500.f;
+    cam->setPosition({0.f, 15.f, 30.f});
+    cam->lookAt({0.f, 0.f, 0.f});
+    cam->setAspect(SCREEN_W, SCREEN_H);
+    cam->setViewport(0, 0, SCREEN_W, SCREEN_H);
+
+    auto *freeCam = new FreeCameraController();
+    freeCam->moveSpeed        = 20.f;
+    freeCam->mouseSensitivity = 0.15f;
+    cam->setController(freeCam);
+    scene.setCurrentCamera(cam);
+
+    // Nodes
+    Mesh *plane = meshMgr.create_plane("ground", 40.f, 40.f, 1);
+    Mesh *cube  = meshMgr.create_cube("cube", 2.f);
+
+    scene.createMeshNode("ground", plane)->setMaterial("ground");
+
+    for (int i = 0; i < 5; i++)
+    {
+        auto *node = scene.createMeshNode("cube_" + std::to_string(i), cube);
+        node->setMaterial("cube");
+        node->setPosition({(float)(i - 2) * 5.f, 1.f, 0.f});
+    }
+
+    // Shadow map
+    const int   SHADOW_SIZE  = 2048;
+    const float ORTHO_SIZE   = 40.f;
+    const float LIGHT_DIST   = 100.f;
+    const float SHADOW_BIAS  = 0.005f;
+    const glm::vec3 LIGHT_DIR   = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
+    const glm::vec3 LIGHT_COLOR = {1.f, 1.f, 0.95f};
+
+    ShadowMap shadowMap;
+    if (!shadowMap.create(SHADOW_SIZE))
+    {
+        SDL_Log("[ERR] Failed to create shadow map");
+        device.Close();
+        return 1;
+    }
+
+    const glm::vec3 lightUp   = (glm::abs(glm::dot(LIGHT_DIR, {0,1,0})) > 0.99f)
+                                ? glm::vec3(0,0,1) : glm::vec3(0,1,0);
+    const glm::mat4 lightView = glm::lookAt(LIGHT_DIR * LIGHT_DIST,
+                                            glm::vec3(0.f), lightUp);
+    const glm::mat4 lightProj = glm::ortho(-ORTHO_SIZE, ORTHO_SIZE,
+                                           -ORTHO_SIZE, ORTHO_SIZE,
+                                            0.1f, LIGHT_DIST * 2.f);
+    const glm::mat4 lightSpace = lightProj * lightView;
+
+    // Main loop
     while (device.Run())
     {
-        float dt = device.GetFrameTime();
-
-        // Switch demo with Tab key
-        static bool tabWasDown = false;
-        bool tabDown = Input::IsKeyDown(KEY_TAB);
-        if (tabDown && !tabWasDown) manager.switchNext();
-        tabWasDown = tabDown;
-
-        state.clear(true, true);
-        state.setViewport(0, 0, device.GetWidth(), device.GetHeight());
-
-        state.setDepthTest(true);
-        state.setBlend(false);
-        state.setCull(true);
+        const float dt = device.GetFrameTime();
+        const int   W  = device.GetWidth();
+        const int   H  = device.GetHeight();
 
         if (device.IsResize())
         {
-            int w = device.GetWidth();
-            int h = device.GetHeight();
-            manager.onResize(w, h);
+            cam->setAspect(W, H);
+            cam->setViewport(0, 0, W, H);
         }
-        manager.update(dt);
-        manager.render();
 
-        // Re-acquire scene/cam after potential demo switch
-        Scene        &scene    = manager.getScene();
-        const RenderStats &st  = scene.stats();
-        const Camera      *cam = scene.currentCamera();
+        scene.update(dt);
 
-        glm::mat4 viewProj = cam->getProjection() * cam->getView();
-        batch.SetMatrix(viewProj);
-  //      scene.debug(&batch);
-        batch.Grid(10, 1.0f, true);
-        batch.Render();
+        // Gather
+        scene.gatherScene(cam);
 
-        state.setDepthTest(false);
-        state.setBlend(true);
-        state.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        state.setCull(false);
+        // Pass 1: shadow depth
+        {
+            shadowMap.bind();
+            rs.setViewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            rs.setDepthTest(true);
+            rs.setDepthWrite(true);
+            rs.setCull(true);
+            rs.setCullFace(GL_FRONT);
 
-        glm::mat4 ortho = glm::ortho(0.0f, (float)device.GetWidth(),
-                                     (float)device.GetHeight(), 0.0f, -1.0f, 1.0f);
-        state.setViewport(0, 0, device.GetWidth(), device.GetHeight());
-        batch.SetMatrix(ortho);
+            scene.drawShadowDepth(depthShader, lightSpace);
 
-        font.SetColor(255, 255, 255);
-        font.Print(10, 30, "[%s]  %d FPS  |  DC:%u  Tris:%u  Verts:%u",
-            manager.currentName(),
-            device.GetFPS(), st.drawCalls, st.triangles, st.vertices);
-        font.Print(10, 50, "SH:%u  MAT:%u  TX:%u  OBJ:%u",
-            st.shaderChanges, st.materialChanges, st.textureBinds, st.objects);
-        font.Print(10, 70, "[Tab] switch demo");
+            rs.setCullFace(GL_BACK);
+            shadowMap.unbind();
+        }
 
-        batch.Render();
+        // Pass 2: main lit pass
+        {
+            rs.setViewport(0, 0, W, H);
+            rs.setClearColor(0.1f, 0.12f, 0.15f, 1.f);
+            rs.clear(true, true);
+            rs.setDepthTest(true);
+            rs.setDepthWrite(true);
+            rs.setCull(true);
+            rs.setCullFace(GL_BACK);
+            rs.setBlend(false);
+
+            rs.useProgram(litShader->getId());
+            litShader->setMat4("u_view",      cam->view);
+            litShader->setMat4("u_proj",      cam->projection);
+            litShader->setVec4("u_cameraPos", glm::vec4(cam->position, 1.f));
+            litShader->setVec4("u_clipPlane", glm::vec4(0.f));
+            litShader->setMat4("u_lightSpace",  lightSpace);
+            litShader->setInt ("u_shadowMap",   1);
+            litShader->setVec3("u_lightDir",    LIGHT_DIR);
+            litShader->setVec3("u_lightColor",  LIGHT_COLOR);
+            litShader->setFloat("u_shadowBias", SHADOW_BIAS);
+            rs.bindTexture(1, GL_TEXTURE_2D, shadowMap.depthTexId());
+
+            scene.drawPass(litShader, RenderPassMask::Opaque,
+                           RenderSortMode::FrontToBack);
+            scene.drawPass(litShader, RenderPassMask::Transparent,
+                           RenderSortMode::BackToFront);
+        }
+
+        // HUD
+        {
+            batch.SetMatrix(cam->viewProjection);
+            batch.Grid(10, 1.0f, true);
+            batch.Render();
+
+            const glm::mat4 ortho = glm::ortho(0.f, (float)W, (float)H, 0.f, -1.f, 1.f);
+            batch.SetMatrix(ortho);
+            rs.setDepthTest(false);
+            rs.setBlend(true);
+            rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            rs.setCull(false);
+
+            font.SetColor(255, 255, 255);
+            font.Print(10, 10, "%d FPS  |  RMB: olhar  WASD/QE: mover",
+                       device.GetFPS());
+            font.Print(10, 30, "Pos: %.1f %.1f %.1f",
+                       cam->position.x, cam->position.y, cam->position.z);
+            const auto &st = scene.stats();
+            font.Print(10, 50, "DC:%u  Tris:%u  Verts:%u",
+                       st.drawCalls, st.triangles, st.vertices);
+            batch.Render();
+        }
 
         device.Flip();
     }
-    manager.releaseAll();
 
+    // Cleanup
+    shadowMap.destroy();
+    scene.release();
+    shMgr.unloadAll();
+    matMgr.unloadAll();
+    meshMgr.unloadAll();
+    texMgr.unloadAll();
     font.Release();
     batch.Release();
     device.Close();

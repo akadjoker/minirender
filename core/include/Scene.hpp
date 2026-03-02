@@ -84,10 +84,10 @@ public:
         Shader   *depthShader = nullptr;
         glm::vec3 lightDir    = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
         glm::vec3 lightColor  = {1.f, 1.f, 1.f};
-        float     orthoSize   = 50.f;   // half-width of orthographic frustum
-        float     lightDist   = 100.f;  // camera distance along -lightDir
         float     bias        = 0.005f;
-        int       mapSize     = 2048;
+        int       mapSize     = 1024;  // per-cascade map size
+        int       numCascades = 3;     // 1-4 (1=simple, 2-4=CSM)
+        float     lambda      = 0.75f; // 0=uniform, 1=logarithmic split
     } shadow;
 
     // ── Debug ─────────────────────────────────────────────────────────────────
@@ -134,7 +134,9 @@ private:
     FrameContext  frameCtx_;
     RenderStats   stats_;
 
-    // Shadow depth map (created/recreated lazily in drawShadowPass)
-    ShadowMap shadowMap_;
-    glm::mat4 lightSpaceMatrix_ = glm::mat4(1.f);
+    // CSM — up to 4 cascade depth maps (created lazily in drawShadowPass)
+    static constexpr int MAX_CSM = 4;
+    ShadowMap shadowMaps_[MAX_CSM];
+    glm::mat4 lightSpaceMatrices_[MAX_CSM] = {};
+    float     cascadeFarPlanes_[MAX_CSM]   = {};
 };

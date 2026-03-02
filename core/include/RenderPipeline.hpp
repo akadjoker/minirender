@@ -81,10 +81,13 @@ struct FrameContext
     glm::vec4                  clipPlane = {0.f, 0.f, 0.f, 0.f};
     bool                       secondary = false;
 
-    // Directional shadow (filled by Scene::drawShadowPass, zero = disabled)
-    glm::mat4  lightSpaceMatrix = glm::mat4(1.f);
-    GLuint     shadowTex        = 0;
-    glm::vec3  lightDir         = {0.f, -1.f, 0.f};
-    glm::vec3  lightColor       = {1.f,  1.f, 1.f};
-    float      shadowBias       = 0.005f;
+    // CSM — filled by Scene::drawShadowPass (numCascades=0 → disabled)
+    static constexpr int MAX_CSM = 4;
+    int       numCascades                  = 0;
+    glm::mat4 lightSpaceMatrices[MAX_CSM]  = {};
+    GLuint    shadowTextures[MAX_CSM]       = {};
+    float     cascadeFarPlanes[MAX_CSM]    = {};
+    glm::vec3 lightDir                     = {0.f, -1.f, 0.f};
+    glm::vec3 lightColor                   = {1.f,  1.f, 1.f};
+    float     shadowBias                   = 0.005f;
 };

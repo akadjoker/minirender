@@ -1,5 +1,82 @@
-#version 300 es
-precision highp float;
+#version 330 core#version 300 es
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}    FragColor = vec4(color, albedo.a);    vec3 color    = ambient + (1.0 - shadow) * diffuse;    vec3 diffuse  = NdotL * u_lightColor * albedo.rgb;    vec3 ambient  = 0.15 * albedo.rgb;    float shadow  = sampleCascade(cascade, bias);        if (v_viewDepth < u_cascadeFarPlanes[i]) { cascade = i; break; }    for (int i = 0; i < u_numCascades - 1; i++)    int cascade  = u_numCascades - 1;    // Select cascade based on view depth    float bias   = max(u_shadowBias * (1.0 - NdotL), u_shadowBias * 0.1);    float NdotL  = max(dot(normal, u_lightDir), 0.0);    vec3  normal = normalize(v_normal);    vec4  albedo = texture(u_albedo, v_uv);{void main()}    else             return shadowPCF(u_shadowMap3, lsPos, bias);    else if (c == 2) return shadowPCF(u_shadowMap2, lsPos, bias);    else if (c == 1) return shadowPCF(u_shadowMap1, lsPos, bias);    if      (c == 0) return shadowPCF(u_shadowMap0, lsPos, bias);    else             lsPos = u_lightSpaceMatrices[3] * vec4(v_worldPos, 1.0);    else if (c == 2) lsPos = u_lightSpaceMatrices[2] * vec4(v_worldPos, 1.0);    else if (c == 1) lsPos = u_lightSpaceMatrices[1] * vec4(v_worldPos, 1.0);    if      (c == 0) lsPos = u_lightSpaceMatrices[0] * vec4(v_worldPos, 1.0);    vec4 lsPos;{float sampleCascade(int c, float bias)}    return shadow / 9.0;    }        shadow += (proj.z - bias > d) ? 1.0 : 0.0;        float d = texture(shadowMap, proj.xy + vec2(x, y) * texelSize).r;    {    for (int y = -1; y <= 1; y++)    for (int x = -1; x <= 1; x++)    vec2  texelSize = 1.0 / vec2(textureSize(shadowMap, 0));    float shadow    = 0.0;    if (proj.z > 1.0) return 0.0;    proj = proj * 0.5 + 0.5;    vec3 proj = lsPos.xyz / lsPos.w;{float shadowPCF(sampler2D shadowMap, vec4 lsPos, float bias)// PCF 3x3uniform float u_shadowBias;uniform vec3  u_lightColor;uniform vec3  u_lightDir;    // normalised, pointing TOWARDS the lightuniform int   u_numCascades;uniform float u_cascadeFarPlanes[4];uniform mat4  u_lightSpaceMatrices[4];uniform sampler2D u_shadowMap3;uniform sampler2D u_shadowMap2;uniform sampler2D u_shadowMap1;uniform sampler2D u_shadowMap0;// One shadow map per cascade (up to 4)uniform sampler2D u_albedo;out vec4 FragColor;in float v_viewDepth;in vec2  v_uv;in vec3  v_normal;in vec3  v_worldPos;precision highp float;
 
 #define NUM_CASCADES 4
 

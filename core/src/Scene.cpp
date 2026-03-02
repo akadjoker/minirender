@@ -315,8 +315,8 @@ void Scene::gatherNode(Node *node, const Frustum &camFrustum,
             for (const auto &surf : mn->mesh->surfaces)
             {
                 const BoundingBox surfWorld = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;
-                const bool surfInCam    = !surf.aabb.is_valid() || camFrustum.contains(surfWorld);
-                const bool surfInShadow = !surf.aabb.is_valid() || shadowFrustum.contains(surfWorld);
+                const bool surfInCam    = surf.aabb.is_valid() ? camFrustum.contains(surfWorld)    : nodeInCam;
+                const bool surfInShadow = surf.aabb.is_valid() ? shadowFrustum.contains(surfWorld) : nodeInShadow;
                 if (!surfInCam && !surfInShadow) continue;
 
                 Material *mat = mn->getMaterial();

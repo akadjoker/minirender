@@ -165,7 +165,7 @@ int main()
 
     DemoManager manager;
      manager.add(new DemoSimples());
-     manager.add(new DemoCsm());
+     //manager.add(new DemoCsm());
      //manager.add(new DemoH3D());
     //manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());

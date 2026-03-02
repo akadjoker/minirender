@@ -85,8 +85,12 @@ public:
         glm::vec3 lightDir    = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
         glm::vec3 lightColor  = {1.f, 1.f, 1.f};
         float     bias        = 0.005f;
-        int       mapSize     = 1024;  // per-cascade map size
-        int       numCascades = 3;     // 1-4 (1=simple, 2-4=CSM)
+        int       mapSize     = 2048;  // depth texture size
+        int       numCascades = 1;     // 1=simple fixed ortho, 2-4=CSM
+        // Simple shadow (numCascades==1)
+        float     orthoSize   = 40.f;  // half-size of ortho frustum (world units)
+        float     lightDist   = 100.f; // distance of light from world origin
+        // CSM only
         float     lambda      = 0.75f; // 0=uniform, 1=logarithmic split
     } shadow;
 

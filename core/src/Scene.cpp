@@ -505,6 +505,7 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
 }
 
 // ─── Simple single shadow pass (numCascades == 1) ───────────────────────────
+// Fixed ortho looking at world origin — reliable, no frustum fitting needed.
 void Scene::drawShadowPass()
 {
     const Camera *cam = frameCtx_.camera;
@@ -514,53 +515,26 @@ void Scene::drawShadowPass()
         shadowMaps_[0].create(shadow.mapSize);
     if (!shadowMaps_[0].valid()) return;
 
-    const glm::vec3 lightDir = glm::normalize(shadow.lightDir);
-    const glm::vec3 up = (std::abs(lightDir.y) > 0.99f)
-                       ? glm::vec3(0.f, 0.f, -1.f)
-                       : glm::vec3(0.f, 1.f,  0.f);
+    const glm::vec3 dir = glm::normalize(shadow.lightDir);
+    const glm::vec3 up  = (std::abs(dir.y) > 0.99f)
+                        ? glm::vec3(0.f, 0.f, -1.f)
+                        : glm::vec3(0.f, 1.f,  0.f);
 
-    // Full camera frustum in world space
-    const glm::mat4 invVP = glm::inverse(cam->viewProjection);
-    static const glm::vec4 ndcCube[8] = {
-        {-1,-1,-1,1},{1,-1,-1,1},{-1,1,-1,1},{1,1,-1,1},
-        {-1,-1, 1,1},{1,-1, 1,1},{-1,1, 1,1},{1,1, 1,1}
-    };
-    glm::vec3 corners[8];
-    for (int j = 0; j < 8; j++) {
-        glm::vec4 pt = invVP * ndcCube[j];
-        corners[j] = glm::vec3(pt) / pt.w;
-    }
-
-    // Centroid → stable light view
-    glm::vec3 center(0.f);
-    for (auto &v : corners) center += v;
-    center /= 8.f;
-    const glm::mat4 lightView = glm::lookAt(center - lightDir * 100.f, center, up);
-
-    // Tight AABB in light space
-    float minX= 1e9f, maxX=-1e9f, minY= 1e9f, maxY=-1e9f, minZ= 1e9f, maxZ=-1e9f;
-    for (auto &v : corners) {
-        glm::vec3 lc = glm::vec3(lightView * glm::vec4(v, 1.f));
-        minX = std::min(minX, lc.x); maxX = std::max(maxX, lc.x);
-        minY = std::min(minY, lc.y); maxY = std::max(maxY, lc.y);
-        minZ = std::min(minZ, lc.z); maxZ = std::max(maxZ, lc.z);
-    }
-    constexpr float zMult = 10.f;
-    if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
-    if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
-
-    // -maxZ/-minZ: convert right-handed light-space Z (negative in front) to positive near/far
-    lightSpaceMatrices_[0] = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ) * lightView;
+    const glm::mat4 lightView = glm::lookAt(-dir * shadow.lightDist,
+                                            glm::vec3(0.f), up);
+    const glm::mat4 lightProj = glm::ortho(
+        -shadow.orthoSize,  shadow.orthoSize,
+        -shadow.orthoSize,  shadow.orthoSize,
+         0.1f, shadow.lightDist * 2.f);
+    lightSpaceMatrices_[0] = lightProj * lightView;
     cascadeFarPlanes_[0]   = cam->farPlane;
 
     auto &rs = RenderState::instance();
     rs.setDepthTest(true);
     rs.setDepthWrite(true);
     rs.setCull(true);
+    rs.setCullFace(GL_FRONT); // front-face culling reduces self-shadow acne
     rs.useProgram(shadow.depthShader->getId());
-
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(2.0f, 4.0f);
 
     shadowMaps_[0].bind();
     rs.setViewport(0, 0, shadow.mapSize, shadow.mapSize);
@@ -574,7 +548,7 @@ void Scene::drawShadowPass()
         else                     item.drawable->draw();
     }
     shadowMaps_[0].unbind();
-    glDisable(GL_POLYGON_OFFSET_FILL);
+    rs.setCullFace(GL_BACK); // restore
 }
 
 // ─── CSM cascade shadow pass (numCascades > 1) ───────────────────────────────────

@@ -133,7 +133,7 @@ void Scene::render()
 {
 
     //glDepthFunc(GL_GREATER);      // invertido — passa se MAIOR (longe)
-    glDepthFunc(GL_LESS);
+   // glDepthFunc(GL_LESS);
 
 
     if (currentCamera_)
@@ -222,11 +222,23 @@ void Scene::renderCamera(Camera *cam)
     for (auto *node : roots_)
         gatherNode(node, frameCtx_.frustum, renderQueue_);
 
-    // {
-    //     Frustum inf = Frustum::infinite();
-    //     for (auto *node : roots_)
-    //         gatherNode(node, inf, frameCtx_.shadowQueue);
-    // }
+    // Shadow queue: cull against the light frustum (NOT camera frustum).
+    // A caster behind the camera can still cast shadows into the view.
+    // CsmTechnique returns the widest cascade frustum; others return infinite.
+    {
+        const Frustum savedFrustum = frameCtx_.frustum;
+        Frustum shadowFrustum      = Frustum::infinite();
+        for (auto *t : techniques_)
+        {
+            Frustum f = t->getShadowCasterFrustum();
+            // Use first technique that provides a non-infinite frustum
+            if (!f.isInfinite()) { shadowFrustum = f; break; }
+        }
+        frameCtx_.frustum = shadowFrustum;
+        for (auto *node : roots_)
+            gatherNode(node, shadowFrustum, frameCtx_.shadowQueue);
+        frameCtx_.frustum = savedFrustum;
+    }
 
     for (auto *t : techniques_)
         t->render(frameCtx_, renderQueue_);

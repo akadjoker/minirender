@@ -376,6 +376,8 @@ struct Frustum
     static Frustum from_matrix(const glm::mat4 &vp);
     static Frustum infinite(); // always contains everything — use for shadow gather
 
+    bool isInfinite() const { return planes[0].d >= 1e29f; }
+
     bool contains(const BoundingBox &aabb) const;
     bool contains(const Sphere &sphere) const;
     bool intersectsAABB(const BoundingBox &aabb) const { return contains(aabb); }

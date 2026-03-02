@@ -69,6 +69,14 @@ public:
     unsigned int width()                const { return width_; }
     unsigned int height()               const { return height_; }
 
+    // Returns a frustum built from the widest cascade (last one).
+    // Valid to call after the first update(). Used for shadow-caster culling:
+    // only objects inside this frustum can appear in any shadow map.
+    Frustum getCasterFrustum() const
+    {
+        return Frustum::from_matrix(lightSpaceMatrices[CSM_NUM_CASCADES - 1]);
+    }
+
 private:
     unsigned int width_  = 2048;
     unsigned int height_ = 2048;
@@ -116,6 +124,16 @@ public:
     CascadeShadowMap  *getCsm()           const { return csm_; }
     OpaquePass        *getOpaquePass()    const;
     TransparentPass   *getTransparentPass() const;
+
+    // Returns frustum of the widest cascade (last) — superset of all others.
+    // 1-frame lag (last frame's matrices) — acceptable for culling.
+    Frustum getShadowCasterFrustum() const override
+    {
+        // Guard: matrices are zero on frame 0 before first update()
+        const glm::mat4 &m = csm_->lightSpaceMatrices[CSM_NUM_CASCADES - 1];
+        if (m == glm::mat4(0.f)) return Frustum::infinite();
+        return Frustum::from_matrix(m);
+    }
 
 private:
     CascadeShadowMap *csm_ = nullptr;   // owned

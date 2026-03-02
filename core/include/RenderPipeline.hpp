@@ -139,6 +139,10 @@ public:
     virtual ~Technique() { for (auto *p : passes) delete p; }
     virtual void render(const FrameContext &ctx, RenderQueue &queue) const;
 
+    // Override to provide a tighter frustum for shadow-caster culling.
+    // Default: infinite (no culling). CsmTechnique returns the light frustum.
+    virtual Frustum getShadowCasterFrustum() const { return Frustum::infinite(); }
+
     template<typename T, typename... Args>
     T *addPass(Args &&...args)
     {

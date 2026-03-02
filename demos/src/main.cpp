@@ -172,11 +172,11 @@ int main()
      //manager.add(new DemoH3D());
     //manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());
-    //manager.add(new DemoCascade());
+    manager.add(new DemoCascade());
     //manager.add(new DemoCannonball());
     ///manager.add(new DemoWater());
     //manager.add(new DemoTerrainLod());
-    manager.add(new DemoPerformance());
+ //   manager.add(new DemoPerformance());
 
     
     if (!manager.init())

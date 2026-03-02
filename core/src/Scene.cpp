@@ -494,7 +494,7 @@ void Scene::drawShadowPass()
     const glm::vec3 up  = (std::abs(dir.y) > 0.99f)
                         ? glm::vec3(0.f, 0.f, -1.f)
                         : glm::vec3(0.f, 1.f,  0.f);
-    const glm::mat4 lightView = glm::lookAt(-dir * shadow.lightDist,
+    const glm::mat4 lightView = glm::lookAt(dir * shadow.lightDist,
                                             glm::vec3(0.f), up);
     const glm::mat4 lightProj = glm::ortho(
         -shadow.orthoSize,  shadow.orthoSize,

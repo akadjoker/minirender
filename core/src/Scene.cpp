@@ -166,12 +166,15 @@ void Scene::renderCamera(Camera *cam)
     queue_.clear();
     gather(frameCtx_.frustum, Frustum::infinite(), queue_);
 
-    // 3. CSM depth pass (must run before main draw, uses queue_.shadow)
+    // 3. Shadow depth pass (must run before main draw, uses queue_.shadow)
     frameCtx_.numCascades = 0;
     if (shadow.enabled && shadow.depthShader && !queue_.shadow.empty())
     {
-        drawShadowPass();
         const int N = glm::clamp(shadow.numCascades, 1, MAX_CSM);
+        if (N == 1)
+            drawShadowPass();
+        else
+            drawCsmShadowPass();
         frameCtx_.numCascades = N;
         frameCtx_.lightDir    = glm::normalize(shadow.lightDir);
         frameCtx_.lightColor  = shadow.lightColor;
@@ -438,9 +441,20 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
             sh->setMat4("u_viewProj",  viewProj);
             sh->setVec4("u_cameraPos", camPosV);
             sh->setVec4("u_clipPlane", ctx.clipPlane);
-            // CSM — inject per-cascade data (harmless on shaders without these uniforms)
-            if (ctx.numCascades > 0)
+            // Shadow injection — simple (N==1) or CSM (N>1)
+            if (ctx.numCascades == 1)
             {
+                // lit_shadow shader: scalar u_lightSpace + u_shadowMap
+                sh->setMat4 ("u_lightSpace",  ctx.lightSpaceMatrices[0]);
+                sh->setVec3 ("u_lightDir",    ctx.lightDir);
+                sh->setVec3 ("u_lightColor",  ctx.lightColor);
+                sh->setFloat("u_shadowBias",  ctx.shadowBias);
+                sh->setInt  ("u_shadowMap",   1);
+                rs.bindTexture(1, GL_TEXTURE_2D, ctx.shadowTextures[0]);
+            }
+            else if (ctx.numCascades > 1)
+            {
+                // csm_lit shader: array u_lightSpace[N] + u_shadowMap[N]
                 const int N = ctx.numCascades;
                 sh->setInt       ("u_numCascades",   N);
                 sh->setMat4Array ("u_lightSpace",    N, ctx.lightSpaceMatrices);
@@ -490,8 +504,80 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
     }
 }
 
-// ─── Shadow depth pass ────────────────────────────────────────────────────────────
+// ─── Simple single shadow pass (numCascades == 1) ───────────────────────────
 void Scene::drawShadowPass()
+{
+    const Camera *cam = frameCtx_.camera;
+    if (!cam) return;
+
+    if (!shadowMaps_[0].valid() || shadowMaps_[0].size() != shadow.mapSize)
+        shadowMaps_[0].create(shadow.mapSize);
+    if (!shadowMaps_[0].valid()) return;
+
+    const glm::vec3 lightDir = glm::normalize(shadow.lightDir);
+    const glm::vec3 up = (std::abs(lightDir.y) > 0.99f)
+                       ? glm::vec3(0.f, 0.f, -1.f)
+                       : glm::vec3(0.f, 1.f,  0.f);
+
+    // Full camera frustum in world space
+    const glm::mat4 invVP = glm::inverse(cam->viewProjection);
+    static const glm::vec4 ndcCube[8] = {
+        {-1,-1,-1,1},{1,-1,-1,1},{-1,1,-1,1},{1,1,-1,1},
+        {-1,-1, 1,1},{1,-1, 1,1},{-1,1, 1,1},{1,1, 1,1}
+    };
+    glm::vec3 corners[8];
+    for (int j = 0; j < 8; j++) {
+        glm::vec4 pt = invVP * ndcCube[j];
+        corners[j] = glm::vec3(pt) / pt.w;
+    }
+
+    // Centroid → stable light view
+    glm::vec3 center(0.f);
+    for (auto &v : corners) center += v;
+    center /= 8.f;
+    const glm::mat4 lightView = glm::lookAt(center - lightDir * 100.f, center, up);
+
+    // Tight AABB in light space
+    float minX= 1e9f, maxX=-1e9f, minY= 1e9f, maxY=-1e9f, minZ= 1e9f, maxZ=-1e9f;
+    for (auto &v : corners) {
+        glm::vec3 lc = glm::vec3(lightView * glm::vec4(v, 1.f));
+        minX = std::min(minX, lc.x); maxX = std::max(maxX, lc.x);
+        minY = std::min(minY, lc.y); maxY = std::max(maxY, lc.y);
+        minZ = std::min(minZ, lc.z); maxZ = std::max(maxZ, lc.z);
+    }
+    constexpr float zMult = 10.f;
+    if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
+    if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
+
+    lightSpaceMatrices_[0] = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ) * lightView;
+    cascadeFarPlanes_[0]   = cam->farPlane;
+
+    auto &rs = RenderState::instance();
+    rs.setDepthTest(true);
+    rs.setDepthWrite(true);
+    rs.setCull(true);
+    rs.useProgram(shadow.depthShader->getId());
+
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(2.0f, 4.0f);
+
+    shadowMaps_[0].bind();
+    rs.setViewport(0, 0, shadow.mapSize, shadow.mapSize);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    shadow.depthShader->setMat4("u_lightSpace", lightSpaceMatrices_[0]);
+
+    for (const auto &item : queue_.shadow) {
+        if (!item.drawable) continue;
+        shadow.depthShader->setMat4("u_model", item.model);
+        if (item.indexCount > 0) item.drawable->drawRange(item.indexStart, item.indexCount);
+        else                     item.drawable->draw();
+    }
+    shadowMaps_[0].unbind();
+    glDisable(GL_POLYGON_OFFSET_FILL);
+}
+
+// ─── CSM cascade shadow pass (numCascades > 1) ───────────────────────────────────
+void Scene::drawCsmShadowPass()
 {
     const Camera *cam = frameCtx_.camera;
     if (!cam) return;

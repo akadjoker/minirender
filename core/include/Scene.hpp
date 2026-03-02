@@ -118,7 +118,8 @@ private:
     void drawItems(const std::vector<RenderItem> &items, const FrameContext &ctx,
                    RenderSortMode sort = RenderSortMode::None);
     void drawSky(const FrameContext &ctx);
-    void drawShadowPass();
+    void drawShadowPass();     // numCascades==1 — single ortho shadow map
+    void drawCsmShadowPass();  // numCascades >1 — PSSM cascade shadow maps
 
     // Node traversal helpers
     void preRenderNode(Node *node, Camera *cam);

@@ -23,6 +23,8 @@
 #include "DemoEffects.hpp"
 #include "DemoCascade.hpp"
 #include "DemoCannonball.hpp"
+#include "DemoWater.hpp"
+#include "DemoTerrainLod.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
 {
@@ -168,8 +170,10 @@ int main()
      //manager.add(new DemoH3D());
     //manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());
-    manager.add(new DemoCascade());
-   //manager.add(new DemoCannonball());
+    //manager.add(new DemoCascade());
+    //manager.add(new DemoCannonball());
+    ///manager.add(new DemoWater());
+    manager.add(new DemoTerrainLod());
 
     
     if (!manager.init())
@@ -198,6 +202,8 @@ int main()
         state.setDepthTest(true);
         state.setBlend(false);
         state.setCull(true);
+
+        
 
         if (device.IsResize())
         {

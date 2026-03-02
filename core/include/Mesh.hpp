@@ -147,7 +147,9 @@ struct TerrainBuffer : public IDrawable
     GLenum mode    = GL_TRIANGLES;
     BoundingBox aabb = {};
 
-    void upload();
+    void upload();                              // static VBO + static IBO
+    void allocateDynamicIndices(size_t maxCount);// static VBO + pre-alloc dynamic IBO
+    void updateIndices(size_t count);            // glBufferSubData first `count` indices
     void update();
     void draw()          const override;
     void drawRange(uint32_t start, uint32_t count) const override;

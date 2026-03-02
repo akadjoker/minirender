@@ -10,17 +10,8 @@ out vec3 v_normal;
 out vec2 v_uv;
 out vec4 v_fragViewSpace;   // view-space position (w=1), .z used for cascade selection
 
-// Scene-wide uniforms uploaded once per frame by SceneUBO.
-layout(std140) uniform SceneBlock {
-    mat4 u_view;
-    mat4 u_proj;
-    mat4 u_viewProj;
-    mat4 u_invViewProj;
-    vec4 u_cameraPos;   // w=1
-    vec4 u_lightDir;    // xyz = direction toward light, w=0
-    vec4 u_lightColor;  // xyz = rgb, w = intensity
-    vec4 u_ambient;     // xyz = color, w=0
-};
+uniform mat4 u_view;
+uniform mat4 u_proj;
 
 uniform mat4 u_model;
 

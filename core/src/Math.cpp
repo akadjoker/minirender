@@ -124,6 +124,19 @@ Frustum Frustum::from_matrix(const glm::mat4 &vp)
     f.planes[3] = Plane(glm::vec3(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1], vp[2][3] - vp[2][1]), vp[3][3] - vp[3][1]);
     f.planes[4] = Plane(glm::vec3(vp[0][3] + vp[0][2], vp[1][3] + vp[1][2], vp[2][3] + vp[2][2]), vp[3][3] + vp[3][2]);
     f.planes[5] = Plane(glm::vec3(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2], vp[2][3] - vp[2][2]), vp[3][3] - vp[3][2]);
+
+    // Build AABB from the 8 frustum corners (inverse VP * NDC corners)
+    const glm::mat4 inv = glm::inverse(vp);
+    for (int i = 0; i < 8; ++i)
+    {
+        glm::vec4 ndc(
+            (i & 1) ? 1.f : -1.f,
+            (i & 2) ? 1.f : -1.f,
+            (i & 4) ? 1.f : -1.f,
+            1.f);
+        glm::vec4 world = inv * ndc;
+        f.bounds.expand(glm::vec3(world) / world.w);
+    }
     return f;
 }
 
@@ -136,6 +149,9 @@ Frustum Frustum::infinite()
         p.normal = glm::vec3(0.f, 1.f, 0.f);
         p.d      = 1e30f;
     }
+    // bounds covers everything
+    f.bounds.min = glm::vec3(-1e30f);
+    f.bounds.max = glm::vec3( 1e30f);
     return f;
 }
 

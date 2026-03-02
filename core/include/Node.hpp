@@ -50,8 +50,9 @@ class Node
     std::string name;
     bool visible = true;
     Node *parent = nullptr;
+    unsigned long ID = 0; // unique ID assigned by scene (for picking, etc.)
 
-    Node() = default;
+    Node();
     virtual ~Node();
 
     // Fast type access — no dynamic_cast needed
@@ -65,6 +66,11 @@ class Node
 
     // Override to update simulation logic each frame (particles, etc.)
     virtual void update(float /*dt*/) {}
+
+    // Called once per frame BEFORE the main render, allowing the node to
+    // render into off-screen targets (e.g. WaterNode3D reflection/refraction).
+    // scene is non-const to allow renderToTarget calls.
+    virtual void preRender(class Scene * /*scene*/, const Camera * /*mainCam*/) {}
 
     void addChild(Node *child);
     void removeChild(Node *child);
@@ -112,6 +118,10 @@ public:
     void setRotation(const glm::quat &q);
     void setScale(const glm::vec3 &s);
     void setScale(float s);
+
+    // Euler angles in DEGREES: x=pitch, y=yaw, z=roll
+    glm::vec3 getEulerAngles() const;
+    void      setEulerAngles(const glm::vec3 &degreesPitchYawRoll);
 
     // ── Translation ──────────────────────────────────────────
     void translate(const glm::vec3 &delta, TransformSpace space = TransformSpace::Local);

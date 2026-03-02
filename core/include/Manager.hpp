@@ -130,6 +130,10 @@ public:
 
     Texture *createFromPixmap(const std::string &name, const Pixmap &pixmap);
 
+    Texture *createSolidColor(const std::string &name,
+                                uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+
+
     Texture *getWhite();
     Texture *getBlack();
     Texture *getFlatNormal();

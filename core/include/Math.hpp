@@ -371,6 +371,7 @@ struct Triangle
 struct Frustum
 {
     Plane planes[6]; // left, right, bottom, top, near, far
+    BoundingBox bounds; // AABB of the frustum (conservative, for cheap pre-tests)
 
     static Frustum from_matrix(const glm::mat4 &vp);
     static Frustum infinite(); // always contains everything — use for shadow gather
@@ -378,6 +379,7 @@ struct Frustum
     bool contains(const BoundingBox &aabb) const;
     bool contains(const Sphere &sphere) const;
     bool intersectsAABB(const BoundingBox &aabb) const { return contains(aabb); }
+    bool intersectsLoose(const BoundingBox &aabb) const { return bounds.intersects(aabb); }
 };
 
 // ============================================================

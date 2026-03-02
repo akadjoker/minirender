@@ -60,8 +60,10 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
         std::sort(items->begin(), items->end(), [](const RenderItem &a, const RenderItem &b)
                   { return a.depth > b.depth; });
 
-    const glm::mat4 &view = ctx.camera->view;
-    const glm::mat4 &proj = ctx.camera->projection;
+    const glm::mat4 &view     = ctx.camera->view;
+    const glm::mat4 &proj     = ctx.camera->projection;
+    const glm::mat4 &viewProj = ctx.camera->viewProjection;
+    const glm::vec4  camPos   = glm::vec4(ctx.camera->position, 1.f);
 
     if (ctx.stats)
         ctx.stats->objects += static_cast<uint32_t>(items->size());
@@ -70,8 +72,11 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
     {
         // Pass has its own shader — bind once, draw all items (shadow / depth / outline)
         rs.useProgram(shader->getId());
-        shader->setMat4("u_view", view);
-        shader->setMat4("u_proj", proj);
+        shader->setMat4("u_view",     view);
+        shader->setMat4("u_proj",     proj);
+        shader->setMat4("u_viewProj", viewProj);
+        shader->setVec4("u_cameraPos", camPos);
+        shader->setVec4("u_clipPlane", ctx.clipPlane);
         for (const auto &item : *items)
             drawItem(ctx, item, shader);
     }
@@ -89,8 +94,11 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
             if (sh != lastShader)
             {
                 rs.useProgram(sh->getId());
-                sh->setMat4("u_view", view);
-                sh->setMat4("u_proj", proj);
+                sh->setMat4("u_view",     view);
+                sh->setMat4("u_proj",     proj);
+                sh->setMat4("u_viewProj", viewProj);
+                sh->setVec4("u_cameraPos", camPos);
+                sh->setVec4("u_clipPlane", ctx.clipPlane);
                 lastShader = sh;
             }
             drawItem(ctx, item, sh);

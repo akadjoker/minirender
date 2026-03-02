@@ -4,17 +4,10 @@ precision highp float;
 in vec2 v_ndc;
 out vec4 FragColor;
 
-// Must match SceneData struct exactly (std140, binding 0)
-layout(std140) uniform SceneBlock {
-    mat4 u_view;
-    mat4 u_proj;
-    mat4 u_viewProj;
-    mat4 u_invViewProj;
-    vec4 u_cameraPos;   // xyz = world pos
-    vec4 u_lightDir;    // xyz = direction TOWARD sun (normalised)
-    vec4 u_lightColor;  // xyz = sun rgb
-    vec4 u_ambient;
-};
+uniform mat4 u_invViewProj;
+uniform vec4 u_cameraPos;
+uniform vec4 u_lightDir;
+uniform vec4 u_lightColor;
 
 uniform vec3 u_skyTop;      // zenith colour
 uniform vec3 u_skyHorizon;  // horizon colour

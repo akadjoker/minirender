@@ -163,8 +163,9 @@ void TerrainBuffer::upload()
 
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, position));
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, normal));
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv));
-    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv2));
+    // loc 2 = uv2 (detail), loc 3 = uv (base) — matches standard shader convention
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv2));
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv));
 
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
@@ -176,6 +177,43 @@ void TerrainBuffer::upload()
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
 
     glBindVertexArray(0);
+}
+
+void TerrainBuffer::allocateDynamicIndices(size_t maxCount)
+{
+    // Upload VBO as STATIC (vertices never change after load)
+    GLenum usage = GL_STATIC_DRAW;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(TerrainVertex), vertices.data(), usage);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, position));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, normal));
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv2));
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(TerrainVertex), (void *)offsetof(TerrainVertex, uv));
+
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+    glEnableVertexAttribArray(3);
+
+    // Pre-allocate DYNAMIC IBO at max size
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, maxCount * sizeof(uint32_t), nullptr, GL_DYNAMIC_DRAW);
+
+    glBindVertexArray(0);
+}
+
+void TerrainBuffer::updateIndices(size_t count)
+{
+    assert(ibo != 0 && count <= indices.size());
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, count * sizeof(uint32_t), indices.data());
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 void TerrainBuffer::update()

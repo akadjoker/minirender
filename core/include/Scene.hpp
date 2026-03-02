@@ -2,7 +2,9 @@
 #include "Node.hpp"
 #include "RenderPipeline.hpp"
 #include "Math.hpp"
-#include "SceneUBO.hpp"
+ 
+#include "RenderTarget.hpp"
+#include "WaterNode.hpp"
 #include <vector>
 
 class RenderBatch;
@@ -22,8 +24,7 @@ public:
     Scene()  ;
     ~Scene();
 
-    // --- Environment ---
-    // Lights are nodes in the tree — add via createLight<PointLight>("name") etc.
+ 
 
     // --- Camera management (scene owns cameras) ---
     Camera *createCamera(const std::string &name = "");
@@ -33,9 +34,10 @@ public:
     void    setCurrentCamera(Camera *cam);
 
     // --- Node management ---
-    MeshNode         *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
-    AnimatedMeshNode *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
-    class ManualMeshNode *createManualMeshNode(const std::string &name = "");
+    MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
+    AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
+    class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
+    WaterNode3D          *createWaterNode       (const std::string &name = "");
 
     // Creates a light node, adds it to the root of the scene tree.
     // Example: auto *sun = scene.createLight<DirectionalLight>("sun");
@@ -66,11 +68,20 @@ public:
 
     // Gather visible nodes (frustum cull) + render all cameras
     void render();
+ 
+    // Render the scene into an off-screen RenderTarget using a custom camera.
+    // secondary=true: expensive pre-passes (e.g. CSM depth) are skipped.
+    // Light/clip data are taken from sceneData at the time of the call.
+    // Debug: print which nodes are gathered into the next renderToTarget call.
+    // Resets automatically after one frame.
+    bool debugRTGather = false;
 
-    // ── Scene-level per-frame data ──────────────────────────────────
-    // Set lightDir, lightColor, ambient before calling render().
-    // view/proj/viewProj/cameraPos are filled automatically from the camera.
-    SceneData sceneData;
+    // Clip plane in world space (xyz=normal, w=offset).
+    // Active only during renderToTarget — auto-reset to {0,0,0,0} afterwards.
+    void setClipPlane(const glm::vec4 &plane) { clipPlane_ = plane; }
+    glm::vec4 getClipPlane() const { return clipPlane_; }
+
+    void renderToTarget(Camera *cam, RenderTarget *rt);
 
     void debug(RenderBatch *batch);
 
@@ -87,6 +98,8 @@ public:
 
 private:
     void renderCamera(Camera *cam);
+    void preRenderNodes(Camera *cam);
+    void preRenderNode(Node *node, Camera *cam);
     void debugNode(Node *node, RenderBatch *batch);
     // Frustum-cull traverse: only adds nodes whose world AABB is inside frustum
     void gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue);
@@ -100,7 +113,8 @@ private:
     RenderQueue              renderQueue_;
     FrameContext             frameCtx_;
     RenderStats              stats_;
-    SceneUBO                 sceneUBO_;
+    glm::vec4                clipPlane_ = {0.f, 0.f, 0.f, 0.f};
+   
 
     std::vector<Node *>      pendingRemoval_; // flushed at the start of update()
 };

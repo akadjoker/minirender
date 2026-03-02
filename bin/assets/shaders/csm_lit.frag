@@ -10,17 +10,9 @@ in vec4 v_fragViewSpace;
 
 out vec4 FragColor;
 
-// Scene-wide uniforms — matches SceneData struct (std140 binding 0)
-layout(std140) uniform SceneBlock {
-    mat4 u_view;
-    mat4 u_proj;
-    mat4 u_viewProj;
-    mat4 u_invViewProj;
-    vec4 u_cameraPos;
-    vec4 u_lightDir;    // xyz = direction toward light, w=0
-    vec4 u_lightColor;  // xyz = rgb, w = intensity
-    vec4 u_ambient;     // xyz = color, w=0
-};
+uniform vec4 u_lightDir;
+uniform vec4 u_lightColor;
+uniform vec4 u_ambient;
 
 uniform sampler2D u_shadowMap[NUM_CASCADES];
 uniform mat4      u_lightSpace[NUM_CASCADES];

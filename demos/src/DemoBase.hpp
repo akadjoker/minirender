@@ -16,13 +16,16 @@ public:
         // Câmara default
         camera = scene.createCamera("main");
         camera->fov       = 60.f;
-        camera->nearPlane = 0.1f;
+        camera->nearPlane = 0.21f;
         camera->farPlane  = 1000.f;
         camera->setPosition({0.f, 5.f, 20.f});
         camera->clearColor    = true;
         camera->clearColorVal = {0.1f, 0.1f, 0.15f, 1.f};
         camera->clearDepth    = true;
-        camera->setController(new FreeCameraController());
+        FreeCameraController *freeCamCtrl = new FreeCameraController();
+        freeCamCtrl->moveSpeed = 200.f;
+        camera->setController(freeCamCtrl);
+        
 
         return true;
     }

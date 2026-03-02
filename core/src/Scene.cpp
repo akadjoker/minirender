@@ -1,13 +1,19 @@
 #include "Scene.hpp"
+#include "TerrainNode.hpp"
 #include "Animator.hpp"
 #include "Batch.hpp"
 #include "Manager.hpp"
 #include "Effects.hpp"
+#include "WaterNode.hpp"
+#include "RenderState.hpp"
 #include <algorithm>
+#include <glm/gtc/matrix_inverse.hpp>
+#define MSF_GIF_IMPL
+#include "msf_gif.h"
 
 Scene::Scene()
 {
-    sceneUBO_.create();
+   
 }
 
 Scene::~Scene()
@@ -42,6 +48,14 @@ AnimatedMeshNode *Scene::createAnimatedMeshNode(const std::string &name, Animate
 ManualMeshNode *Scene::createManualMeshNode(const std::string &name)
 {
     auto *node = new ManualMeshNode();
+    node->name = name;
+    add(node);
+    return node;
+}
+
+WaterNode3D *Scene::createWaterNode(const std::string &name)
+{
+    auto *node = new WaterNode3D();
     node->name = name;
     add(node);
     return node;
@@ -117,6 +131,11 @@ void Scene::removeCamera(Camera *cam)
 
 void Scene::render()
 {
+
+    //glDepthFunc(GL_GREATER);      // invertido — passa se MAIOR (longe)
+    glDepthFunc(GL_LESS);
+
+
     if (currentCamera_)
     {
         renderCamera(currentCamera_);
@@ -177,44 +196,104 @@ void Scene::release()
 
     clearTechniques(); // deletes owned technique objects
     clear();           // deletes owned nodes, clears roots_
-    sceneUBO_.destroy();
+ 
 }
 
 void Scene::renderCamera(Camera *cam)
 {
-    // Bake matrices once — view, projection, viewProjection all cached on cam
     cam->updateMatrices();
 
-    // Upload scene-wide uniforms to UBO binding 0 once per frame.
-    // Demo fills sceneData.lightDir etc.; we fill the camera-derived fields here.
-    sceneData.view        = cam->view;
-    sceneData.proj        = cam->projection;
-    sceneData.viewProj    = cam->viewProjection;
-    sceneData.invViewProj = glm::inverse(cam->viewProjection);
-    sceneData.cameraPos   = glm::vec4(cam->position, 1.0f);
-    sceneUBO_.upload(sceneData);
-
-    stats_.reset();
+    // Set up base context (frustum etc.) so preRenderNodes can use it
     frameCtx_.camera   = cam;
     frameCtx_.viewport = cam->viewport;
-    frameCtx_.lights.clear();              // refilled by gatherNode below
+    frameCtx_.secondary = false;
     frameCtx_.frustum  = Frustum::from_matrix(cam->viewProjection);
     frameCtx_.stats    = &stats_;
+    stats_.reset();
 
+
+    preRenderNodes(cam);
+
+ 
+
+    frameCtx_.lights.clear();
     renderQueue_.clear();
     frameCtx_.shadowQueue.clear();
     for (auto *node : roots_)
         gatherNode(node, frameCtx_.frustum, renderQueue_);
 
-    // Shadow casters: gather ALL opaque nodes ignoring camera frustum
-    {
-        Frustum inf = Frustum::infinite();
-        for (auto *node : roots_)
-            gatherNode(node, inf, frameCtx_.shadowQueue);
-    }
+    // {
+    //     Frustum inf = Frustum::infinite();
+    //     for (auto *node : roots_)
+    //         gatherNode(node, inf, frameCtx_.shadowQueue);
+    // }
 
     for (auto *t : techniques_)
         t->render(frameCtx_, renderQueue_);
+}
+
+void Scene::preRenderNodes(Camera *cam)
+{
+    for (auto *node : roots_)
+        preRenderNode(node, cam);
+}
+
+void Scene::preRenderNode(Node *node, Camera *cam)
+{
+    if (!node || !node->visible) return;
+    node->preRender(this, cam);
+    for (auto *child : node->getChildren())
+        preRenderNode(child, cam);
+}
+
+void Scene::renderToTarget(Camera *tmpCam, RenderTarget *rt)
+{
+    if (!tmpCam || !rt || !rt->valid()) return;
+ 
+
+    // Bind FBO and clear
+    rt->bind();
+    auto &rs = RenderState::instance();
+    rs.setViewport(0, 0, rt->width(), rt->height());
+    const glm::vec4 &cc2 = tmpCam->clearColorVal;
+    rs.setClearColor(cc2.r, cc2.g, cc2.b, cc2.a);
+    rs.clear(tmpCam->clearColor, tmpCam->clearDepth);
+
+    // Build secondary FrameContext
+    FrameContext ctx;
+    ctx.camera      = tmpCam;
+    ctx.secondary   = true;   // skip CSM depth passes
+    ctx.lights      = frameCtx_.lights;
+    ctx.viewport    = {0, 0, rt->width(), rt->height()};
+    ctx.frustum     = Frustum::from_matrix(tmpCam->viewProjection);
+    ctx.stats       = nullptr;
+    ctx.shadowQueue = frameCtx_.shadowQueue;
+    ctx.clipPlane   = clipPlane_;
+    clipPlane_      = {0.f, 0.f, 0.f, 0.f}; // auto-reset after use
+
+
+    // Gather + render (no recursive preRender calls).
+    // Temporarily propagate secondary flag into frameCtx_ so that
+    // gatherNode → gatherRenderItems (which reads frameCtx_) will
+    // see secondary=true and skip nodes like WaterNode3D.
+    const bool prevSecondary = frameCtx_.secondary;
+    frameCtx_.secondary = true;
+
+    RenderQueue q;
+    for (auto *node : roots_)
+    {
+         
+            gatherNode(node, ctx.frustum, q);
+        
+    }
+    
+
+    frameCtx_.secondary = prevSecondary;
+
+    for (auto *t : techniques_)
+        t->render(ctx, q);
+
+    rt->unbind();
 }
 
 void Scene::debugNode(Node *node, RenderBatch *batch)
@@ -271,6 +350,12 @@ void Scene::debugNode(Node *node, RenderBatch *batch)
         }
     }
 
+    // TerrainLodNode: draw patch AABBs coloured by LOD
+    else if (auto *terrain = dynamic_cast<TerrainLodNode *>(node))
+    {
+        terrain->debug(batch);
+    }
+
     for (auto *child : node->getChildren())
         debugNode(child, batch);
 }
@@ -283,6 +368,7 @@ void Scene::gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue)
     // Lights are nodes too — collect into frame context
     if (auto *light = node->asLight())
         frameCtx_.lights.push_back(light);
+
 
     // Custom nodes (terrains, particles, etc.) gather their own items
     node->gatherRenderItems(queue, frameCtx_);

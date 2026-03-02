@@ -3,6 +3,14 @@
 #include "Manager.hpp"
 #include <algorithm>
 
+
+unsigned long globalNodeID = 1; // start at 1 so 0 can be "invalid ID"
+
+Node::Node()
+{
+     ID = globalNodeID++;
+}
+
 Node::~Node()
 {
     for (Node *c : children)

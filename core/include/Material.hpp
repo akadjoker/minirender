@@ -11,12 +11,25 @@
 
 struct Texture
 {
-    std::string name;                   // key used in TextureManager
-    GLuint id = 0;
-    int width = 0;
+    std::string name;
+    GLuint id       = 0;
+    int width  = 0;
     int height = 0;
-    GLenum target = GL_TEXTURE_2D; 
+    GLenum target = GL_TEXTURE_2D;
     PixelType type = PixelType::RGBA;
+
+    void release()
+    {
+        if (id) { glDeleteTextures(1, &id); id = 0; }
+    }
+
+    ~Texture() { release(); }
+
+    Texture()                          = default;
+    Texture(const Texture &)           = delete;
+    Texture &operator=(const Texture&) = delete;
+    Texture(Texture &&)                = default;
+    Texture &operator=(Texture &&)     = default;
 };
 
 struct TextureSlot 
@@ -40,10 +53,7 @@ public:
     void setVec4 (const std::string& u, const glm::vec4& v) const;
     void setMat3 (const std::string& u, const glm::mat3& v) const;
     void setMat4 (const std::string& u, const glm::mat4& v) const;
-
-    // Wire a named uniform block to a UBO binding point.
-    // Call once after loading, e.g. shader->bindBlock("SceneBlock", 0);
-    void bindBlock(const std::string& blockName, GLuint bindingPoint) const;
+ 
 
     GLuint   getId()      const { return id; }
     uint32_t getAttribs() const { return attribs; }

@@ -64,11 +64,17 @@ struct RenderStats
 struct FrameContext
 {
     const Camera             *camera  = nullptr;
-    std::vector<const Light *> lights;          // collected from scene tree each frame
+    std::vector<const Light *> lights;
     glm::ivec4                 viewport = glm::ivec4(0);
     Frustum                    frustum;
-    RenderStats               *stats       = nullptr; // optional — filled if non-null
-    RenderQueue                shadowQueue; // gathered without frustum culling — all shadow casters
+    RenderStats               *stats       = nullptr;
+    RenderQueue                shadowQueue;
+    // When true: secondary render (reflection/refraction).
+    // Expensive pre-passes (CSM depth) are skipped.
+    bool                       secondary   = false;
+    // Clip plane in world space: dot(worldPos, clipPlane) < 0 → discard fragment.
+    // Set to {0,0,0,0} to disable.
+    glm::vec4                  clipPlane   = {0.f, 0.f, 0.f, 0.f};
 };
 
 // ─── RenderPass ───────────────────────────────────────────────────────────────────
@@ -103,10 +109,7 @@ protected:
 class OpaquePass : public RenderPass { public: OpaquePass(); };
 class TransparentPass : public RenderPass { public: TransparentPass(); };
 
-// Procedural sky rendered as a fullscreen triangle at the far plane.
-// Add as the LAST pass in your technique so it fills pixels with no geometry.
-// Uses SceneBlock UBO (binding 0) for camera matrices and light direction.
-// Shader must declare SceneBlock and the 3 colour uniforms below.
+
 class SkyPass : public RenderPass
 {
 public:

@@ -1,6 +1,7 @@
 #include "Node.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <cmath>
 
 Node3D::Node3D() : Node()
 {
@@ -103,6 +104,52 @@ void Node3D::setPosition(float x, float y, float z)
 void Node3D::setRotation(const glm::quat &q)
 {
     rotation = glm::normalize(q);
+    markDirty();
+}
+
+// Euler angles in RADIANS, order YXZ (same as old engine Quat::toEulerAngles)
+// returns vec3(pitch, yaw, roll)
+glm::vec3 Node3D::getEulerAngles() const
+{
+    glm::quat q = glm::normalize(rotation);
+
+    float sinPitch = 2.f * (q.w * q.x - q.y * q.z);
+    float pitch;
+    if (std::fabs(sinPitch) >= 1.f)
+        pitch = std::copysign(glm::half_pi<float>(), sinPitch);
+    else
+        pitch = std::asin(sinPitch);
+
+    float sinYaw = 2.f * (q.w * q.y + q.x * q.z);
+    float cosYaw = 1.f - 2.f * (q.y * q.y + q.x * q.x);
+    float yaw    = std::atan2(sinYaw, cosYaw);
+
+    float sinRoll = 2.f * (q.w * q.z + q.x * q.y);
+    float cosRoll = 1.f - 2.f * (q.x * q.x + q.z * q.z);
+    float roll    = std::atan2(sinRoll, cosRoll);
+
+    return glm::vec3(pitch, yaw, roll); // radians
+}
+
+// Euler angles in RADIANS, order YXZ — matches getEulerAngles round-trip
+void Node3D::setEulerAngles(const glm::vec3 &pitchYawRoll)
+{
+    float pitch = pitchYawRoll.x;
+    float yaw   = pitchYawRoll.y;
+    float roll  = pitchYawRoll.z;
+
+    float cy = std::cos(yaw   * 0.5f);
+    float sy = std::sin(yaw   * 0.5f);
+    float cp = std::cos(pitch * 0.5f);
+    float sp = std::sin(pitch * 0.5f);
+    float cr = std::cos(roll  * 0.5f);
+    float sr = std::sin(roll  * 0.5f);
+
+    rotation.w = cr * cp * cy + sr * sp * sy;
+    rotation.x = cr * sp * cy + sr * cp * sy;
+    rotation.y = cr * cp * sy - sr * sp * cy;
+    rotation.z = sr * cp * cy - cr * sp * sy;
+    rotation = glm::normalize(rotation);
     markDirty();
 }
 void Node3D::setScale(const glm::vec3 &s)

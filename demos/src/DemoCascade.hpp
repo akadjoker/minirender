@@ -3,6 +3,7 @@
 #include "CascadeShadowMap.hpp"
 #include "RenderState.hpp"
 #include "Effects.hpp"
+#include <glm/gtc/matrix_inverse.hpp>
 
 // ============================================================
 //  DemoCascade — 4-cascade shadow maps
@@ -30,16 +31,12 @@ public:
             "assets/shaders/sky.vert","assets/shaders/sky.frag");
         if (!depthShader || !litShader_ || !skyShader_) return false;
 
-        // Wire the SceneBlock UBO (binding 0) for every shader that uses it.
-        litShader_->bindBlock("SceneBlock", SceneUBO::BINDING);
-        skyShader_->bindBlock("SceneBlock", SceneUBO::BINDING);
+ 
 
         glm::vec3 lightDir = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
 
         // ── Scene-wide light data (uploaded via UBO, not per-material) ────────
-        scene.sceneData.lightDir   = glm::vec4(-lightDir, 0.f);
-        scene.sceneData.lightColor = glm::vec4(1.f, 1.f, 0.95f, 1.f);
-        scene.sceneData.ambient    = glm::vec4(0.1f, 0.12f, 0.15f, 0.f);
+ 
 
         // ── Textures ─────────────────────────────────────────
         auto *texGround = textures().load("tex_ground","assets/wall.jpg");
@@ -103,13 +100,9 @@ public:
         DemoBase::update(dt);
         time_ += dt * 0.05f;
         float angle  = time_ * 0.05f;
-        glm::vec3 dir = glm::normalize(glm::vec3(std::sin(angle), -0.8f, std::cos(angle)));
-        csm_->getCsm()->setLightDirection(dir);
+        lightDir_ = glm::normalize(glm::vec3(std::sin(angle), -0.8f, std::cos(angle)));
+        csm_->getCsm()->setLightDirection(lightDir_);
 
-        // Update scene-wide light direction via UBO — ONE call, any number of objects.
-        scene.sceneData.lightDir = glm::vec4(-dir, 0.f);
-
-        // C = toggle cascade debug colours
         if (Input::IsKeyPressed(KEY_C))
         {
             showCascades_ = !showCascades_;
@@ -118,7 +111,27 @@ public:
         }
     }
 
-    void render()  override { DemoBase::render(); }
+    void render() override
+    {
+        const glm::vec4 lightDirV  = glm::vec4(-lightDir_, 0.f);
+        const glm::vec4 lightColor = glm::vec4(1.f, 1.f, 0.95f, 1.f);
+        const glm::vec4 ambient    = glm::vec4(0.1f, 0.12f, 0.15f, 1.f);
+        const glm::vec4 camPos     = glm::vec4(camera->position, 1.f);
+        auto &rs = RenderState::instance();
+
+        rs.useProgram(litShader_->getId());
+        litShader_->setVec4("u_lightDir",   lightDirV);
+        litShader_->setVec4("u_lightColor", lightColor);
+        litShader_->setVec4("u_ambient",    ambient);
+
+        rs.useProgram(skyShader_->getId());
+        skyShader_->setMat4("u_invViewProj", glm::inverse(camera->viewProjection));
+        skyShader_->setVec4("u_cameraPos",  camPos);
+        skyShader_->setVec4("u_lightDir",   lightDirV);
+        skyShader_->setVec4("u_lightColor", lightColor);
+
+        DemoBase::render();
+    }
     void release() override { DemoBase::release(); }
 
 private:
@@ -129,6 +142,7 @@ private:
     Material     *matCube_      = nullptr;
     float         time_         = 0.f;
     bool          showCascades_ = false;
+    glm::vec3     lightDir_     = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
 
     void buildGround(Material *mat)
     {

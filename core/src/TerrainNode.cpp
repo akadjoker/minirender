@@ -1,7 +1,9 @@
 #include "TerrainNode.hpp"
 #include "Pixmap.hpp"
 #include "RenderPipeline.hpp"
+#include "Batch.hpp"
 #include "Math.hpp"
+#include "Utils.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
@@ -35,7 +37,10 @@ bool TerrainNode::loadFromHeightmap(const std::string &path,
 {
     Pixmap img;
     if (!img.Load(path.c_str()))
+    {
+        SDL_Log("[TerrainNode] Failed to load heightmap: %s", path.c_str());
         return false;
+    }
 
     m_mapW         = img.width;
     m_mapH         = img.height;
@@ -52,7 +57,7 @@ bool TerrainNode::loadFromHeightmap(const std::string &path,
     for (int x = 0; x < m_mapW; ++x)
     {
         uint32_t pixel = img.GetPixel(x, z);
-        uint8_t  r     = (pixel >> 24) & 0xFF;   // Pixmap stores RGBA
+        uint8_t  r     = pixel & 0xFF;   // Pixmap: R is in low byte
         m_heightData[z * m_mapW + x] = (float)r / 255.f;
     }
 
@@ -127,10 +132,13 @@ bool TerrainNode::generateBlock(TerrainBuffer *buf, BoundingBox &outAABB,
         TerrainVertex v;
         v.position = {px, h, pz};
         v.normal   = calcNormal(wx, wz);
-        v.uv       = {(float)wx * invW * texScaleU,
-                      (float)wz * invH * texScaleV};
-        v.uv2      = {(float)wx * invW * detailScale,
-                      (float)wz * invH * detailScale};
+        // uv: texScaleU=1 → texture tiles once across full terrain
+        //     texScaleU=8 → texture repeats 8× across the terrain
+        v.uv  = {(float)wx * invW * texScaleU,
+                 (float)wz * invH * texScaleV};
+        // uv2: world-space detail tiling independent of heightmap resolution
+        v.uv2 = {px / m_terrainScale.x * detailScale,
+                 pz / m_terrainScale.z * detailScale};
 
         outAABB.expand(v.position);
         buf->vertices.push_back(v);
@@ -274,15 +282,11 @@ void TerrainNode::gatherRenderItems(RenderQueue &q, const FrameContext &ctx)
     if (!visible || !m_material || m_blocks.empty()) return;
 
     const glm::mat4 world = worldMatrix();
-    const Frustum  &frust = ctx.frustum;
 
     for (size_t i = 0; i < m_blocks.size(); ++i)
     {
         TerrainBuffer *buf = m_blocks[i];
         BoundingBox worldAABB = m_blockAABBs[i].transformed(world);
-
-        if (!frust.contains(worldAABB))
-            continue;
 
         RenderItem item;
         item.drawable   = buf;
@@ -298,22 +302,27 @@ void TerrainNode::gatherRenderItems(RenderQueue &q, const FrameContext &ctx)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  TerrainLodNode
+//  TerrainLodNode  — GeoMipMap LOD terrain
+//  Ported from Irrlicht CTerrainSceneNode (Nikolaus Gebhardt) 
+//  Architecture: single shared VBO (static) + dynamic IBO rebuilt each frame.
 // ─────────────────────────────────────────────────────────────────────────────
-TerrainLodNode::TerrainLodNode(const std::string &name, int maxLOD, TerrainPatchSize patchSz,
-                               float detailScale)
-    : m_patchVerts(static_cast<int>(patchSz))
-    , m_maxLOD(std::min(maxLOD, MAX_LOD))
-    , m_detailScale(detailScale)
+TerrainLodNode::TerrainLodNode(const std::string &name, int maxLOD,
+                               TerrainPatchSize patchSz, float detailScale)
+    : m_patchSize   (static_cast<int>(patchSz))
+    , m_calcPatchSize(static_cast<int>(patchSz) - 1)
+    , m_maxLOD      (maxLOD)
+    , m_detailScale (detailScale)
 {
     this->name = name;
 }
 
 TerrainLodNode::~TerrainLodNode()
 {
+    delete m_renderBuffer;
     delete[] m_heightData;
 }
 
+// ── Load ─────────────────────────────────────────────────────────────────────
 bool TerrainLodNode::loadFromHeightmap(const std::string &path,
                                        float heightScale,
                                        int   smoothFactor)
@@ -322,277 +331,615 @@ bool TerrainLodNode::loadFromHeightmap(const std::string &path,
     if (!img.Load(path.c_str()))
         return false;
 
-    m_hmW        = img.width;
-    m_hmH        = img.height;
+    m_size        = img.width;   // assume square
     m_heightScale = heightScale;
 
-    delete[] m_heightData;
-    m_heightData = new float[m_hmW * m_hmH];
-
-    for (int z = 0; z < m_hmH; ++z)
-    for (int x = 0; x < m_hmW; ++x)
+    
+    switch (m_patchSize)
     {
-        uint32_t pixel = img.GetPixel(x, z);
-        uint8_t  r     = (pixel >> 24) & 0xFF;
-        m_heightData[z * m_hmW + x] = (float)r / 255.f;
+        case  9: m_maxLOD = std::min(m_maxLOD, 3); break;
+        case 17: m_maxLOD = std::min(m_maxLOD, 4); break;
+        case 33: m_maxLOD = std::min(m_maxLOD, 5); break;
+        case 65: m_maxLOD = std::min(m_maxLOD, 6); break;
+        default: m_maxLOD = std::min(m_maxLOD, 7); break;
     }
 
-    // Smooth
+    // Store raw height data
+    delete[] m_heightData;
+    m_heightData = new float[m_size * m_size];
+
+    for (int z = 0; z < m_size; ++z)
+    for (int x = 0; x < m_size; ++x)
+    {
+        uint32_t pixel = img.GetPixel(x, z);
+        uint8_t  r     = pixel & 0xFF;
+        m_heightData[z * m_size + x] = (float)r / 255.f;
+    }
+
     if (smoothFactor > 0)
         smooth(smoothFactor);
 
-    m_terrainScale = scale; // inherit from Node3D
+    // Build source vertex buffer — positions in normalised [0,1] space.
+    // Heights are raw [0,1] * heightScale (no world scale yet).
+    const float tdSize = 1.f / (float)(m_size - 1);
+    m_sourceVerts.resize((size_t)m_size * m_size);
 
-    buildPatches();
-    computeLODDist();
+    for (int z = 0; z < m_size; ++z)
+    for (int x = 0; x < m_size; ++x)
+    {
+        float fx = (float)x * tdSize;
+        float fz = (float)z * tdSize;
+        float h  = m_heightData[z * m_size + x] * m_heightScale;
 
-    return !m_patches.empty();
+        TerrainVertex &v = m_sourceVerts[(size_t)z * m_size + x];   // row-major: [z*size+x]
+        v.position = { fx, h, fz };        // normalised X/Z, unscaled Y
+        v.normal   = { 0.f, 1.f, 0.f };
+        v.uv       = { fx * m_texScale,    fz * m_texScale  };
+        v.uv2      = { fx * m_detailScale, fz * m_detailScale };
+    }
+
+    // Allocate render buffer
+    delete m_renderBuffer;
+    m_renderBuffer         = new TerrainBuffer();
+    m_renderBuffer->vertices = m_sourceVerts;   // copy; positions will be baked below
+
+    // Bake scale+position NOW (uses current Node3D scale/position)
+    applyTransformation();   // also calculateNormals, update GPU VBO, calculatePatchData
+
+    // Pre-allocate dynamic IBO at worst-case size
+    const size_t maxIndices = (size_t)m_patchCount * m_patchCount *
+                              m_calcPatchSize      * m_calcPatchSize * 6;
+    m_renderBuffer->indices.resize(maxIndices);
+    m_renderBuffer->allocateDynamicIndices(maxIndices);
+
+    // First frame index build
+    m_forceRecalc = true;
+
+    SDL_Log("[TerrainLodNode] Loaded: size=%d, patches=%dx%d, maxLOD=%d",
+            m_size, m_patchCount, m_patchCount, m_maxLOD);
+    return true;
 }
+
 
 void TerrainLodNode::smooth(int iterations)
 {
-    std::vector<float> tmp(m_hmW * m_hmH);
     for (int iter = 0; iter < iterations; ++iter)
     {
-        for (int z = 0; z < m_hmH; ++z)
-        for (int x = 0; x < m_hmW; ++x)
+        std::vector<float> tmp((size_t)m_size * m_size);
+        int yd = m_size;
+        for (int y = 1; y < m_size - 1; ++y)
         {
-            float sum = 0.f;
-            int   cnt = 0;
-            for (int dz = -1; dz <= 1; ++dz)
-            for (int dx = -1; dx <= 1; ++dx)
+            for (int x = 1; x < m_size - 1; ++x)
             {
-                int nx = x + dx, nz = z + dz;
-                if (nx >= 0 && nx < m_hmW && nz >= 0 && nz < m_hmH)
-                {
-                    sum += m_heightData[nz * m_hmW + nx];
-                    ++cnt;
-                }
+                tmp[x + yd] = (m_heightData[x - 1 + yd] +
+                               m_heightData[x + 1 + yd] +
+                               m_heightData[x + yd - m_size] +
+                               m_heightData[x + yd + m_size]) * 0.25f;
             }
-            tmp[z * m_hmW + x] = sum / (float)cnt;
+            yd += m_size;
         }
-        std::memcpy(m_heightData, tmp.data(), tmp.size() * sizeof(float));
+        // Copy smoothed interior, keep borders
+        for (int y = 1; y < m_size - 1; ++y)
+        for (int x = 1; x < m_size - 1; ++x)
+            m_heightData[x + y * m_size] = tmp[x + y * m_size];
     }
 }
 
-void TerrainLodNode::buildPatches()
+// ── Rebake render buffer from m_heightData ────────────────────────────────────
+// Called after any height edit: syncs m_sourceVerts Y, then re-bakes world
+// positions, normals, uploads VBO, and recalculates patch data.
+void TerrainLodNode::rebakeFromHeightData()
 {
-    int step = m_patchVerts - 1;
-    m_patchCount = std::max(1, (std::max(m_hmW, m_hmH) - 1) / step);
+    if (m_sourceVerts.empty() || !m_heightData) return;
 
-    m_patches.resize((size_t)m_patchCount * m_patchCount);
-    m_aabb = BoundingBox{};
-
-    for (int pz = 0; pz < m_patchCount; ++pz)
-    for (int px = 0; px < m_patchCount; ++px)
+    for (int z = 0; z < m_size; ++z)
+    for (int x = 0; x < m_size; ++x)
     {
-        Patch &p = m_patches[(size_t)pz * m_patchCount + px];
-
-        // Pre-compute center & AABB by sampling corners
-        int originX = px * step;
-        int originZ = pz * step;
-        int endX    = std::min(originX + step, m_hmW - 1);
-        int endZ    = std::min(originZ + step, m_hmH - 1);
-
-        float minH = 1e30f, maxH = -1e30f;
-        for (int sz = originZ; sz <= endZ; ++sz)
-        for (int sx = originX; sx <= endX; ++sx)
-        {
-            float h = sampleHeight(sx, sz) * m_heightScale;
-            minH = std::min(minH, h);
-            maxH = std::max(maxH, h);
-        }
-
-        float wx0 = (float)originX / (float)(m_hmW - 1) * scale.x;
-        float wz0 = (float)originZ / (float)(m_hmH - 1) * scale.z;
-        float wx1 = (float)endX    / (float)(m_hmW - 1) * scale.x;
-        float wz1 = (float)endZ    / (float)(m_hmH - 1) * scale.z;
-
-        p.aabb.min = {wx0, minH, wz0};
-        p.aabb.max = {wx1, maxH, wz1};
-        p.center   = p.aabb.center();
-
-        m_aabb.expand(p.aabb.min);
-        m_aabb.expand(p.aabb.max);
-
-        // Build all LOD meshes eagerly
-        for (int lod = 0; lod < m_maxLOD; ++lod)
-        {
-            p.meshes[lod] = new TerrainBuffer();
-            buildPatchMesh(p, px, pz, lod);
-            p.meshes[lod]->aabb = p.aabb;
-            p.meshes[lod]->upload();
-        }
+        size_t idx = (size_t)z * m_size + x;
+        m_sourceVerts[idx].position.y = m_heightData[idx] * m_heightScale;
     }
+
+    applyTransformation();   // bakes world pos, normals, GPU upload, patches
+    m_forceRecalc = true;
 }
 
-void TerrainLodNode::buildPatchMesh(Patch &p, int patchX, int patchZ, int lod)
+// ── Smooth area (local gaussian-blend, world-space radius) ───────────────────
+void TerrainLodNode::smoothArea(float worldX, float worldZ, float radius, int iterations)
 {
-    int stride    = 1 << lod;   // 1, 2, 4, 8
-    int step      = m_patchVerts - 1;
-    int originX   = patchX * step;
-    int originZ   = patchZ * step;
+    if (!m_heightData || m_size <= 0 || iterations <= 0) return;
 
-    int endX      = std::min(originX + step, m_hmW - 1);
-    int endZ      = std::min(originZ + step, m_hmH - 1);
+    const float cx  = (worldX - position.x) / scale.x * (float)(m_size - 1);
+    const float cz  = (worldZ - position.z) / scale.z * (float)(m_size - 1);
+    const float rx  = radius / scale.x * (float)(m_size - 1);
+    const float rz  = radius / scale.z * (float)(m_size - 1);
+    const float mxR = std::max(rx, rz);
 
-    float invW    = 1.f / (float)(m_hmW - 1);
-    float invH    = 1.f / (float)(m_hmH - 1);
+    const int minX = std::max(1,           (int)(cx - mxR));
+    const int maxX = std::min(m_size - 2,  (int)(cx + mxR));
+    const int minZ = std::max(1,           (int)(cz - mxR));
+    const int maxZ = std::min(m_size - 2,  (int)(cz + mxR));
 
-    TerrainBuffer *buf = p.meshes[lod];
-    buf->vertices.clear();
-    buf->indices.clear();
+    std::vector<float> h(m_heightData, m_heightData + (size_t)m_size * m_size);
 
-    // Build vertex grid at the given stride
-    std::vector<int> xCoords, zCoords;
-    for (int x = originX; x <= endX; x += stride) xCoords.push_back(x);
-    for (int z = originZ; z <= endZ; z += stride) zCoords.push_back(z);
-
-    // Make sure last vertex hits the patch edge
-    if (xCoords.empty() || xCoords.back() != endX) xCoords.push_back(endX);
-    if (zCoords.empty() || zCoords.back() != endZ) zCoords.push_back(endZ);
-
-    int vCountX = (int)xCoords.size();
-    int vCountZ = (int)zCoords.size();
-
-    buf->vertices.reserve((size_t)vCountX * vCountZ);
-    buf->indices.reserve((size_t)(vCountX - 1) * (vCountZ - 1) * 6);
-
-    for (int lz = 0; lz < vCountZ; ++lz)
-    for (int lx = 0; lx < vCountX; ++lx)
+    for (int iter = 0; iter < iterations; ++iter)
     {
-        int hmx = xCoords[lx];
-        int hmz = zCoords[lz];
+        std::vector<float> smoothed = h;
+        for (int z = minZ; z <= maxZ; ++z)
+        for (int x = minX; x <= maxX; ++x)
+        {
+            const float dx = (x - cx) / rx;
+            const float dz = (z - cz) / rz;
+            const float ds = dx * dx + dz * dz;
+            if (ds > 1.f) continue;
 
-        float h  = sampleHeight(hmx, hmz) * m_heightScale;
-        glm::vec3 n = calcNormal(hmx, hmz);
+            const int i = z * m_size + x;
+            const float avg = (h[i]           * 4.f
+                             + h[i - 1]       * 2.f + h[i + 1]       * 2.f
+                             + h[i - m_size]  * 2.f + h[i + m_size]  * 2.f
+                             + h[i - m_size - 1]    + h[i - m_size + 1]
+                             + h[i + m_size - 1]    + h[i + m_size + 1]) / 16.f;
 
-        TerrainVertex v;
-        v.position = {(float)hmx * invW * scale.x,
-                      h,
-                      (float)hmz * invH * scale.z};
-        v.normal   = n;
-        v.uv       = {(float)hmx * invW * m_texScale,
-                      (float)hmz * invH * m_texScale};
-        v.uv2      = {(float)hmx * invW * m_detailScale,
-                      (float)hmz * invH * m_detailScale};
-
-        buf->vertices.push_back(v);
+            const float blend = 1.f - ds;
+            smoothed[i] = h[i] + (avg - h[i]) * blend;
+        }
+        h = smoothed;
     }
 
-    for (int lz = 0; lz < vCountZ - 1; ++lz)
-    for (int lx = 0; lx < vCountX - 1; ++lx)
+    for (int z = minZ; z <= maxZ; ++z)
+    for (int x = minX; x <= maxX; ++x)
     {
-        uint32_t tl = (uint32_t)(lz     * vCountX + lx);
-        uint32_t tr = (uint32_t)(lz     * vCountX + lx + 1);
-        uint32_t bl = (uint32_t)((lz+1) * vCountX + lx);
-        uint32_t br = (uint32_t)((lz+1) * vCountX + lx + 1);
+        const float dx = (x - cx) / rx;
+        const float dz = (z - cz) / rz;
+        if (dx * dx + dz * dz <= 1.f)
+            m_heightData[z * m_size + x] = h[z * m_size + x];
+    }
 
-        buf->indices.push_back(tl);
-        buf->indices.push_back(bl);
-        buf->indices.push_back(tr);
+    rebakeFromHeightData();
+}
 
-        buf->indices.push_back(tr);
-        buf->indices.push_back(bl);
-        buf->indices.push_back(br);
+// ── Set absolute world-Y height (linear falloff from centre) ─────────────────
+void TerrainLodNode::setHeight(float worldX, float worldZ, float newHeight, float radius)
+{
+    if (!m_heightData || m_size <= 0) return;
+
+    const float cx  = (worldX - position.x) / scale.x * (float)(m_size - 1);
+    const float cz  = (worldZ - position.z) / scale.z * (float)(m_size - 1);
+    const float rx  = radius / scale.x * (float)(m_size - 1);
+    const float rz  = radius / scale.z * (float)(m_size - 1);
+    const float mxR = std::max(rx, rz);
+
+    
+    const float rawTarget = std::max(0.f, std::min(1.f,
+        (newHeight - position.y) / (m_heightScale * scale.y)));
+
+    const int minX = std::max(0,           (int)(cx - mxR));
+    const int maxX = std::min(m_size - 1,  (int)(cx + mxR));
+    const int minZ = std::max(0,           (int)(cz - mxR));
+    const int maxZ = std::min(m_size - 1,  (int)(cz + mxR));
+
+    for (int z = minZ; z <= maxZ; ++z)
+    for (int x = minX; x <= maxX; ++x)
+    {
+        const float dx = (x - cx) / rx;
+        const float dz = (z - cz) / rz;
+        const float ds = dx * dx + dz * dz;
+        if (ds > 1.f) continue;
+
+        const float weight = 1.f - ds;   // linear falloff
+        const int i = z * m_size + x;
+        m_heightData[i] = std::max(0.f, std::min(1.f,
+            m_heightData[i] + (rawTarget - m_heightData[i]) * weight));
+    }
+
+    rebakeFromHeightData();
+}
+
+// ── Raise / lower height by delta (cosine falloff, world units) ───────────────
+void TerrainLodNode::modifyHeight(float worldX, float worldZ, float deltaHeight, float radius)
+{
+    if (!m_heightData || m_size <= 0) return;
+
+    const float cx  = (worldX - position.x) / scale.x * (float)(m_size - 1);
+    const float cz  = (worldZ - position.z) / scale.z * (float)(m_size - 1);
+    const float rx  = radius / scale.x * (float)(m_size - 1);
+    const float rz  = radius / scale.z * (float)(m_size - 1);
+    const float mxR = std::max(rx, rz);
+
+    // Convert world-unit delta → raw
+    const float rawDelta = deltaHeight / (m_heightScale * scale.y);
+
+    const int minX = std::max(0,           (int)(cx - mxR));
+    const int maxX = std::min(m_size - 1,  (int)(cx + mxR));
+    const int minZ = std::max(0,           (int)(cz - mxR));
+    const int maxZ = std::min(m_size - 1,  (int)(cz + mxR));
+
+    for (int z = minZ; z <= maxZ; ++z)
+    for (int x = minX; x <= maxX; ++x)
+    {
+        const float dx = (x - cx) / rx;
+        const float dz = (z - cz) / rz;
+        const float ds = dx * dx + dz * dz;
+        if (ds > 1.f) continue;
+
+        const float weight = std::cos(ds * 3.14159265f * 0.5f);   // cosine falloff
+        const int i = z * m_size + x;
+        m_heightData[i] = std::max(0.f, std::min(1.f,
+            m_heightData[i] + rawDelta * weight));
+    }
+
+    rebakeFromHeightData();
+}
+
+// ── Flatten toward target height (smooth blend to flat plane) ─────────────────
+void TerrainLodNode::flatten(float worldX, float worldZ,
+                             float targetHeight, float radius, float strength)
+{
+    if (!m_heightData || m_size <= 0) return;
+
+    const float cx  = (worldX - position.x) / scale.x * (float)(m_size - 1);
+    const float cz  = (worldZ - position.z) / scale.z * (float)(m_size - 1);
+    const float rx  = radius / scale.x * (float)(m_size - 1);
+    const float rz  = radius / scale.z * (float)(m_size - 1);
+    const float mxR = std::max(rx, rz);
+
+    const float rawTarget = std::max(0.f, std::min(1.f,
+        (targetHeight - position.y) / (m_heightScale * scale.y)));
+
+    const int minX = std::max(0,           (int)(cx - mxR));
+    const int maxX = std::min(m_size - 1,  (int)(cx + mxR));
+    const int minZ = std::max(0,           (int)(cz - mxR));
+    const int maxZ = std::min(m_size - 1,  (int)(cz + mxR));
+
+    for (int z = minZ; z <= maxZ; ++z)
+    for (int x = minX; x <= maxX; ++x)
+    {
+        const float dx = (x - cx) / rx;
+        const float dz = (z - cz) / rz;
+        const float ds = dx * dx + dz * dz;
+        if (ds > 1.f) continue;
+
+        const float weight = (1.f - ds) * strength;
+        const int i = z * m_size + x;
+        m_heightData[i] = std::max(0.f, std::min(1.f,
+            m_heightData[i] + (rawTarget - m_heightData[i]) * weight));
+    }
+
+    rebakeFromHeightData();
+}
+
+// ── Normals (central differences on baked world-space positions) ──────────────
+void TerrainLodNode::calculateNormals()
+{
+    auto posAt = [&](int x, int z) -> glm::vec3 {
+        x = std::max(0, std::min(x, m_size - 1));
+        z = std::max(0, std::min(z, m_size - 1));
+        return m_renderBuffer->vertices[(size_t)z * m_size + x].position;  // row-major [z*size+x]
+    };
+
+    for (int z = 0; z < m_size; ++z)
+    for (int x = 0; x < m_size; ++x)
+    {
+        glm::vec3 L = posAt(x - 1, z);
+        glm::vec3 R = posAt(x + 1, z);
+        glm::vec3 D = posAt(x, z - 1);
+        glm::vec3 U = posAt(x, z + 1);
+        // cross(U-D, R-L) => cross(+Z, +X) = +Y  (normals point up)
+        glm::vec3 n = glm::cross(U - D, R - L);
+        float len = glm::length(n);
+        m_renderBuffer->vertices[(size_t)z * m_size + x].normal =
+            (len > 1e-6f) ? n / len : glm::vec3(0, 1, 0);
     }
 }
 
-void TerrainLodNode::computeLODDist()
+// ── ApplyTransformation — re-bake world positions from source verts ──────────
+void TerrainLodNode::applyTransformation()
+{
+    if (m_sourceVerts.empty()) return;
+
+    const glm::vec3 pos = position;   // Node3D::position
+    const glm::vec3 scl = scale;      // Node3D::scale
+
+    const size_t count = m_sourceVerts.size();
+    m_renderBuffer->vertices.resize(count);
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        const TerrainVertex &src = m_sourceVerts[i];
+        TerrainVertex       &dst = m_renderBuffer->vertices[i];
+        dst.position = src.position * scl + pos;
+        dst.uv       = src.uv;
+        dst.uv2      = src.uv2;
+        // normal will be set in calculateNormals
+    }
+
+    calculateNormals();
+
+    if (m_renderBuffer->vbo != 0)
+        m_renderBuffer->update();   // re-upload VBO
+
+    calculateDistanceThresholds(true);
+    createPatches();
+    calculatePatchData();
+}
+
+
+void TerrainLodNode::calculateDistanceThresholds(bool /*scaleChanged*/)
 {
     m_lodDist.resize(m_maxLOD);
-    float baseSize = (float)(m_patchVerts - 1) * scale.x / (float)(m_hmW - 1);
+
+    const float normPatch = (float)m_calcPatchSize / (float)(m_size - 1);
+    const float patchSzX  = normPatch * scale.x;
+    const float patchSzZ  = normPatch * scale.z;
+    const float diagonal  = std::sqrt(patchSzX * patchSzX + patchSzZ * patchSzZ);
+
     for (int i = 0; i < m_maxLOD; ++i)
     {
-        float d = baseSize * (float)(2 << i) * 4.f; // heuristic multiplier
+        float d = diagonal * std::pow(2.f, (float)i);
         m_lodDist[i] = d * d;
     }
 }
 
+// ── Create patch array ────────────────────────────────────────────────────────
+void TerrainLodNode::createPatches()
+{
+    m_patchCount = (m_size - 1) / m_calcPatchSize;
+    const int total = m_patchCount * m_patchCount;
+    m_patches.assign(total, Patch{});
+    SDL_Log("[TerrainLodNode] Patches: %dx%d = %d", m_patchCount, m_patchCount, total);
+}
+
+// ── Compute per-patch AABB, centre, neighbour pointers ────────────────────────
+void TerrainLodNode::calculatePatchData()
+{
+    if (!m_renderBuffer || m_patches.empty()) return;
+
+    m_aabb = BoundingBox{};
+
+    for (int px = 0; px < m_patchCount; ++px)
+    for (int pz = 0; pz < m_patchCount; ++pz)
+    {
+        Patch &p = m_patches[(size_t)px * m_patchCount + pz];
+        p.aabb    = BoundingBox{};
+
+        const int xStart = pz * m_calcPatchSize;   // col (X) range: driven by pz to match getIndex(patchX=pz)
+        const int zStart = px * m_calcPatchSize;   // row (Z) range: driven by px to match getIndex(patchZ=px)
+        const int xEnd   = xStart + m_calcPatchSize;
+        const int zEnd   = zStart + m_calcPatchSize;
+
+        bool first = true;
+        for (int x = xStart; x <= xEnd; ++x)
+        for (int z = zStart; z <= zEnd; ++z)
+        {
+            const glm::vec3 &pos =
+                m_renderBuffer->vertices[(size_t)z * m_size + x].position;  // row-major [z*size+x]
+            if (first) { p.aabb.min = p.aabb.max = pos; first = false; }
+            else        p.aabb.expand(pos);
+        }
+
+        p.center = p.aabb.center();
+
+        // Assign neighbour pointers (for T-junction stitching)
+        p.top    = (px > 0)                  ? &m_patches[(size_t)(px-1)*m_patchCount+pz] : nullptr;
+        p.bottom = (px < m_patchCount - 1)   ? &m_patches[(size_t)(px+1)*m_patchCount+pz] : nullptr;
+        p.left   = (pz > 0)                  ? &m_patches[(size_t)px*m_patchCount+(pz-1)] : nullptr;
+        p.right  = (pz < m_patchCount - 1)   ? &m_patches[(size_t)px*m_patchCount+(pz+1)] : nullptr;
+
+        m_aabb.expand(p.aabb.min);
+        m_aabb.expand(p.aabb.max);
+    }
+}
+
+
+bool TerrainLodNode::preRenderLODCalculations(const glm::vec3 &camPos,
+                                              const glm::vec3 &camRot,
+                                              const Frustum   &frustum)
+{
+    if (!m_forceRecalc)
+    {
+        glm::vec3 dPos   = camPos - m_oldCamPos;
+        float     movedSq    = glm::dot(dPos, dPos);
+        float     dotForward = glm::dot(camRot, m_oldCamForward);  // camRot is fwd unit vector
+        if (movedSq < m_camMoveDelta * m_camMoveDelta &&
+            dotForward > m_camRotDelta)
+            return false;   // camera hasn't moved/rotated enough — skip recalc
+    }
+
+    m_oldCamPos     = camPos;
+    m_oldCamForward = camRot;   // store new forward
+    m_forceRecalc = false;
+
+    const int count = m_patchCount * m_patchCount;
+    for (int j = 0; j < count; ++j)
+    {
+        Patch &p = m_patches[j];
+        if (frustum.intersectsLoose(p.aabb))
+        {
+            float distSq = glm::dot(camPos - p.center, camPos - p.center);
+            p.currentLOD = 0;
+            for (int i = m_maxLOD - 1; i > 0; --i)
+            {
+                if (distSq >= m_lodDist[i])
+                {
+                    p.currentLOD = i;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            p.currentLOD = -1;
+        }
+    }
+    return true;
+}
+
+void TerrainLodNode::preRenderIndicesCalculations()
+{
+    m_indicesToRender = 0;
+    auto &indices = m_renderBuffer->indices;
+
+    int patchIdx = 0;
+    for (int i = 0; i < m_patchCount; ++i)
+    for (int j = 0; j < m_patchCount; ++j, ++patchIdx)
+    {
+        if (m_patches[patchIdx].currentLOD < 0) continue;
+
+        const int step = 1 << m_patches[patchIdx].currentLOD;
+        int x = 0, z = 0;
+
+        while (z < m_calcPatchSize)
+        {
+            uint32_t i11 = getIndex(j, i, patchIdx, (uint32_t)x,        (uint32_t)z);
+            uint32_t i21 = getIndex(j, i, patchIdx, (uint32_t)(x+step), (uint32_t)z);
+            uint32_t i12 = getIndex(j, i, patchIdx, (uint32_t)x,        (uint32_t)(z+step));
+            uint32_t i22 = getIndex(j, i, patchIdx, (uint32_t)(x+step), (uint32_t)(z+step));
+
+            // CCW from above (+Y normal):  i11(x,z) → i12(x,z+s) → i22(x+s,z+s)
+            indices[m_indicesToRender++] = i11;
+            indices[m_indicesToRender++] = i12;
+            indices[m_indicesToRender++] = i22;
+            indices[m_indicesToRender++] = i11;
+            indices[m_indicesToRender++] = i22;
+            indices[m_indicesToRender++] = i21;
+
+            x += step;
+            if (x >= m_calcPatchSize) { x = 0; z += step; }
+        }
+    }
+
+    m_renderBuffer->updateIndices(m_indicesToRender);
+}
+
+// ── T-junction-safe index lookup (direct port from Irrlicht ) ───
+uint32_t TerrainLodNode::getIndex(int patchX, int patchZ, int patchIdx,
+                                  uint32_t vX, uint32_t vZ) const
+{
+    const Patch &p = m_patches[patchIdx];
+    const uint32_t calcSz = (uint32_t)m_calcPatchSize;
+
+    // top border
+    if (vZ == 0 && p.top && p.top->currentLOD >= 0 &&
+        p.currentLOD < p.top->currentLOD &&
+        (vX % (1u << p.top->currentLOD)) != 0)
+        vX -= vX % (1u << p.top->currentLOD);
+
+    // bottom border
+    else if (vZ == calcSz && p.bottom && p.bottom->currentLOD >= 0 &&
+             p.currentLOD < p.bottom->currentLOD &&
+             (vX % (1u << p.bottom->currentLOD)) != 0)
+        vX -= vX % (1u << p.bottom->currentLOD);
+
+    // left border
+    if (vX == 0 && p.left && p.left->currentLOD >= 0 &&
+        p.currentLOD < p.left->currentLOD &&
+        (vZ % (1u << p.left->currentLOD)) != 0)
+        vZ -= vZ % (1u << p.left->currentLOD);
+
+    // right border
+    else if (vX == calcSz && p.right && p.right->currentLOD >= 0 &&
+             p.currentLOD < p.right->currentLOD &&
+             (vZ % (1u << p.right->currentLOD)) != 0)
+        vZ -= vZ % (1u << p.right->currentLOD);
+
+    if (vZ >= (uint32_t)m_patchSize) vZ = calcSz;
+    if (vX >= (uint32_t)m_patchSize) vX = calcSz;
+
+    return (vZ + (uint32_t)(m_calcPatchSize * patchZ)) * (uint32_t)m_size +
+           (vX + (uint32_t)(m_calcPatchSize * patchX));
+}
+
+// ── setLODDistance ────────────────────────────────────────────────────────────
 void TerrainLodNode::setLODDistance(int lod, float dist)
 {
     if (lod >= 0 && lod < (int)m_lodDist.size())
         m_lodDist[lod] = dist * dist;
 }
 
-int TerrainLodNode::calcLOD(float distSq) const
-{
-    for (int i = 0; i < (int)m_lodDist.size(); ++i)
-        if (distSq < m_lodDist[i])
-            return i;
-    return m_maxLOD - 1;
-}
-
+// ── Height / normal queries (world space) ────────────────────────────────────
 float TerrainLodNode::sampleHeight(int x, int z) const
 {
-    x = std::max(0, std::min(x, m_hmW - 1));
-    z = std::max(0, std::min(z, m_hmH - 1));
-    return m_heightData[z * m_hmW + x];
-}
-
-glm::vec3 TerrainLodNode::calcNormal(int x, int z) const
-{
-    float hL = sampleHeight(x-1, z) * m_heightScale;
-    float hR = sampleHeight(x+1, z) * m_heightScale;
-    float hD = sampleHeight(x, z-1) * m_heightScale;
-    float hU = sampleHeight(x, z+1) * m_heightScale;
-    float sx  = scale.x / (float)(m_hmW - 1);
-    float sz  = scale.z / (float)(m_hmH - 1);
-    return glm::normalize(glm::vec3((hL - hR) / (2.f * sx), 1.f, (hD - hU) / (2.f * sz)));
+    x = std::max(0, std::min(x, m_size - 1));
+    z = std::max(0, std::min(z, m_size - 1));
+    return m_heightData[z * m_size + x];
 }
 
 float TerrainLodNode::getHeightAt(float worldX, float worldZ) const
 {
-    if (!m_heightData) return 0.f;
-    const glm::mat4 inv = glm::inverse(worldMatrix());
-    const glm::vec4 local = inv * glm::vec4(worldX, 0, worldZ, 1);
-    float fx = local.x / scale.x * (float)(m_hmW - 1);
-    float fz = local.z / scale.z * (float)(m_hmH - 1);
-    int x0 = (int)std::floor(fx), z0 = (int)std::floor(fz);
-    float tx = fx - x0, tz = fz - z0;
-    float h00 = sampleHeight(x0,   z0  ) * m_heightScale;
-    float h10 = sampleHeight(x0+1, z0  ) * m_heightScale;
-    float h01 = sampleHeight(x0,   z0+1) * m_heightScale;
-    float h11 = sampleHeight(x0+1, z0+1) * m_heightScale;
-    return worldMatrix()[3][1] + lerp(lerp(h00, h10, tx), lerp(h01, h11, tx), tz);
+    if (!m_heightData || !m_renderBuffer) return 0.f;
+
+    // Map world → normalised [0,1]
+    float lx = (worldX - position.x) / scale.x;
+    float lz = (worldZ - position.z) / scale.z;
+    lx = std::max(0.f, std::min(1.f, lx));
+    lz = std::max(0.f, std::min(1.f, lz));
+
+    float gx = lx * (float)(m_size - 1);
+    float gz = lz * (float)(m_size - 1);
+    int   ix = std::min((int)gx, m_size - 2);
+    int   iz = std::min((int)gz, m_size - 2);
+    float fx = gx - (float)ix;
+    float fz = gz - (float)iz;
+
+    // Bilinear from baked (world-space) Y values
+    auto wy = [&](int x, int z) {
+        return m_renderBuffer->vertices[(size_t)z * m_size + x].position.y;  // row-major
+    };
+    return wy(ix,iz)*(1-fx)*(1-fz) + wy(ix+1,iz)*fx*(1-fz) +
+           wy(ix,iz+1)*(1-fx)*fz   + wy(ix+1,iz+1)*fx*fz;
+}
+
+glm::vec3 TerrainLodNode::calcNormal(int x, int z) const
+{
+    // For internal normal math (used only if needed elsewhere)
+    float hL = sampleHeight(x-1, z) * m_heightScale * scale.y;
+    float hR = sampleHeight(x+1, z) * m_heightScale * scale.y;
+    float hD = sampleHeight(x, z-1) * m_heightScale * scale.y;
+    float hU = sampleHeight(x, z+1) * m_heightScale * scale.y;
+    float sx  = scale.x / (float)(m_size - 1);
+    float sz  = scale.z / (float)(m_size - 1);
+    return glm::normalize(glm::vec3((hL - hR) / (2.f * sx), 1.f, (hD - hU) / (2.f * sz)));
 }
 
 glm::vec3 TerrainLodNode::getNormalAt(float worldX, float worldZ) const
 {
-    if (!m_heightData) return {0,1,0};
-    const glm::mat4 inv = glm::inverse(worldMatrix());
-    const glm::vec4 local = inv * glm::vec4(worldX, 0, worldZ, 1);
-    float fx = local.x / scale.x * (float)(m_hmW - 1);
-    float fz = local.z / scale.z * (float)(m_hmH - 1);
-    glm::vec3 ln = calcNormal((int)std::round(fx), (int)std::round(fz));
-    glm::mat3 nm = glm::mat3(glm::transpose(glm::inverse(worldMatrix())));
-    return glm::normalize(nm * ln);
+    if (!m_heightData || !m_renderBuffer) return {0,1,0};
+
+    float lx = (worldX - position.x) / scale.x;
+    float lz = (worldZ - position.z) / scale.z;
+    float gx = std::max(0.f, std::min(1.f, lx)) * (float)(m_size - 1);
+    float gz = std::max(0.f, std::min(1.f, lz)) * (float)(m_size - 1);
+    int   ix = (int)std::round(gx);
+    int   iz = (int)std::round(gz);
+    ix = std::max(0, std::min(ix, m_size - 1));
+    iz = std::max(0, std::min(iz, m_size - 1));
+    return glm::normalize(m_renderBuffer->vertices[(size_t)iz * m_size + ix].normal);  // row-major
 }
 
 TerrainRaycastResult TerrainLodNode::raycast(const Ray &ray, float maxDist) const
 {
     TerrainRaycastResult r;
     if (!m_heightData) return r;
-    float step = std::min(scale.x, scale.z) / (float)(std::max(m_hmW, m_hmH) - 1);
-    for (float t = 0.f; t <= maxDist; t += step * 2.f)
+
+    float cellSz = std::min(scale.x, scale.z) / (float)(m_size - 1);
+    for (float t = 0.f; t <= maxDist; t += cellSz * 2.f)
     {
         glm::vec3 p = ray.origin + ray.direction * t;
-        float       th = getHeightAt(p.x, p.z);
+        float     th = getHeightAt(p.x, p.z);
         if (t > 0.f && p.y <= th)
         {
-            float tLo = t - step * 2.f, tHi = t;
+            float lo = t - cellSz * 2.f, hi = t;
             for (int i = 0; i < 8; ++i)
             {
-                float tm = (tLo + tHi) * 0.5f;
+                float tm = (lo + hi) * 0.5f;
                 glm::vec3 pm = ray.origin + ray.direction * tm;
-                if (pm.y <= getHeightAt(pm.x, pm.z)) tHi = tm;
-                else                                  tLo = tm;
+                if (pm.y <= getHeightAt(pm.x, pm.z)) hi = tm;
+                else                                  lo = tm;
             }
-            float tf  = (tLo + tHi) * 0.5f;
-            glm::vec3 hit = ray.origin + ray.direction * tf;
+            float tf    = (lo + hi) * 0.5f;
+            glm::vec3 h = ray.origin + ray.direction * tf;
             r.hit      = true;
-            r.position = hit;
-            r.normal   = getNormalAt(hit.x, hit.z);
+            r.position = h;
+            r.normal   = getNormalAt(h.x, h.z);
             r.distance = tf;
             return r;
         }
@@ -600,39 +947,63 @@ TerrainRaycastResult TerrainLodNode::raycast(const Ray &ray, float maxDist) cons
     return r;
 }
 
+// ── Debug: draw patch AABBs coloured by LOD ─────────────────────────────────
+void TerrainLodNode::debug(RenderBatch *batch) const
+{
+    if (!batch || m_patches.empty()) return;
+
+    // Overall terrain AABB — white
+    batch->SetColor(255, 255, 255, 180);
+    batch->Box(m_aabb);
+
+    // Per-patch AABB coloured by LOD level (matches tmpo/Terrain.cpp colour scheme)
+    const int count = (int)m_patches.size();
+    for (int i = 0; i < count; ++i)
+    {
+        const Patch &p = m_patches[i];
+        switch (p.currentLOD)
+        {
+            case  0: batch->SetColor(  0, 255,   0, 200); break;  // green   — max detail
+            case  1: batch->SetColor(255, 255,   0, 200); break;  // yellow
+            case  2: batch->SetColor(255, 165,   0, 200); break;  // orange
+            case  3: batch->SetColor(128,   0, 128, 200); break;  // purple
+            case  4: batch->SetColor(255,   0,   0, 200); break;  // red
+            default:
+                if (p.currentLOD > 4)
+                    batch->SetColor(200,   0,   0, 200);           // dark red — very low detail
+                else
+                    batch->SetColor(100, 100, 100, 120);           // grey — frustum-culled
+                break;
+        }
+        batch->Box(p.aabb);
+    }
+}
+
+// ── gatherRenderItems ─────────────────────────────────────────────────────────
 void TerrainLodNode::gatherRenderItems(RenderQueue &q, const FrameContext &ctx)
 {
-    if (!visible || !m_material || m_patches.empty()) return;
+    if (!visible || !m_material || !m_renderBuffer || m_patches.empty()) return;
 
-    const glm::vec3 camPos  = ctx.camera->worldPosition();
-    const glm::mat4 world   = worldMatrix();
-    const Frustum  &frustum = ctx.frustum;
+    const glm::vec3 camPos = ctx.camera->worldPosition();
+    // Extract forward direction from view matrix (row 2 = -forward in GLM column-major)
+    const glm::mat4 &view  = ctx.camera->view;
+    const glm::vec3 camFwd = glm::normalize(glm::vec3(-view[0][2], -view[1][2], -view[2][2]));
 
-    for (Patch &p : m_patches)
-    {
-        BoundingBox worldAABB = p.aabb.transformed(world);
-        if (!frustum.contains(worldAABB))
-            continue;
+    bool changed = preRenderLODCalculations(camPos, camFwd, ctx.frustum);
+    if (changed)
+        preRenderIndicesCalculations();
 
-        glm::vec3 wCenter = world * glm::vec4(p.center, 1.f);
-        glm::vec3 diff    = wCenter - camPos;
-        float distSq      = glm::dot(diff, diff);
-        int   lod         = calcLOD(distSq);
-        lod               = std::max(0, std::min(lod, m_maxLOD - 1));
+    if (m_indicesToRender == 0) return;
 
-        TerrainBuffer *buf = p.meshes[lod];
-        if (!buf || buf->indices.empty()) continue;
-
-        RenderItem item;
-        item.drawable   = buf;
-        item.material   = m_material;
-        item.model      = world;
-        item.worldAABB  = worldAABB;
-        item.indexStart = 0;
-        item.indexCount = (uint32_t)buf->indices.size();
-        item.passMask   = RenderPassMask::Opaque;
-        q.add(item);
-    }
+    RenderItem item;
+    item.drawable   = m_renderBuffer;
+    item.material   = m_material;
+    item.model      = glm::mat4(1.f);   // vertices are already in world space
+    item.worldAABB  = m_aabb;
+    item.indexStart = 0;
+    item.indexCount = m_indicesToRender;
+    item.passMask   = RenderPassMask::Opaque;
+    q.add(item);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

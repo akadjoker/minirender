@@ -7,6 +7,8 @@
 #include <string>
 #include <cstdint>
 
+class RenderBatch;   // forward-declare so TerrainLodNode::debug can use it
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  TerrainRaycastResult
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,40 +93,58 @@ private:
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  TerrainLodNode
-//  LOD heightmap terrain.  Each patch has N LOD meshes built at load time;
-//  the correct one is chosen per-frame based on camera distance.
+//  GeoMipMap LOD terrain — single shared VBO, dynamic IBO rebuilt per frame.
+//  Based on Irrlicht CTerrainSceneNode / user's TerrainLod (tmpo/Terrain.cpp).
 // ─────────────────────────────────────────────────────────────────────────────
 class TerrainLodNode : public Node3D
 {
 public:
-    static constexpr int MAX_LOD = 4;
-
-    TerrainLodNode(const std::string &name     = "TerrainLod",
-                   int                maxLOD   = 4,
-                   TerrainPatchSize   patchSz  = TerrainPatchSize::Patch17,
+    TerrainLodNode(const std::string &name   = "TerrainLod",
+                   int                maxLOD = 4,
+                   TerrainPatchSize   patchSz = TerrainPatchSize::Patch17,
                    float              detailScale = 8.f);
     ~TerrainLodNode() override;
 
-    // Load heightmap — builds all patch meshes for every LOD level.
+    // Load heightmap.  Vertices are baked with current position+scale.
     bool loadFromHeightmap(const std::string &path,
                            float heightScale  = 1.f,
                            int   smoothFactor = 0);
 
-    float     getHeightAt(float worldX, float worldZ) const;
-    glm::vec3 getNormalAt(float worldX, float worldZ) const;
-    TerrainRaycastResult raycast(const Ray &ray, float maxDist = 2000.f) const;
+    // Override setScale / setPosition to re-bake vertex positions.
+    void setScale   (const glm::vec3 &s) { Node3D::setScale(s);    applyTransformation(); }
+    void setScale   (float s)            { setScale(glm::vec3(s)); }
+    void setPosition(const glm::vec3 &p) { Node3D::setPosition(p); applyTransformation(); }
 
-    BoundingBox getAABB() const { return m_aabb; }
-
-    Material *getMaterial() const      { return m_material; }
-    void      setMaterial(Material *m) { m_material = m; }
-
-    // Distance thresholds at which each LOD level kicks in.
-    // By default computed automatically from terrain size.
+    // Manually override a LOD distance threshold (world units).
     void setLODDistance(int lod, float dist);
 
-    // Scale applied to terrain texture UVs.
+    // Texture UV tiling.
     void setTextureScale(float s) { m_texScale = s; }
+
+    // Camera movement threshold (world units) before LOD is recalculated.
+    void setCameraMovementDelta(float d) { m_camMoveDelta = d; }
+    // Minimum dot-product change in camera forward before LOD recalculates (0.9998 ≈ 1°).
+    void setCameraRotationDelta(float dot) { m_camRotDelta = dot; }
+
+    float          getHeightAt(float worldX, float worldZ) const;
+    glm::vec3      getNormalAt(float worldX, float worldZ) const;
+    TerrainRaycastResult raycast(const Ray &ray, float maxDist = 2000.f) const;
+
+    // ── Terrain editing ─────────────────────────────────────────────────────
+    // All functions modify m_heightData then rebake normals, patches and GPU.
+    void smooth      (int iterations);                                      // global box smooth
+    void smoothArea  (float worldX, float worldZ, float radius, int iterations); // local smooth
+    void setHeight   (float worldX, float worldZ, float newHeight, float radius); // set absolute world-Y
+    void modifyHeight(float worldX, float worldZ, float deltaHeight, float radius); // raise/lower (cosine falloff)
+    void flatten     (float worldX, float worldZ, float targetHeight, float radius, float strength); // blend toward target
+
+    BoundingBox getAABB()            const { return m_aabb; }
+    Material   *getMaterial()        const { return m_material; }
+    void        setMaterial(Material *m)   { m_material = m; }
+
+    // Draw patch AABBs via RenderBatch (colour-coded by LOD level).
+    // Call from Scene::debug or manually after render().
+    void debug(RenderBatch *batch) const;
 
     // ── Scene integration ────────────────────────────────────────────────────
     void gatherRenderItems(RenderQueue &q, const FrameContext &ctx) override;
@@ -132,41 +152,64 @@ public:
 private:
     struct Patch
     {
-        TerrainBuffer *meshes[MAX_LOD] = {}; // one per LOD (may be nullptr)
-        BoundingBox    aabb            = {};
-        glm::vec3      center          = {};
-        int            currentLOD      = 0;
-
-        ~Patch()
-        {
-            for (auto *m : meshes)
-                delete m;
-        }
+        BoundingBox aabb    = {};
+        glm::vec3   center  = {};
+        int         currentLOD = 0;
+        // Neighbour pointers for T-junction stitching
+        Patch *top    = nullptr;
+        Patch *bottom = nullptr;
+        Patch *left   = nullptr;
+        Patch *right  = nullptr;
     };
 
-    float       *m_heightData   = nullptr;
-    int          m_hmW          = 0;
-    int          m_hmH          = 0;
-    float        m_heightScale  = 1.f;
-    int          m_patchVerts   = 17;   // vertices per side
-    int          m_patchCount   = 0;    // patches per dimension
+    // Terrain data
+    float       *m_heightData   = nullptr;   // raw [0,1] height samples
+    int          m_size         = 0;         // heightmap side (square)
+    int          m_patchSize    = 17;        // vertices per patch side
+    int          m_calcPatchSize= 16;        // quads per patch side (patchSize-1)
+    int          m_patchCount   = 0;         // patches per dimension
     int          m_maxLOD       = 4;
+    float        m_heightScale  = 1.f;
     float        m_texScale     = 1.f;
-    glm::vec3    m_terrainScale = {1.f, 1.f, 1.f};
+    float        m_detailScale  = 8.f;
+
+    // GPU buffer — single VBO (static) + dynamic IBO
+    TerrainBuffer *m_renderBuffer    = nullptr;
+    uint32_t       m_indicesToRender = 0;
+
+    // Source vertices (normalised, no translation) for re-baking on scale/pos change
+    std::vector<TerrainVertex> m_sourceVerts;
 
     std::vector<Patch>  m_patches;
-    std::vector<float>  m_lodDist;   // squared distance thresholds per LOD
+    std::vector<float>  m_lodDist;     // squared LOD distance thresholds
     BoundingBox         m_aabb;
     Material           *m_material = nullptr;
 
-    void      buildPatches   ();
-    void      buildPatchMesh (Patch &p, int patchX, int patchZ, int lod);
-    void      smooth         (int iterations);
-    void      computeLODDist ();
-    int       calcLOD        (float distSq) const;
-    float     sampleHeight   (int x, int z) const;
-    glm::vec3 calcNormal     (int x, int z) const;
-    float     m_detailScale  = 8.f;
+    // Camera change tracking
+    glm::vec3 m_oldCamPos     = {};
+    glm::vec3 m_oldCamForward = { 0.f, 0.f, -1.f };  // forward stored as unit vector
+    float     m_camMoveDelta  = 10.f;
+    float     m_camRotDelta   = 0.9998f;   // dot-product threshold (≈ 1° change)
+    bool      m_forceRecalc  = true;
+
+    // Load-time helpers
+    void rebakeFromHeightData();          // sync sourceVerts from m_heightData then applyTransformation
+    void calculateNormals   ();
+    void applyTransformation();                         // re-bakes from m_sourceVerts
+    void calculateDistanceThresholds(bool scaleChanged = false);
+    void createPatches      ();
+    void calculatePatchData ();
+
+    // Per-frame helpers
+    bool preRenderLODCalculations   (const glm::vec3 &camPos, const glm::vec3 &camRot, const Frustum &frustum);
+    void preRenderIndicesCalculations();
+
+    // T-junction-safe index lookup (ported from Irrlicht )
+    uint32_t getIndex(int patchX, int patchZ, int patchIdx, uint32_t vX, uint32_t vZ) const;
+
+    // Helpers
+    float     sampleHeight(int x, int z) const;
+    glm::vec3 calcNormal  (int x, int z) const;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

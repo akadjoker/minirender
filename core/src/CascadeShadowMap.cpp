@@ -297,17 +297,17 @@ void CsmTechnique::render(const FrameContext &ctx, RenderQueue &queue) const
     if (!ctx.camera)
         return;
 
-    // Update cascade matrices each frame from the current camera
-    csm_->update(*ctx.camera);
-
-    // Execute each cascade depth pass
-    for (RenderPass *pass : passes)
+    if (!ctx.secondary)
     {
-        if (auto *dp = dynamic_cast<CsmDepthPass *>(pass))
-            dp->execute(ctx, queue);
+        // Primary render: update cascade matrices + run depth passes
+        csm_->update(*ctx.camera);
+        for (RenderPass *pass : passes)
+            if (auto *dp = dynamic_cast<CsmDepthPass *>(pass))
+                dp->execute(ctx, queue);
     }
 
     // Upload CSM uniforms to litShader before the opaque lit pass
+    // (uses whatever shadow maps exist — last frame's for secondary renders)
     if (litShader)
     {
         RenderState::instance().useProgram(litShader->getId());
@@ -320,10 +320,8 @@ void CsmTechnique::render(const FrameContext &ctx, RenderQueue &queue) const
                    ctx.viewport.z, ctx.viewport.w);
 
     for (RenderPass *pass : passes)
-    {
         if (!dynamic_cast<CsmDepthPass *>(pass))
             pass->execute(ctx, queue);
-    }
 }
 
 OpaquePass *CsmTechnique::getOpaquePass() const

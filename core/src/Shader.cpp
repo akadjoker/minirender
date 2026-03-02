@@ -180,12 +180,7 @@ void Shader::setVec4(const std::string &u, const glm::vec4 &v) const { glUniform
 void Shader::setMat3(const std::string &u, const glm::mat3 &v) const { glUniformMatrix3fv(getLoc(u), 1, GL_FALSE, glm::value_ptr(v)); }
 void Shader::setMat4(const std::string &u, const glm::mat4 &v) const { glUniformMatrix4fv(getLoc(u), 1, GL_FALSE, glm::value_ptr(v)); }
 
-void Shader::bindBlock(const std::string &blockName, GLuint bindingPoint) const
-{
-    GLuint idx = glGetUniformBlockIndex(id, blockName.c_str());
-    if (idx != GL_INVALID_INDEX)
-        glUniformBlockBinding(id, idx, bindingPoint);
-}
+ 
 
 Shader::~Shader()
 {

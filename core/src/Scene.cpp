@@ -16,8 +16,6 @@ Scene::Scene() {}
 
 Scene::~Scene()
 {
-    if (shadowFBO_) { glDeleteFramebuffers(1, &shadowFBO_); shadowFBO_ = 0; }
-    if (shadowTex_) { glDeleteTextures(1,   &shadowTex_);   shadowTex_ = 0; }
     for (auto *c : cameras_) delete c;
     cameras_.clear();
     clear();
@@ -25,9 +23,7 @@ Scene::~Scene()
 
 void Scene::release()
 {
-    if (shadowFBO_) { glDeleteFramebuffers(1, &shadowFBO_); shadowFBO_ = 0; }
-    if (shadowTex_) { glDeleteTextures(1,   &shadowTex_);   shadowTex_ = 0; }
-    shadowMapCurrent_ = 0;
+    shadowMap_.destroy();
     for (auto *c : cameras_) delete c;
     cameras_.clear();
     currentCamera_ = nullptr;
@@ -175,7 +171,7 @@ void Scene::renderCamera(Camera *cam)
     {
         drawShadowPass();
         frameCtx_.lightSpaceMatrix = lightSpaceMatrix_;
-        frameCtx_.shadowTex        = shadowTex_;
+        frameCtx_.shadowTex        = shadowMap_.depthTexId();
         frameCtx_.lightDir         = glm::normalize(shadow.lightDir);
         frameCtx_.lightColor       = shadow.lightColor;
         frameCtx_.shadowBias       = shadow.bias;
@@ -445,8 +441,7 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
                 sh->setVec3 ("u_lightDir",    ctx.lightDir);
                 sh->setVec3 ("u_lightColor",  ctx.lightColor);
                 sh->setFloat("u_shadowBias",  ctx.shadowBias);
-                glActiveTexture(GL_TEXTURE1);
-                glBindTexture(GL_TEXTURE_2D, ctx.shadowTex);
+                rs.bindTexture(1, GL_TEXTURE_2D, ctx.shadowTex);
             }
             lastShader   = sh;
             lastMaterial = nullptr;
@@ -488,34 +483,11 @@ void Scene::drawItems(const std::vector<RenderItem> &items,
 // ─── Shadow depth pass ────────────────────────────────────────────────────────────
 void Scene::drawShadowPass()
 {
-    // (Re)create depth FBO if needed
-    if (shadowMapCurrent_ != shadow.mapSize || !shadowFBO_)
-    {
-        if (shadowFBO_) { glDeleteFramebuffers(1, &shadowFBO_); shadowFBO_ = 0; }
-        if (shadowTex_) { glDeleteTextures(1,   &shadowTex_);   shadowTex_ = 0; }
+    // (Re)create depth FBO only when size changes or not yet allocated
+    if (!shadowMap_.valid() || shadowMap_.size() != shadow.mapSize)
+        shadowMap_.create(shadow.mapSize);
 
-        shadowMapCurrent_ = shadow.mapSize;
-        const int s = shadow.mapSize;
-
-        glGenTextures(1, &shadowTex_);
-        glBindTexture(GL_TEXTURE_2D, shadowTex_);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
-                     s, s, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-        const float border[] = {1.f, 1.f, 1.f, 1.f};
-        glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
-        glBindTexture(GL_TEXTURE_2D, 0);
-
-        glGenFramebuffers(1, &shadowFBO_);
-        glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO_);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                               GL_TEXTURE_2D, shadowTex_, 0);
-        // OpenGL ES 3.x: depth-only FBO is complete without glDrawBuffer/glReadBuffer
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
+    if (!shadowMap_.valid()) return;
 
     // Build light view+proj
     const glm::vec3 dir = glm::normalize(shadow.lightDir);
@@ -530,7 +502,7 @@ void Scene::drawShadowPass()
          0.1f, shadow.lightDist * 2.f);
     lightSpaceMatrix_ = lightProj * lightView;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO_);
+    shadowMap_.bind();
 
     auto &rs = RenderState::instance();
     rs.setViewport(0, 0, shadow.mapSize, shadow.mapSize);
@@ -554,7 +526,7 @@ void Scene::drawShadowPass()
     }
 
     rs.setCullFace(GL_BACK);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    shadowMap_.unbind();
 }
 
 // ─── drawSky ────────────────────────────────────────────────────────────

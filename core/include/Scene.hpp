@@ -2,6 +2,7 @@
 #include "Node.hpp"
 #include "RenderPipeline.hpp"
 #include "RenderTarget.hpp"
+#include "ShadowMap.hpp"
 #include "Math.hpp"
 #include <vector>
 
@@ -133,9 +134,7 @@ private:
     FrameContext  frameCtx_;
     RenderStats   stats_;
 
-    // Shadow depth map (created lazily in drawShadowPass)
-    GLuint    shadowFBO_            = 0;
-    GLuint    shadowTex_            = 0;
-    int       shadowMapCurrent_     = 0;  // current FBO size (0 = uninitialised)
-    glm::mat4 lightSpaceMatrix_     = glm::mat4(1.f);
+    // Shadow depth map (created/recreated lazily in drawShadowPass)
+    ShadowMap shadowMap_;
+    glm::mat4 lightSpaceMatrix_ = glm::mat4(1.f);
 };

@@ -8,7 +8,7 @@
 
 // ============================================================
 //  DemoWater — cena limpa: TerrainNode + caixas + água reflectiva
-//  Sem CSM. Usa ForwardTechnique (Opaque+Transparent) + SkyPass.
+//  Sem CSM. Pipeline explícito (Opaque+Transparent) + Sky.
 // ============================================================
 class DemoWater : public DemoBase
 {
@@ -84,10 +84,7 @@ public:
         if (!water_->init(120.f, 120.f, waterShader_))
             return false;
 
-        // ── ForwardTechnique + Sky ────────────────────────────
-        auto *fwd = new ForwardTechnique();
-        fwd->addPass<SkyPass>()->shader = skyShader_;
-        scene.addTechnique(fwd);
+        scene.skyShader = skyShader_;
 
         return true;
     }
@@ -99,9 +96,6 @@ public:
 
         if (Input::IsKeyPressed(KEY_F1))
             showDebug_ = !showDebug_;
-
-        if (Input::IsKeyPressed(KEY_F2))
-            scene.debugRTGather = true; // prints once next renderToTarget call
     }
 
     void render() override

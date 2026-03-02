@@ -28,15 +28,8 @@ public:
 
         auto *litShader = shaders().load("lit_shadow",
             "assets/shaders/lit_shadow.vert","assets/shaders/lit_shadow.frag");
-        auto *depthShader = shaders().load("depth",
-            "assets/shaders/depth.vert","assets/shaders/depth.frag");
-        if (!litShader || !depthShader) return false;
+        if (!litShader) return false;
 
-        RenderState::instance().useProgram(litShader->getId());
-        litShader->setVec3("u_lightDir",   glm::normalize(glm::vec3(1,3,1)));
-        litShader->setVec3("u_lightColor", {1,1,0.95f});
-        litShader->setFloat("u_shadowBias", 0.005f);
-        litShader->setInt("u_shadowMap", 1);
         litShader_ = litShader;
 
         auto *white = textures().getWhite();
@@ -52,7 +45,6 @@ public:
         matBall_->setShader(litShader)->setTexture("u_albedo", white);
 
         buildArena();
-        buildShadowTechnique(depthShader, litShader);
         return true;
     }
 
@@ -265,14 +257,4 @@ private:
         node->end();
     }
 
-    void buildShadowTechnique(Shader *depthShader, Shader *litShader)
-    {
-        auto *tech = new ShadowTechnique();
-        tech->litShader = litShader;
-        tech->shadowPass()->shader  = depthShader;
-        tech->shadowPass()->lightDir = glm::normalize(glm::vec3(1,3,1));
-        tech->shadowPass()->orthoSize = 30.f;
-        tech->opaquePass()->shader  = nullptr;
-        scene.addTechnique(tech);
-    }
 };

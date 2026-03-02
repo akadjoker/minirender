@@ -11,7 +11,7 @@
 #include <cstdint>
 
 // Forward declarations for render integration
-class RenderQueue;
+struct RenderQueue;
 struct FrameContext;
 
 enum class NodeType

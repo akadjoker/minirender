@@ -1,9 +1,7 @@
 #pragma once
 #include "DemoBase.hpp"
-#include "ShadowMap.hpp"
-
 // ============================================================
-//  DemoSponza — shadow map com luz direccional
+//  DemoSponza
 // ============================================================
 class DemoSponza : public DemoBase
 {
@@ -43,9 +41,7 @@ public:
         return -1;
     }
 
-    forwardTechnique = new ForwardTechnique();
 
-    scene.addTechnique(forwardTechnique);
 
      MeshNode *sponzaNode = scene.createMeshNode("sponza", sponza);
     sponzaNode->passMask = RenderPassMask::Opaque;
@@ -69,11 +65,9 @@ public:
 
     void release() override
     {
-        delete forwardTechnique;
-        forwardTechnique = nullptr;
         DemoBase::release();
     }
 
 private:
-         ForwardTechnique *forwardTechnique;
+
 };

@@ -26,7 +26,7 @@ void main() {
 }
 )";
 
-// Depth sampler — linearised greyscale so you can actually see it
+// Depth sampler — linearised greyscale 
 static const char *kFS_Depth = R"(
 #version 300 es
 precision mediump float;

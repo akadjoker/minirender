@@ -58,10 +58,7 @@ public:
 
       
 
-        // ── ForwardTechnique + Sky ────────────────────────────
-        auto *fwd = new ForwardTechnique();
-        fwd->addPass<SkyPass>()->shader = skyShader_;
-        scene.addTechnique(fwd);
+        scene.skyShader = skyShader_;
 
         return true;
     }

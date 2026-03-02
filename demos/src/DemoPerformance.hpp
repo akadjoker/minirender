@@ -71,10 +71,7 @@ public:
         if (cubeMesh_)
             cubeMesh_->materials.assign(1, matBox);
 
-        // Technique
-        auto *fwd = new ForwardTechnique();
-        fwd->addPass<SkyPass>()->shader = skyShader_;
-        scene.addTechnique(fwd);
+        scene.skyShader = skyShader_;
 
         // Spawn initial batch
         spawnBatch(BATCH_SIZE);

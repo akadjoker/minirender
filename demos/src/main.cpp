@@ -15,13 +15,11 @@
 #include "RenderState.hpp"
 #include "Scene.hpp"
 #include "DemoManager.hpp"
-#include "DemoShadow.hpp"
-#include "DemoDeferred.hpp"
 #include "DemoSimples.hpp"
+#include "DemoCsm.hpp"
 #include "DemoH3D.hpp"
 #include "DemoSinbad.hpp"
 #include "DemoEffects.hpp"
-#include "DemoCascade.hpp"
 #include "DemoCannonball.hpp"
 #include "DemoWater.hpp"
 #include "DemoTerrainLod.hpp"
@@ -166,17 +164,15 @@ int main()
     font.LoadDefaultFont();
 
     DemoManager manager;
-    // manager.add(new DemoShadow());
-    // manager.add(new DemoDeferred());
-    //manager.add(new DemoSimples());
+     //manager.add(new DemoSimples());
+     manager.add(new DemoCsm());
      //manager.add(new DemoH3D());
     //manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());
-    manager.add(new DemoCascade());
+   // manager.add(new DemoTerrainLod());
     //manager.add(new DemoCannonball());
-    ///manager.add(new DemoWater());
-    //manager.add(new DemoTerrainLod());
- //   manager.add(new DemoPerformance());
+    //manager.add(new DemoWater());
+   // manager.add(new DemoPerformance());
 
     
     if (!manager.init())

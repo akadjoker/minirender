@@ -151,10 +151,7 @@ public:
         upperLayer->defaultBlendTime = 0.2f;
         upperLayer->play("IdleTop", PlayMode::Loop);
 
-        // ── Forward pass simples (sem shadow) ─────────────────
-        tech_ = new ForwardTechnique();
-        tech_->opaque()->shader = skinnedShader;
-        scene.addTechnique(tech_);
+
 
         return true;
     }
@@ -222,7 +219,6 @@ public:
 
     void release() override
     {
-        delete tech_;     tech_     = nullptr;
         delete sinbadMesh; sinbadMesh = nullptr;
         DemoBase::release();
     }
@@ -231,7 +227,6 @@ private:
     AnimatedMesh     *sinbadMesh    = nullptr;
     AnimatedMeshNode *sinbadNode    = nullptr;
     Shader           *skinnedShader = nullptr;
-    ForwardTechnique *tech_         = nullptr;
     std::string       currentAnim;
     int               texVariant  = 0;
 };

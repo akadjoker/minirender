@@ -638,9 +638,12 @@ void Scene::drawCsmShadowPass()
         for (auto &v : corners)
             radius = std::max(radius, glm::length(v - center));
 
-        const glm::mat4 lightView = glm::lookAt(center, center + lightDir, up);
+        // Camera AT the light, looking DOWN at scene center (same as simple shadow).
+        // Use radius*1.5 as the camera distance so the sphere fits in view.
+        const glm::mat4 lightView = glm::lookAt(center + lightDir * (radius * 1.5f),
+                                                center, up);
 
-        // Symmetric ortho from sphere radius
+        // Symmetric ortho from sphere radius (stable regardless of camera rotation)
         float minX = -radius, maxX = radius;
         float minY = -radius, maxY = radius;
 
@@ -651,18 +654,20 @@ void Scene::drawCsmShadowPass()
         minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
         maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
 
-        // Tight Z range from actual sub-frustum corners in light space
+        // Z range from corners in light space (objects in front → negative Z)
         float minZ = 1e9f, maxZ = -1e9f;
         for (auto &v : corners) {
             float lz = (lightView * glm::vec4(v, 1.f)).z;
             minZ = std::min(minZ, lz); maxZ = std::max(maxZ, lz);
         }
-        // Extend Z to catch shadow casters outside the camera sub-frustum
+        // Extend Z back to catch casters behind the sub-frustum
         constexpr float zMult = 3.f;
         if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
         if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
-        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ) * lightView;
+        // -maxZ/-minZ: right-handed convention — objects in front have negative Z,
+        // ortho's near/far must be positive.
+        lightSpaceMatrices_[c] = glm::ortho(minX, maxX, minY, maxY, -maxZ, -minZ) * lightView;
 
         // Render depth pass for this cascade
         shadowMaps_[c].bind();

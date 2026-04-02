@@ -380,7 +380,7 @@ void RenderBatch::Render()
     if (!gpuReady && !createDeviceObjects()) return;
     if (!ensureIndexCapacity(vertices.size())) return;
 
-    glUseProgram(programId);
+    RenderState::instance().useProgram(programId);
     if (uMvpLocation >= 0)
         glUniformMatrix4fv(uMvpLocation, 1, GL_FALSE, &viewMatrix[0][0]);
     if (uTextureLocation >= 0)
@@ -423,7 +423,7 @@ void RenderBatch::Render()
 
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
+    RenderState::instance().useProgram(0);
 
     vertices.clear();
     draws.clear();

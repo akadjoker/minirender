@@ -90,8 +90,8 @@ void AnimationLayer::play(const std::string &name, PlayMode mode, float blendTim
         timeBlend_    = time_;
         blending_     = true;
         blendTime_    = 0.f;
-        blendDuration_ = poseBlendTime;
-        freezeBlend_  = true;
+        blendDuration_ = glm::max(blendTime, 1e-4f);
+        freezeBlend_  = false;
     }
     else
     {
@@ -189,7 +189,8 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
     if (blending_ && previous_)
     {
         blendTime_ += tick;
-        float blend = glm::clamp(blendTime_ / blendDuration_, 0.f, 1.f);
+        float blend = glm::clamp(blendTime_ / glm::max(blendDuration_, 1e-4f), 0.f, 1.f);
+        blend = glm::smoothstep(0.f, 1.f, blend);
 
         if (freezeBlend_)
         {
@@ -237,13 +238,20 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
         timeBlend_ += tick * previous_->getTicksPerSecond();
 
         float dur = current_->getDuration();
-        if (mode_ == PlayMode::Loop && time_ >= dur)
-            time_ = fmod(time_, dur);
+        if (dur > 1e-6f)
+        {
+            if (mode_ == PlayMode::Loop && time_ >= dur)
+                time_ = fmod(time_, dur);
+            else
+                time_ = glm::min(time_, dur);
+        }
         else
-            time_ = glm::min(time_, dur);
+        {
+            time_ = 0.f;
+        }
 
         float prevDur = previous_->getDuration();
-        if (timeBlend_ >= prevDur)
+        if (prevDur > 1e-6f && timeBlend_ >= prevDur)
             timeBlend_ = fmod(timeBlend_, prevDur);
 
         for (const auto &ch : current_->channels)
@@ -285,6 +293,9 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
 
     // ── PLAYBACK NORMAL ─────────────────────────────────────
     float dur  = current_->getDuration();
+    if (dur <= 1e-6f)
+        return;
+
     bool  ended = false;
 
     switch (mode_)

@@ -29,6 +29,7 @@
 #include "DemoBatch.hpp"
 #include "DemoSponzaCSM.hpp"
 #include "DemoInstanceCSM.hpp"
+#include "DemoVertexArray.hpp"
 #include "Input.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
@@ -68,7 +69,7 @@ int main()
     // manager.add(new DemoDeferred());
     //manager.add(new DemoSimples());
      //manager.add(new DemoH3D());
-    //manager.add(new DemoSinbad());
+    manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());
     //manager.add(new DemoBatch());
     //manager.add(new DemoCascade());
@@ -77,7 +78,8 @@ int main()
     //manager.add(new DemoWater());
     //manager.add(new DemoTerrainLod());
  //   manager.add(new DemoPerformance());
-    manager.add(new DemoInstanceCSM());
+    // manager.add(new DemoInstanceCSM());
+    //manager.add(new DemoVertexArray());
    
     if (!manager.init())
     {

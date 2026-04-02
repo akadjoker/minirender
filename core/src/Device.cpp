@@ -387,6 +387,7 @@ void Device::Flip()
     {
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        RenderState::instance().useProgram(0);
     }
 
     SDL_GL_SwapWindow(m_window);

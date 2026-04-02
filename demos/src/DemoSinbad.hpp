@@ -170,31 +170,31 @@ public:
         if (!lowerLayer) return;
 
         // ── Locomotion (layer 0 — full body) ─────────────────
-        if (Input::IsKeyDown(KEY_ONE)) { lowerLayer->crossFade("IdleBase", 0.3f); currentAnim = "IdleBase"; lowerLayer->setSpeed(1.0f); }
-        if (Input::IsKeyDown(KEY_TWO)) { lowerLayer->crossFade("RunBase",  0.2f); currentAnim = "RunBase";  lowerLayer->setSpeed(1.0f); }
-        if (Input::IsKeyDown(KEY_THREE)) { lowerLayer->crossFade("Dance",    0.3f); currentAnim = "Dance";    lowerLayer->setSpeed(1.0f); }
+        if (Input::IsKeyPressed(KEY_ONE)) { lowerLayer->crossFade("IdleBase", 0.3f); currentAnim = "IdleBase"; lowerLayer->setSpeed(1.0f); }
+        if (Input::IsKeyPressed(KEY_TWO)) { lowerLayer->crossFade("RunBase",  0.2f); currentAnim = "RunBase";  lowerLayer->setSpeed(1.0f); }
+        if (Input::IsKeyPressed(KEY_THREE)) { lowerLayer->crossFade("Dance",    0.3f); currentAnim = "Dance";    lowerLayer->setSpeed(1.0f); }
 
         // ── Ataques (layer 1 — upper body apenas) ────────────
         // As pernas continuam a correr/idle enquanto os braços atacam!
         if (upperLayer)
         {
             // triggerAction = blend in do ataque + volta ao IdleTop com blend out
-            if (Input::IsKeyDown(KEY_FOUR)) { upperLayer->setSpeed(0.2f);  upperLayer->triggerAction("DrawSwords"); }
-            if (Input::IsKeyDown(KEY_FIVE)) { upperLayer->setSpeed(0.5f);  upperLayer->triggerAction("SliceVertical"); }
-            if (Input::IsKeyDown(KEY_SIX)) { upperLayer->setSpeed(0.8f);  upperLayer->triggerAction("SliceHorizontal"); }
+            if (Input::IsKeyPressed(KEY_FOUR)) { upperLayer->setSpeed(0.2f);  upperLayer->triggerAction("DrawSwords"); }
+            if (Input::IsKeyPressed(KEY_FIVE)) { upperLayer->setSpeed(0.5f);  upperLayer->triggerAction("SliceVertical"); }
+            if (Input::IsKeyPressed(KEY_SIX)) { upperLayer->setSpeed(0.8f);  upperLayer->triggerAction("SliceHorizontal"); }
         }
 
         // ── Salto — full body (layer 0) ───────────────────────
-        if (Input::IsKeyDown(KEY_SPACE))
+        if (Input::IsKeyPressed(KEY_SPACE))
         {
             lowerLayer->setSpeed(1.0f);
             lowerLayer->playOneShot("JumpStart", "JumpLoop");
         }
-        if (Input::IsKeyDown(KEY_R) && lowerLayer->isPlaying("JumpLoop"))
+        if (Input::IsKeyPressed(KEY_R) && lowerLayer->isPlaying("JumpLoop"))
             lowerLayer->playOneShot("JumpEnd", currentAnim);
 
         // ── T — cicla mapeamento de materiais para debug ──────
-        if (Input::IsKeyDown(KEY_T))
+        if (Input::IsKeyPressed(KEY_T))
         {
             texVariant = (texVariant + 1) % 4;
             // verts: surf0=288 surf1=1888 surf2=583 surf3=302 surf4=688 surf5=252 surf6=1533
@@ -222,7 +222,7 @@ public:
 
     void release() override
     {
-        delete tech_;     tech_     = nullptr;
+  
         delete sinbadMesh; sinbadMesh = nullptr;
         DemoBase::release();
     }

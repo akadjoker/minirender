@@ -33,6 +33,12 @@ Material *MaterialManager::create(const std::string &name)
     return m;
 }
 
+Material *MaterialManager::getDefault()
+{
+    if (auto *m = get("__default")) return m;
+    return create("__default"); // create() auto-assigns defaultShader_ if set
+}
+
 void MaterialManager::applyDefaults()
 {
     for (auto &[n, mat] : cache)

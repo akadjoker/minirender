@@ -24,30 +24,33 @@ struct RenderItem
 };
 
 // ─── RenderQueue ─────────────────────────────────────────────────────────────
-// Named buckets drawn in order: shadow → opaque → sky → transparent
+// Named buckets drawn in order: shadow → opaque → transparent → flat
 struct RenderQueue
 {
     std::vector<RenderItem> shadow;       // depth-only, no camera frustum cull
     std::vector<RenderItem> opaque;       // sorted front-to-back
     std::vector<RenderItem> transparent;  // sorted back-to-front
+    std::vector<RenderItem> flat;         // unlit/flat-color, frustum culled, no shadow
 
     void clear()
     {
         shadow.clear();
         opaque.clear();
         transparent.clear();
+        flat.clear();
     }
 
     bool empty() const
     {
-        return shadow.empty() && opaque.empty() && transparent.empty();
+        return shadow.empty() && opaque.empty() && transparent.empty() && flat.empty();
     }
 
-    // Nodes call add() — routes to opaque or transparent via passMask.
+    // Nodes call add() — routes to the right bucket via passMask.
     void add(const RenderItem &item)
     {
-        if (item.passMask & RenderPassMask::Transparent) transparent.push_back(item);
-        else                                              opaque.push_back(item);
+        if      (item.passMask & RenderPassMask::Flat)        flat.push_back(item);
+        else if (item.passMask & RenderPassMask::Transparent) transparent.push_back(item);
+        else                                                   opaque.push_back(item);
     }
 };
 

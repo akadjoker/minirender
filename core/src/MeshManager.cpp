@@ -24,11 +24,13 @@ void finalize_procedural_mesh(Mesh *mesh)
 {
     if (!mesh->buffer.indices.empty() && !mesh->buffer.vertices.empty())
         mesh->compute_tangents();
-    mesh->upload();
+    mesh->upload();  // computes mesh AABB from vertices
     mesh->add_surface(0, (uint32_t)mesh->buffer.indices.size());
-    // Ensure at least one material slot exists — gatherNode skips items with mat==nullptr
+    mesh->compute_surface_aabbs(); // surfaces exist now — per-surface AABB for culling
+    // Ensure at least one material slot exists — use the shared default material
+    // so procedural meshes don't pollute the material list with unique entries.
     if (mesh->materials.empty())
-        mesh->add_material(MaterialManager::instance().create(mesh->name));
+        mesh->add_material(MaterialManager::instance().getDefault());
 }
 }
 
@@ -719,10 +721,10 @@ Mesh *MeshManager::create_quad(const std::string &name, float width, float heigh
     auto *mesh = new Mesh();
     mesh->name = name;
     mesh->buffer.vertices = {
-        make_vertex({-halfWidth, -halfHeight, 0.0f}, {0, 0, 1}, {0, 0}),
-        make_vertex({halfWidth, -halfHeight, 0.0f}, {0, 0, 1}, {1, 0}),
-        make_vertex({halfWidth, halfHeight, 0.0f}, {0, 0, 1}, {1, 1}),
-        make_vertex({-halfWidth, halfHeight, 0.0f}, {0, 0, 1}, {0, 1}),
+        make_vertex({-halfWidth, -halfHeight, 0.0f}, {0, 0, 1}, {0, 1}),
+        make_vertex({halfWidth, -halfHeight, 0.0f}, {0, 0, 1},  {1, 1}),
+        make_vertex({halfWidth, halfHeight, 0.0f}, {0, 0, 1},   {1, 0}),
+        make_vertex({-halfWidth, halfHeight, 0.0f}, {0, 0, 1}, {0, 0}),
     };
     mesh->buffer.indices = {0, 1, 2, 0, 2, 3};
 

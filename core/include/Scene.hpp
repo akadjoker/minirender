@@ -2,12 +2,10 @@
 #include "Node.hpp"
 #include "RenderPipeline.hpp"
 #include "RenderTarget.hpp"
-#include "ShadowMap.hpp"
 #include "Math.hpp"
 #include <vector>
 
 class RenderBatch;
-class WaterNode3D;
 
 // Result of a scene-level pick.
 struct ScenePickResult
@@ -17,15 +15,13 @@ struct ScenePickResult
 };
 
 // ─── Scene ───────────────────────────────────────────────────────────────────
-// Explicit render pipeline — no passes, no techniques.
+// Manual render pipeline — caller drives every pass explicitly.
 //
-// Render order each frame:
-//   preRender (water RTs, animators)
-//   → renderOpaque
-//   → renderSky
-//   → renderTransparent
+//   scene.gatherScene(cam);
+//   scene.drawShadowDepth(depthShader, lightSpace);
+//   scene.drawPass(litShader, RenderPassMask::Opaque);
+//   scene.drawPass(litShader, RenderPassMask::Flat);
 //
-// For reflection/refraction, WaterNode calls renderToTarget() from preRender().
 class Scene
 {
 public:
@@ -42,8 +38,8 @@ public:
     // ── Node management ───────────────────────────────────────────────────────
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
-    class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
-    WaterNode3D          *createWaterNode       (const std::string &name = "");
+    ManualMeshNode       *createManualMeshNode  (const std::string &name = "");
+ 
 
     template<typename T>
     T *createLight(const std::string &nodeName = "")
@@ -61,39 +57,11 @@ public:
 
     // ── Per-frame ─────────────────────────────────────────────────────────────
     void update(float dt);
-    void render();
-
-    // ── Render to off-screen target ───────────────────────────────────────────
-    // Used by WaterNode during preRender for reflection/refraction.
-    // clipPlane: dot(worldPos, plane) < 0 → fragment discarded (vec4(0) = off).
-    void renderToTarget(Camera *cam, RenderTarget *rt,
-                        glm::vec4 clipPlane = glm::vec4(0.f));
 
     // ── Sky ───────────────────────────────────────────────────────────────────
-    // Set a sky shader (procedural/gradient). Drawn after opaque, no depth write.
-    // If nullptr, sky is skipped.
+    // Optional: set a sky shader and call drawSky() manually after opaque pass.
     Shader *skyShader = nullptr;
-
-    // ── Directional shadow map ────────────────────────────────────────────────
-    // Enable by setting shadow.enabled = true and shadow.depthShader.
-    // Any material using lit_shadow.vert/frag will receive u_lightSpace +
-    // u_shadowMap (unit 1) + u_lightDir/Color/Bias automatically.
-    struct ShadowConfig
-    {
-        bool      enabled     = false;
-        Shader   *depthShader = nullptr;
-        glm::vec3 lightDir    = glm::normalize(glm::vec3(1.f, 3.f, 1.f));
-        glm::vec3 lightColor  = {1.f, 1.f, 1.f};
-        float     bias        = 0.005f;
-        int       mapSize     = 2048;  // depth texture size
-        int       numCascades = 1;     // 1=simple fixed ortho, 2-4=CSM
-        // Simple shadow (numCascades==1)
-        float     orthoSize   = 40.f;  // half-size of ortho frustum (world units)
-        float     lightDist   = 100.f; // distance of light from world origin
-        // CSM only
-        float     lambda      = 0.75f; // 0=uniform, 1=logarithmic split
-        bool      showCascades = false; // debug: colour each cascade
-    } shadow;
+    void drawSky();
 
     // ── Debug ─────────────────────────────────────────────────────────────────
     void debug(RenderBatch *batch);
@@ -106,30 +74,45 @@ public:
 
     void release();
 
+    // ── Manual pipeline API ──────────────────────────────────────────────────
+    // Drive rendering explicitly from the demo / game loop:
+    //
+    //   scene.gatherScene(cam);
+    //   myShader->bind();
+    //   myShader->setMat4("u_view", view); // caller sets ALL uniforms
+    //   scene.drawPass(myShader, RenderPassMask::Opaque);
+    //
+    // GL state, RTs, shadow maps, clip planes — fully managed by the caller.
+
+    // Cull scene with cam and fill internal render queues.
+    // Call once per frame before drawPass / drawShadowDepth.
+    void gatherScene(Camera *cam);
+
+    // Draw queued items matching passMask using sh.
+    // sh must already be bound; only u_model and material textures are set here.
+    void drawPass(Shader *sh, uint32_t passMask,
+                  RenderSortMode sort = RenderSortMode::None);
+
+    // Draw shadow-caster queue with depthSh, injecting u_lightSpace.
+    void drawShadowDepth(Shader *depthSh, const glm::mat4 &lightSpace);
+
+    // Direct access to render queues (read-only).
+    const RenderQueue &renderQueue() const { return queue_; }
+
+
     // ── Collected lights (valid after gather, before render) ─────────────────
     const std::vector<const Light *> &lights() const { return frameCtx_.lights; }
 
 private:
-    // Render one camera — called by render()
-    void renderCamera(Camera *cam);
-
     // Gather visible items into queues
     void gather(const Frustum &camFrustum, const Frustum &shadowFrustum,
                 RenderQueue &queue);
     void gatherNode(Node *node, const Frustum &camFrustum,
                     const Frustum &shadowFrustum, RenderQueue &queue);
 
-    // Draw passes
-    void drawItems(const std::vector<RenderItem> &items, const FrameContext &ctx,
-                   RenderSortMode sort = RenderSortMode::None);
-    void drawSky(const FrameContext &ctx);
-    void drawShadowPass();     // numCascades==1 — single ortho shadow map
-    void drawCsmShadowPass();  // numCascades >1 — PSSM cascade shadow maps
-
     // Node traversal helpers
-    void preRenderNode(Node *node, Camera *cam);
-    void updateNode   (Node *node, float dt);
-    void debugNode    (Node *node, RenderBatch *batch);
+    void updateNode(Node *node, float dt);
+    void debugNode (Node *node, RenderBatch *batch);
 
     std::vector<Camera *> cameras_;
     Camera               *currentCamera_ = nullptr;
@@ -139,10 +122,4 @@ private:
     RenderQueue   queue_;
     FrameContext  frameCtx_;
     RenderStats   stats_;
-
-    // CSM — up to 4 cascade depth maps (created lazily in drawShadowPass)
-    static constexpr int MAX_CSM = 4;
-    ShadowMap shadowMaps_[MAX_CSM];
-    glm::mat4 lightSpaceMatrices_[MAX_CSM] = {};
-    float     cascadeFarPlanes_[MAX_CSM]   = {};
 };

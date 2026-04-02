@@ -9,10 +9,27 @@ Material* Material::setTexture(const std::string& u, Texture* t)
         if (slot.uniform == u)
         {
             slot.texture = t;
+            slot.rawId   = 0;
             return this;
         }
     }
-    textures.push_back({ t, u });
+    textures.push_back({ t, 0, GL_TEXTURE_2D, u });
+    return this;
+}
+
+Material* Material::setTexture(const std::string& u, GLuint id, GLenum target)
+{
+    for (auto& slot : textures)
+    {
+        if (slot.uniform == u)
+        {
+            slot.texture   = nullptr;
+            slot.rawId     = id;
+            slot.rawTarget = target;
+            return this;
+        }
+    }
+    textures.push_back({ nullptr, id, target, u });
     return this;
 }
 
@@ -74,7 +91,13 @@ void Material::bindTextures() const
         {
             rs.bindTexture(unit, slot.texture->target, slot.texture->id);
             shader->setInt(slot.uniform, unit);
-            unit++;
+            ++unit;
+        }
+        else if (slot.rawId != 0)
+        {
+            rs.bindTexture(unit, slot.rawTarget, slot.rawId);
+            shader->setInt(slot.uniform, unit);
+            ++unit;
         }
     }
 }
@@ -106,7 +129,13 @@ int Material::bindTexturesTo(Shader *sh) const
         {
             rs.bindTexture(unit, slot.texture->target, slot.texture->id);
             sh->setInt(slot.uniform, unit);
-            unit++;
+            ++unit;
+        }
+        else if (slot.rawId != 0)
+        {
+            rs.bindTexture(unit, slot.rawTarget, slot.rawId);
+            sh->setInt(slot.uniform, unit);
+            ++unit;
         }
     }
     return unit; // number of texture units actually bound

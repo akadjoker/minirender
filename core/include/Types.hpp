@@ -92,6 +92,7 @@ enum class PixelType : std::uint8_t
 
 namespace RenderPassMask
 {
-    constexpr uint32_t Opaque = 1u << 0;
-    constexpr uint32_t Transparent = 1u << 1;
+    constexpr uint32_t Opaque       = 1u << 0;
+    constexpr uint32_t Transparent  = 1u << 1;
+    constexpr uint32_t Flat         = 1u << 2;  // unlit flat-color pass, no shadow
 }

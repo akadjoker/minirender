@@ -283,3 +283,76 @@ public:
     float outerAngle = 35.0f;
     SpotLight() { lightType = LightType::Spot; }
 };
+
+// ────────────────────────────────────────────────────────────
+//  ManualMeshNode
+//  Ogre-like manual geometry builder.
+//  Supports both a streaming API and direct vertex/index access.
+// ────────────────────────────────────────────────────────────
+class ManualMeshNode : public Node3D
+{
+public:
+    ManualMeshNode();
+    ~ManualMeshNode();
+
+    // ── Streaming builder API ───────────────────────────
+    /// Start defining geometry. Call end() to finalise.
+    void begin(GLenum primitiveType = GL_TRIANGLES, bool dynamic = false);
+
+    /// Set current normal (used for next position()).
+    ManualMeshNode& normal   (float x, float y, float z);
+    ManualMeshNode& normal   (const glm::vec3& n);
+
+    /// Set current UV (used for next position()).
+    ManualMeshNode& texCoord (float u, float v);
+
+    /// Set current colour / tangent handedness (w).
+    ManualMeshNode& colour   (float r, float g, float b, float a = 1.f);
+    ManualMeshNode& colour   (const glm::vec4& c);
+
+    /// Emit one vertex at position, flushing current normal/uv/colour state.
+    ManualMeshNode& position (float x, float y, float z);
+    ManualMeshNode& position (const glm::vec3& p);
+
+    /// Emit an index.
+    ManualMeshNode& index    (uint32_t i);
+    ManualMeshNode& triangle (uint32_t a, uint32_t b, uint32_t c);
+
+    /// Finalise and upload to GPU.
+    void end();
+
+    // ── Direct access (bypass streaming API) ────────────────
+    std::vector<Vertex>   &vertices() { return buffer_.vertices; }
+    std::vector<uint32_t> &indices()  { return buffer_.indices;  }
+
+    /// Re-upload after direct edits.
+    void build();
+
+    // ── Utilities ─────────────────────────────────────
+    void clear();
+
+    /// Recompute flat normals from triangle list (overwrites existing normals).
+    void computeNormals();
+
+    /// Recompute AABB from current vertices.
+    BoundingBox computeAABB() const;
+
+    int vertexCount() const { return (int)buffer_.vertices.size(); }
+    int indexCount()  const { return (int)buffer_.indices.size();  }
+
+    Material   *material  = nullptr;
+    uint32_t    passMask  = RenderPassMask::Opaque;
+    bool        castShadow = true;
+
+    // ── Node overrides ──────────────────────────────────
+    void gatherRenderItems(RenderQueue& q, const FrameContext& ctx) override;
+
+private:
+    MeshBuffer buffer_;
+    bool       building_ = false;
+
+    // Accumulated current-vertex state
+    glm::vec3  curNormal_   = {0.f, 1.f, 0.f};
+    glm::vec2  curUV_       = {0.f, 0.f};
+    glm::vec4  curColour_   = {1.f, 1.f, 1.f, 1.f};
+};

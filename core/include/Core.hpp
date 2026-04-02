@@ -16,5 +16,6 @@
 #include "Manager.hpp"
 #include "RenderPipeline.hpp"
 #include "RenderState.hpp"
+#include "RenderTarget.hpp"
  
 

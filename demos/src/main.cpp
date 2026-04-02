@@ -27,7 +27,7 @@ const int SCREEN_H = 768;
 int main()
 {
     Device &device = Device::Instance();
-    if (!device.Create(SCREEN_W, SCREEN_H, "minirender", true, 1))
+    if (!device.Create(SCREEN_W, SCREEN_H, "minirender - mirror", true, 1))
         return 1;
 
     auto &rs      = RenderState::instance();
@@ -47,10 +47,12 @@ int main()
         "assets/shaders/depth.vert", "assets/shaders/depth.frag");
     Shader *litShader = shMgr.load("lit_shadow",
         "assets/shaders/lit_shadow.vert", "assets/shaders/lit_shadow.frag");
+    Shader *unlitShader = shMgr.load("unlit",
+        "assets/shaders/unlit.vert", "assets/shaders/unlit.frag");
     Shader *flatShader = shMgr.load("flat",
         "assets/shaders/flat.vert", "assets/shaders/flat.frag");
 
-    if (!depthShader || !litShader || !flatShader)
+    if (!depthShader || !litShader || !unlitShader || !flatShader)
     {
         SDL_Log("[ERR] shader load failed");
         device.Close();
@@ -59,13 +61,14 @@ int main()
 
     // ── Textures + materials ──────────────────────────────────────────────────
     Texture *white   = texMgr.getWhite();
+    Texture *pattern = texMgr.getPattern();
     Texture *texWall = texMgr.load("wall", "assets/wall.jpg");
 
     Material *matGround = matMgr.create("ground");
     matGround->setShader(litShader)->setTexture("u_albedo", texWall ? texWall : white);
 
     Material *matCube = matMgr.create("cube");
-    matCube->setShader(litShader)->setTexture("u_albedo", white);
+    matCube->setShader(litShader)->setTexture("u_albedo", pattern ? pattern : white);
 
     // ── Scene ─────────────────────────────────────────────────────────────────
     Scene scene;
@@ -74,8 +77,8 @@ int main()
     cam->fov       = 60.f;
     cam->nearPlane = 0.1f;
     cam->farPlane  = 500.f;
-    cam->setPosition({0.f, 15.f, 30.f});
-    cam->lookAt({0.f, 0.f, 0.f});
+    cam->setPosition({0.f, 8.f, 22.f});
+    cam->lookAt({0.f, 2.f, 0.f});
     cam->setAspect(SCREEN_W, SCREEN_H);
     cam->setViewport(0, 0, SCREEN_W, SCREEN_H);
 
@@ -85,16 +88,16 @@ int main()
     cam->setController(freeCam);
     scene.setCurrentCamera(cam);
 
-    // Nodes com lit_shadow + sombras
+    // ── Meshes + nodes ────────────────────────────────────────────────────────
     Mesh *plane = meshMgr.create_plane("ground", 40.f, 40.f, 1);
-    Mesh *cube  = meshMgr.create_cube("cube", 2.f);
+    Mesh *cube  = meshMgr.create_cube("cube",    2.f);
 
     scene.createMeshNode("ground", plane)->setMaterial("ground");
     for (int i = 0; i < 5; i++)
     {
         auto *n = scene.createMeshNode("cube_" + std::to_string(i), cube);
         n->setMaterial("cube");
-        n->setPosition({(float)(i - 2) * 5.f, 1.f, 0.f});
+        n->setPosition({(float)(i - 2) * 6.f, 1.f, 0.f});
     }
 
     // ── Shadow map ────────────────────────────────────────────────────────────
@@ -121,13 +124,35 @@ int main()
                                * glm::lookAt(LIGHT_DIR * LIGHT_DIST,
                                              glm::vec3(0.f), lightUp);
 
-    // ── Cubos extras com flat shader ──────────────────────────────────────────
-    struct FlatCube { glm::vec3 pos; glm::vec4 color; };
-    const FlatCube flatCubes[] = {
-        { {-12.f, 2.f,  5.f}, {1.f, 0.2f, 0.2f, 1.f} },   // vermelho
-        { {  0.f, 2.f,  8.f}, {0.2f, 1.f, 0.2f, 1.f} },   // verde
-        { { 12.f, 2.f,  5.f}, {0.2f, 0.5f, 1.f, 1.f} },   // azul
-    };
+    // ── Mirror setup ──────────────────────────────────────────────────────────
+    // Mirror plane: vertical, at z = -14, facing +Z (toward the camera)
+    const glm::vec3 MIRROR_POS    = {0.f, 5.f, -14.f};
+    const float     MIRROR_W      = 14.f;
+    const float     MIRROR_H      = 10.f;
+
+    // Render target for the mirror reflection
+    RenderTarget mirrorRT;
+    mirrorRT.create(512, 512).addColor().addDepthRB();
+    if (!mirrorRT.finalize())
+    {
+        SDL_Log("[ERR] mirror render target failed");
+        device.Close();
+        return 1;
+    }
+
+    // Material that displays the RT on the mirror surface (unlit — reflection
+    // is already shaded when rendered into the RT)
+    Material *matMirror = matMgr.create("mirror");
+    matMirror->setShader(unlitShader)
+             ->setTexture("u_albedo", mirrorRT.colorTex());
+
+    // Vertical quad representing the mirror in the scene
+    Mesh *mirrorMesh = meshMgr.create_plane("mirror", MIRROR_W, MIRROR_H, 1);
+    auto *mirrorNode = scene.createMeshNode("mirror", mirrorMesh);
+    mirrorNode->setMaterial("mirror");
+    mirrorNode->setPosition(MIRROR_POS);
+    mirrorNode->setEulerAngles({90.f, 0.f, 0.f}); // rotate horizontal plane → vertical
+ 
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     while (device.Run())
@@ -143,24 +168,77 @@ int main()
         }
 
         scene.update(dt);
-        scene.gatherScene(cam);
+ 
 
-        // Pass 1: shadow depth
+        // ── Pass 1: shadow depth ──────────────────────────────────────────────
         {
             shadowMap.bind();
             rs.setViewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-            glClear(GL_DEPTH_BUFFER_BIT);
+            //glClear(GL_DEPTH_BUFFER_BIT);
+            rs.clear(false, true);
             rs.setDepthTest(true);
             rs.setDepthWrite(true);
             rs.setCull(true);
-            rs.setCullFace(GL_FRONT);
+
+            scene.gatherScene(cam);
             scene.drawShadowDepth(depthShader, lightSpace);
-            rs.setCullFace(GL_BACK);
+
             shadowMap.unbind();
         }
 
-        // Pass 2: lit pass (scene nodes)
+        // ── Pass 2: reflection into mirror RT ────────────────────────────────
         {
+            // Reflected camera: fixed position behind the mirror, looking at scene center
+            Camera reflCam;
+            reflCam.fov       = cam->fov;
+            reflCam.nearPlane = cam->nearPlane;
+            reflCam.farPlane  = cam->farPlane;
+            reflCam.viewport  = {0, 0, 512, 512};
+            reflCam.setAspect(512, 512);
+            reflCam.position= cam->position;
+            reflCam.rotation= cam->rotation;
+            //reflCam.setPosition({0.f, 8.f, -22.f});
+            //reflCam.lookAt({0.f, 2.f, 0.f});
+            reflCam.updateMatrices();
+
+            mirrorNode->visible = false;
+            scene.gatherScene(&reflCam);
+            mirrorNode->visible = true;
+
+            mirrorRT.bind();
+            mirrorRT.clear(true, true);
+            rs.setDepthTest(true);
+            rs.setDepthWrite(true);
+            rs.setCull(true);
+ 
+
+            rs.useProgram(litShader->getId());
+            litShader->setMat4("u_view",       reflCam.view);
+            litShader->setMat4("u_proj",       reflCam.projection);
+            litShader->setVec4("u_cameraPos",  glm::vec4(reflCam.position, 1.f));
+            litShader->setVec4("u_clipPlane",  glm::vec4(0.f));
+            litShader->setMat4("u_lightSpace", lightSpace);
+            litShader->setInt ("u_shadowMap",  1);
+            litShader->setVec3("u_lightDir",   LIGHT_DIR);
+            litShader->setVec3("u_lightColor", LIGHT_COLOR);
+            litShader->setFloat("u_shadowBias", SHADOW_BIAS);
+            rs.bindTexture(1, GL_TEXTURE_2D, shadowMap.depthTexId());
+
+            scene.drawPass(litShader, RenderPassMask::Opaque,
+                           RenderSortMode::FrontToBack);
+
+            mirrorRT.unbind();
+     
+        }
+
+        // ── Pass 3: main lit pass ─────────────────────────────────────────────
+        {
+            // Hide mirror so it doesn't go through the lit pass —
+            // we'll draw it manually with the unlit shader afterwards.
+            mirrorNode->visible = false;
+            scene.gatherScene(cam);
+            mirrorNode->visible = true;
+
             rs.setViewport(0, 0, W, H);
             rs.setClearColor(0.1f, 0.12f, 0.15f, 1.f);
             rs.clear(true, true);
@@ -186,24 +264,19 @@ int main()
                            RenderSortMode::FrontToBack);
             scene.drawPass(litShader, RenderPassMask::Transparent,
                            RenderSortMode::BackToFront);
+
+            // Mirror surface drawn with unlit shader (shows RT texture)
+            rs.useProgram(unlitShader->getId());
+            unlitShader->setMat4("u_view",  cam->view);
+            unlitShader->setMat4("u_proj",  cam->projection);
+            unlitShader->setMat4("u_model", mirrorNode->worldMatrix());
+            matMirror->bindTextures();
+            mirrorMesh->draw();
         }
 
-        // Pass 3: 3 cubos extras com flat shader
-        {
-            rs.useProgram(flatShader->getId());
-            flatShader->setMat4("u_view", cam->view);
-            flatShader->setMat4("u_proj", cam->projection);
+       
 
-            for (const auto &fc : flatCubes)
-            {
-                glm::mat4 m = glm::translate(glm::mat4(1.f), fc.pos);
-                flatShader->setMat4("u_model", m);
-                flatShader->setVec4("u_color", fc.color);
-                cube->draw();
-            }
-        }
-
-        // HUD
+        // ── HUD ───────────────────────────────────────────────────────────────
         {
             batch.SetMatrix(cam->projection * cam->view);
             batch.Grid(10, 1.0f, true);
@@ -217,8 +290,7 @@ int main()
             rs.setCull(false);
 
             font.SetColor(255, 255, 255);
-            font.Print(10, 10, "%d FPS  |  RMB: olhar  WASD/QE: mover",
-                       device.GetFPS());
+            font.Print(10, 10, "%d FPS  |  LMB: olhar  WASD/QE: mover", device.GetFPS());
             font.Print(10, 30, "Pos: %.1f %.1f %.1f",
                        cam->position.x, cam->position.y, cam->position.z);
             const auto &st = scene.stats();
@@ -229,6 +301,7 @@ int main()
         device.Flip();
     }
 
+    mirrorRT.destroy();
     shadowMap.destroy();
     scene.release();
     shMgr.unloadAll();

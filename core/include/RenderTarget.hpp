@@ -1,5 +1,5 @@
 #pragma once
-#include "glad/glad.h"
+#include "Opengl.hpp"
 
 struct Texture; // defined in Material.hpp
 

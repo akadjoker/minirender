@@ -75,6 +75,15 @@ public:
     // Recebe vec3(x, y, depth). Para picking (raio) use depth 0.0 (near) e 1.0 (far).
     glm::vec3 unproject(const glm::vec3& windowCoords) const;
 
+    // Converte posição 3D para coordenadas de ecrã (pixels, origem top-left).
+    // Retorna false se o ponto estiver atrás da câmara.
+    // screenPos contém x,y mesmo quando retorna false — permite decidir fora do ecrã.
+    bool worldToScreen(const glm::vec3& worldPos, glm::vec2& screenPos) const;
+
+    // Ponto 3D a 'distance' unidades da câmara, na direcção do rato.
+    // Útil para colocar objectos onde o cursor aponta num plano paralelo ao ecrã.
+    glm::vec3 screenToWorldPoint(float mouseX, float mouseY, float distance) const;
+
     // Cria um raio a partir das coordenadas do rato (SDL: 0,0 top-left)
     Ray getRay(float mouseX, float mouseY) const;
 

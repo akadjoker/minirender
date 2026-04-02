@@ -1,5 +1,5 @@
 #pragma once
-#include "glad/glad.h"
+#include "Opengl.hpp"
 #include <SDL2/SDL.h>
 
 // ============================================================

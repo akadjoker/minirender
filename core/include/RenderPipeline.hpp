@@ -6,6 +6,7 @@
 #include "Math.hpp"
 #include "Types.hpp"
 #include "GBuffer.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@ struct RenderItem
     uint32_t     indexCount = 0;
     float        depth      = 0.0f;
     uint32_t     passMask   = RenderPassMask::Opaque;
+    int          instanceCount = 1; // >1 → glDrawElementsInstanced (requires InstanceBuffer attached)
 };
 
 class RenderQueue
@@ -31,22 +33,37 @@ public:
     {
         opaque_.clear();
         transparent_.clear();
+        unlit_.clear();
+        outline_.clear();
+        overlay_.clear();
     }
 
     void add(const RenderItem &item)
     {
-        if (item.passMask & RenderPassMask::Opaque) opaque_.push_back(item);
+        if (item.passMask & RenderPassMask::Opaque)      opaque_.push_back(item);
         if (item.passMask & RenderPassMask::Transparent) transparent_.push_back(item);
+        if (item.passMask & RenderPassMask::Unlit)       unlit_.push_back(item);
+        if (item.passMask & RenderPassMask::Outline)     outline_.push_back(item);
+        if (item.passMask & RenderPassMask::Overlay)     overlay_.push_back(item);
     }
 
-    std::vector<RenderItem>       &getOpaque()       { return opaque_; }
-    const std::vector<RenderItem> &getOpaque() const  { return opaque_; }
-    std::vector<RenderItem>       &getTransparent()       { return transparent_; }
-    const std::vector<RenderItem> &getTransparent() const { return transparent_; }
+    std::vector<RenderItem>       &getOpaque()           { return opaque_; }
+    const std::vector<RenderItem> &getOpaque()     const { return opaque_; }
+    std::vector<RenderItem>       &getTransparent()      { return transparent_; }
+    const std::vector<RenderItem> &getTransparent() const{ return transparent_; }
+    std::vector<RenderItem>       &getUnlit()            { return unlit_; }
+    const std::vector<RenderItem> &getUnlit()      const { return unlit_; }
+    std::vector<RenderItem>       &getOutline()          { return outline_; }
+    const std::vector<RenderItem> &getOutline()    const { return outline_; }
+    std::vector<RenderItem>       &getOverlay()          { return overlay_; }
+    const std::vector<RenderItem> &getOverlay()    const { return overlay_; }
 
 private:
     std::vector<RenderItem> opaque_;
     std::vector<RenderItem> transparent_;
+    std::vector<RenderItem> unlit_;
+    std::vector<RenderItem> outline_;
+    std::vector<RenderItem> overlay_;
 };
 
 // ─── RenderStats ─────────────────────────────────────────────────────────────────────
@@ -76,9 +93,10 @@ struct FrameContext
     // When true: secondary render (reflection/refraction).
     // Expensive pre-passes (CSM depth) are skipped.
     bool                       secondary   = false;
-    // Clip plane in world space: dot(worldPos, clipPlane) < 0 → discard fragment.
-    // Set to {0,0,0,0} to disable.
-    glm::vec4                  clipPlane   = {0.f, 0.f, 0.f, 0.f};
+    // Clip planes in world space: dot(worldPos, plane) < 0 → discard fragment.
+    // Active slots: [0, clipPlaneCount). Maximum 4 simultaneous planes.
+    std::array<glm::vec4, 4>   clipPlanes     = {};
+    int                        clipPlaneCount = 0;
 };
 
 // ─── RenderPass ───────────────────────────────────────────────────────────────────
@@ -109,6 +127,28 @@ public:
 protected:
     virtual void drawItem          (const FrameContext &ctx, const RenderItem &item, Shader *sh) const;
     virtual void drawItemNoMaterial(const FrameContext &ctx, const RenderItem &item, Shader *sh) const;
+};
+
+class UnlitPass : public RenderPass
+{
+public:
+    UnlitPass();
+};
+
+class OutlinePass : public RenderPass
+{
+public:
+    float thickness  = 0.03f;  // world-space extrusion along normal
+    glm::vec4 color  = {0.f, 0.f, 0.f, 1.f};
+
+    OutlinePass();
+    void execute(const FrameContext &ctx, RenderQueue &queue) const override;
+};
+
+class OverlayPass : public RenderPass
+{
+public:
+    OverlayPass();
 };
 
 class OpaquePass : public RenderPass { public: OpaquePass(); };
@@ -188,10 +228,8 @@ public:
     ~DeferredLightingPass();
 
     GBuffer  *gbuffer = nullptr;  // non-owning
-
-    // Directional light — set once or each frame
-    glm::vec3 dirLightDir   = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
-    glm::vec3 dirLightColor = glm::vec3(1.f, 1.f, 1.f);
+    // Light data is taken from FrameContext::lights every frame.
+    // No hardcoded direction/color here.
 
     void execute(const FrameContext &ctx, RenderQueue &queue) const override;
 
@@ -220,4 +258,71 @@ public:
 
 private:
     GBuffer *gbuffer_ = nullptr; // owned
+};
+
+// ─── Pipeline ─────────────────────────────────────────────────────────────────
+// Owns a list of Technique* and provides a fluent builder API.
+// Created once per game / scene configuration. Passed to Scene::addTechnique().
+//
+//   Pipeline *p = Pipeline::create("forward")
+//       ->sky(skyShader)
+//       ->opaque()
+//       ->transparent()
+//       ->build(scene);
+//
+// Pipeline owns its Technique objects and deletes them on destroy().
+// Call destroy() explicitly before the OpenGL context is torn down.
+//
+class Pipeline
+{
+public:
+    // ── Factory ─────────────────────────────────────────────
+    // Creates a named Pipeline. Call destroy() when done.
+    static Pipeline *create(const std::string &name = "");
+
+    // Release all owned techniques (and their passes). Must be called before
+    // the OpenGL context is destroyed. Safe to call more than once.
+    void destroy();
+
+    ~Pipeline() { destroy(); }
+
+    // ── Fluent pass builders ─────────────────────────────────
+    // Each method adds a pass to the current technique and returns *this
+    // so you can chain calls.
+    //
+    // A new Technique is created automatically the first time you call a
+    // builder method, or when you call newTechnique().
+    Pipeline *newTechnique(const std::string &techName = "");
+
+    Pipeline *opaque();
+    Pipeline *transparent();
+    Pipeline *unlit();
+    Pipeline *overlay();
+    Pipeline *sky(Shader *sh,
+                  glm::vec3 top     = {0.18f, 0.36f, 0.72f},
+                  glm::vec3 horizon = {0.62f, 0.78f, 0.90f},
+                  glm::vec3 ground  = {0.20f, 0.18f, 0.14f});
+    Pipeline *outline(Shader *sh, glm::vec4 color = {0,0,0,1}, float thickness = 0.03f);
+
+    // Add any pass you constructed yourself — Pipeline takes ownership.
+    Pipeline *addPass(RenderPass *pass);
+
+    // ── Register into scene ─────────────────────────────────
+    // Adds all built techniques to scene and resets the builder.
+    // Returns the first technique (convenience for single-technique pipelines).
+    Technique *build(class Scene *scene);
+
+    // ── Low-level access ────────────────────────────────────
+    Technique                        *currentTechnique() const { return current_; }
+    const std::vector<Technique *>   &techniques()       const { return techniques_; }
+
+private:
+    Pipeline() = default;
+
+    // Ensure current_ exists; create a default Technique if not.
+    Technique *ensureTechnique();
+
+    std::string            name_;
+    std::vector<Technique *> techniques_; // owned
+    Technique              *current_ = nullptr; // last created — not owned separately
 };

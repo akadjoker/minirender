@@ -1,8 +1,68 @@
 #include "RenderPipeline.hpp"
+#include "Scene.hpp"
 #include "RenderState.hpp"
 #include <SDL2/SDL.h>
 #include <algorithm>
 #include <string>
+
+// Helper: send all active clip planes to a shader
+static void sendClipPlanes(Shader *sh, const FrameContext &ctx)
+{
+    sh->setInt("u_clipPlaneCount", ctx.clipPlaneCount);
+    for (int i = 0; i < ctx.clipPlaneCount; ++i)
+    {
+        std::string name = "u_clipPlanes[" + std::to_string(i) + "]";
+        sh->setVec4(name, ctx.clipPlanes[i]);
+    }
+}
+
+// Helper: send scene lights to a shader.
+// Supports both forward (u_lightDir/u_lightColor/u_ambient) and
+// deferred (u_dirLightDir/u_dirLightColor) naming conventions.
+// Missing uniforms in a shader are silently ignored (getLoc returns -1).
+static void sendLights(Shader *sh, const FrameContext &ctx)
+{
+    // ── Directional light ────────────────────────────────────
+    // Default: overhead white light, low ambient
+    glm::vec4 lightDir   = glm::vec4(0.f, 1.f, 0.f, 0.f); // toward light
+    glm::vec4 lightColor = glm::vec4(1.f, 1.f, 1.f, 1.f);
+    glm::vec4 ambient    = glm::vec4(0.08f, 0.08f, 0.08f, 1.f);
+
+    for (const auto *l : ctx.lights)
+    {
+        if (l->lightType != LightType::Directional) continue;
+        const auto *dl = static_cast<const DirectionalLight *>(l);
+        // forward() = direction light faces; TOWARD light = -forward()
+        glm::vec3 dir = glm::normalize(-dl->forward());
+        lightDir   = glm::vec4(dir, 0.f);
+        lightColor = glm::vec4(dl->color * dl->intensity, 1.f);
+        ambient    = glm::vec4(dl->ambient, 1.f);
+        break; // use first directional light only
+    }
+
+    // Forward shader names
+    sh->setVec4("u_lightDir",   lightDir);
+    sh->setVec4("u_lightColor", lightColor);
+    sh->setVec4("u_ambient",    ambient);
+
+    // Deferred shader names (silently no-op if not present)
+    sh->setVec4("u_dirLightDir",   lightDir);
+    sh->setVec4("u_dirLightColor", lightColor);
+
+    // ── Point lights ─────────────────────────────────────────
+    int numPt = 0;
+    for (const auto *l : ctx.lights)
+    {
+        if (l->lightType != LightType::Point) continue;
+        const auto *pt  = static_cast<const PointLight *>(l);
+        std::string idx = "[" + std::to_string(numPt) + "]";
+        sh->setVec3("u_pointPos"    + idx, pt->worldPosition());
+        sh->setVec3("u_pointColor"  + idx, pt->color * pt->intensity);
+        sh->setFloat("u_pointRadius" + idx, pt->range);
+        if (++numPt >= 16) break;
+    }
+    sh->setInt("u_numPointLights", numPt);
+}
 
 // ─── RenderPass::execute ──────────────────────────────────────────────────────────────────
 void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
@@ -37,10 +97,11 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
     rs.clear(clearColor, clearDepth);
 
     std::vector<RenderItem> *items = nullptr;
-    if (passMask & RenderPassMask::Opaque)
-        items = &queue.getOpaque();
-    else if (passMask & RenderPassMask::Transparent)
-        items = &queue.getTransparent();
+    if      (passMask & RenderPassMask::Opaque)      items = &queue.getOpaque();
+    else if (passMask & RenderPassMask::Transparent) items = &queue.getTransparent();
+    else if (passMask & RenderPassMask::Unlit)       items = &queue.getUnlit();
+    else if (passMask & RenderPassMask::Outline)     items = &queue.getOutline();
+    else if (passMask & RenderPassMask::Overlay)     items = &queue.getOverlay();
     if (!items || items->empty())
         return;
 
@@ -76,7 +137,8 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
         shader->setMat4("u_proj",     proj);
         shader->setMat4("u_viewProj", viewProj);
         shader->setVec4("u_cameraPos", camPos);
-        shader->setVec4("u_clipPlane", ctx.clipPlane);
+        sendClipPlanes(shader, ctx);
+        sendLights(shader, ctx);
         for (const auto &item : *items)
             drawItem(ctx, item, shader);
     }
@@ -99,7 +161,8 @@ void RenderPass::execute(const FrameContext &ctx, RenderQueue &queue) const
                 sh->setMat4("u_proj",     proj);
                 sh->setMat4("u_viewProj", viewProj);
                 sh->setVec4("u_cameraPos", camPos);
-                sh->setVec4("u_clipPlane", ctx.clipPlane);
+                sendClipPlanes(sh, ctx);
+                sendLights(sh, ctx);
                 lastShader   = sh;
                 lastMaterial = nullptr; // force re-bind on shader change
                 if (ctx.stats) ctx.stats->shaderChanges++;
@@ -135,13 +198,24 @@ void RenderPass::drawItemNoMaterial(const FrameContext &ctx, const RenderItem &i
     if (ctx.stats)
     {
         ctx.stats->drawCalls++;
-        ctx.stats->triangles += idxCount / 3;
-        ctx.stats->vertices += static_cast<uint32_t>(item.drawable->vertexCount());
+        ctx.stats->triangles += (idxCount / 3) * static_cast<uint32_t>(item.instanceCount);
+        ctx.stats->vertices  += static_cast<uint32_t>(item.drawable->vertexCount());
     }
-    if (item.indexCount > 0)
-        item.drawable->drawRange(item.indexStart, item.indexCount);
+
+    if (item.instanceCount > 1)
+    {
+        if (item.indexCount > 0)
+            item.drawable->drawRangeInstanced(item.indexStart, item.indexCount, item.instanceCount);
+        else
+            item.drawable->drawInstanced(item.instanceCount);
+    }
     else
-        item.drawable->draw();
+    {
+        if (item.indexCount > 0)
+            item.drawable->drawRange(item.indexStart, item.indexCount);
+        else
+            item.drawable->draw();
+    }
 }
 
 void RenderPass::drawItem(const FrameContext &ctx, const RenderItem &item, Shader *sh) const
@@ -162,14 +236,24 @@ void RenderPass::drawItem(const FrameContext &ctx, const RenderItem &item, Shade
     if (ctx.stats)
     {
         ctx.stats->drawCalls++;
-        ctx.stats->triangles += idxCount / 3;
-        ctx.stats->vertices += static_cast<uint32_t>(item.drawable->vertexCount());
+        ctx.stats->triangles += (idxCount / 3) * static_cast<uint32_t>(item.instanceCount);
+        ctx.stats->vertices  += static_cast<uint32_t>(item.drawable->vertexCount());
     }
 
-    if (item.indexCount > 0)
-        item.drawable->drawRange(item.indexStart, item.indexCount);
+    if (item.instanceCount > 1)
+    {
+        if (item.indexCount > 0)
+            item.drawable->drawRangeInstanced(item.indexStart, item.indexCount, item.instanceCount);
+        else
+            item.drawable->drawInstanced(item.instanceCount);
+    }
     else
-        item.drawable->draw();
+    {
+        if (item.indexCount > 0)
+            item.drawable->drawRange(item.indexStart, item.indexCount);
+        else
+            item.drawable->draw();
+    }
 }
 
 // ─── Concrete passes ──────────────────────────────────────────────────────────────────
@@ -196,6 +280,75 @@ TransparentPass::TransparentPass()
     blend = true;
     passMask = RenderPassMask::Transparent;
     sortMode = RenderSortMode::BackToFront;
+}
+
+UnlitPass::UnlitPass()
+{
+    clearColor = false;
+    clearDepth = false;
+    depthTest  = true;
+    depthWrite = true;
+    cull       = true;
+    blend      = false;
+    passMask   = RenderPassMask::Unlit;
+    sortMode   = RenderSortMode::None;
+}
+
+OverlayPass::OverlayPass()
+{
+    clearColor = false;
+    clearDepth = false;
+    depthTest  = false;
+    depthWrite = false;
+    cull       = false;
+    blend      = true;
+    passMask   = RenderPassMask::Overlay;
+    sortMode   = RenderSortMode::BackToFront;
+}
+
+OutlinePass::OutlinePass()
+{
+    clearColor = false;
+    clearDepth = false;
+    depthTest  = true;
+    depthWrite = false;
+    cull       = false;  // draw back faces
+    blend      = false;
+    passMask   = RenderPassMask::Outline;
+    sortMode   = RenderSortMode::None;
+}
+
+void OutlinePass::execute(const FrameContext &ctx, RenderQueue &queue) const
+{
+    auto &items = queue.getOutline();
+    if (items.empty() || !shader || !ctx.camera) return;
+
+    auto &rs = RenderState::instance();
+    rs.setViewport(ctx.viewport.x, ctx.viewport.y, ctx.viewport.z, ctx.viewport.w);
+    rs.setDepthTest(true);
+    rs.setDepthWrite(false);
+    rs.setCull(true);
+    // Draw only back faces so front face normals extrude outward
+    glCullFace(GL_FRONT);
+    rs.setBlend(false);
+
+    const glm::mat4 &viewProj = ctx.camera->viewProjection;
+    rs.useProgram(shader->getId());
+    shader->setMat4("u_viewProj",     viewProj);
+    shader->setVec4("u_outlineColor", color);
+    shader->setFloat("u_thickness",   thickness);
+
+    for (const auto &item : items)
+    {
+        if (!item.drawable) continue;
+        shader->setMat4("u_model", item.model);
+        if (item.indexCount > 0)
+            item.drawable->drawRange(item.indexStart, item.indexCount);
+        else
+            item.drawable->draw();
+    }
+
+    glCullFace(GL_BACK); // restore
 }
 
 // ─── SkyPass ───────────────────────────────────────────────────────────────────────
@@ -329,23 +482,11 @@ void DeferredLightingPass::execute(const FrameContext &ctx, RenderQueue &/*queue
 
     shader->setVec3("u_viewPos", ctx.camera->position);
 
-    // Directional light
-    shader->setVec3("u_dirLightDir",   glm::normalize(dirLightDir));
-    shader->setVec3("u_dirLightColor", dirLightColor);
+    // Directional light — from scene lights (first DirectionalLight found)
+    sendLights(shader, ctx);
 
-    // Point lights from scene
-    int numPt = 0;
-    for (const auto *light : ctx.lights)
-    {
-        if (light->lightType != LightType::Point) continue;
-        const auto *pt  = static_cast<const PointLight *>(light);
-        std::string idx = "[" + std::to_string(numPt) + "]";
-        shader->setVec3 ("u_pointPos"    + idx, pt->worldPosition());
-        shader->setVec3 ("u_pointColor"  + idx, pt->color * pt->intensity);
-        shader->setFloat("u_pointRadius" + idx, pt->range);
-        if (++numPt >= 16) break;
-    }
-    shader->setInt("u_numPointLights", numPt);
+    // Point lights from scene (sendLights handles them, but deferred has its own uniforms)
+    // sendLights already sent u_pointPos/u_pointColor/u_pointRadius/u_numPointLights
 
     // Draw fullscreen triangle — no vertex data, positions from gl_VertexID
     glBindVertexArray(dummyVAO_);
@@ -399,3 +540,96 @@ void DeferredTechnique::render(const FrameContext &ctx, RenderQueue &queue) cons
 GBufferPass          *DeferredTechnique::geometryPass()    const { return passes.size() > 0 ? static_cast<GBufferPass*>          (passes[0]) : nullptr; }
 DeferredLightingPass *DeferredTechnique::lightingPass()    const { return passes.size() > 1 ? static_cast<DeferredLightingPass*> (passes[1]) : nullptr; }
 TransparentPass      *DeferredTechnique::transparentPass() const { return passes.size() > 2 ? static_cast<TransparentPass*>      (passes[2]) : nullptr; }
+
+// ─── Pipeline ────────────────────────────────────────────────────────────────
+
+Pipeline *Pipeline::create(const std::string &name)
+{
+    auto *p = new Pipeline();
+    p->name_ = name;
+    return p;
+}
+
+void Pipeline::destroy()
+{
+    for (auto *t : techniques_)
+        delete t;
+    techniques_.clear();
+    current_ = nullptr;
+}
+
+Technique *Pipeline::ensureTechnique()
+{
+    if (!current_)
+        newTechnique();
+    return current_;
+}
+
+Pipeline *Pipeline::newTechnique(const std::string &techName)
+{
+    auto *t  = new Technique();
+    t->name  = techName.empty() ? name_ : techName;
+    techniques_.push_back(t);
+    current_ = t;
+    return this;
+}
+
+Pipeline *Pipeline::opaque()
+{
+    ensureTechnique()->addPass<OpaquePass>();
+    return this;
+}
+
+Pipeline *Pipeline::transparent()
+{
+    ensureTechnique()->addPass<TransparentPass>();
+    return this;
+}
+
+Pipeline *Pipeline::unlit()
+{
+    ensureTechnique()->addPass<UnlitPass>();
+    return this;
+}
+
+Pipeline *Pipeline::overlay()
+{
+    ensureTechnique()->addPass<OverlayPass>();
+    return this;
+}
+
+Pipeline *Pipeline::sky(Shader *sh, glm::vec3 top, glm::vec3 horizon, glm::vec3 ground)
+{
+    auto *p        = ensureTechnique()->addPass<SkyPass>();
+    p->shader      = sh;
+    p->skyTop      = top;
+    p->skyHorizon  = horizon;
+    p->groundColor = ground;
+    return this;
+}
+
+Pipeline *Pipeline::outline(Shader *sh, glm::vec4 color, float thickness)
+{
+    auto *p       = ensureTechnique()->addPass<OutlinePass>();
+    p->shader     = sh;
+    p->color      = color;
+    p->thickness  = thickness;
+    return this;
+}
+
+Pipeline *Pipeline::addPass(RenderPass *pass)
+{
+    ensureTechnique()->passes.push_back(pass);
+    return this;
+}
+
+Technique *Pipeline::build(Scene *scene)
+{
+    Technique *first = techniques_.empty() ? nullptr : techniques_.front();
+    for (auto *t : techniques_)
+        scene->addTechnique(t);
+    // Transfer ownership to scene — we no longer own them
+    techniques_.clear();
+    current_ = nullptr;
+    return first;
+}

@@ -5,7 +5,11 @@
 #include "Manager.hpp"
 #include "RenderState.hpp"
 #include "Input.hpp"
-#include "glad/glad.h"
+// Platform OpenGL/GLES headers — resolved centrally
+#include "Opengl.hpp"
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_opengl3.h"
 
 double GetTime() { return static_cast<double>(SDL_GetTicks()) / 1000; }
 
@@ -130,19 +134,18 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
 
     SDL_Log("Load opengl extensions.");
 
-    // glad (GLES)
+#if !defined(__ANDROID__) && !defined(__EMSCRIPTEN__)
     if (!gladLoadGLES2Loader((GLADloadproc)SDL_GL_GetProcAddress))
     {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] Failed to load GLES with glad");
         return false;
     }
-
-    // Verificar versão carregada (glad 0.1.x)
     if (!(GLAD_GL_ES_VERSION_3_1))
-    { // ou 3_2 se pediste 3.2
+    {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "OpenGL ES 3.1 is required");
         return false;
     }
+#endif
 
     SDL_Log("[DEVICE] Vendor  : %s", (const char *)glGetString(GL_VENDOR));
     SDL_Log("[DEVICE] Renderer: %s", (const char *)glGetString(GL_RENDERER));
@@ -259,6 +262,13 @@ bool Device::Run()
 
     while (SDL_PollEvent(&event) != 0)
     {
+        if (m_imguiReady)
+            ImGui_ImplSDL2_ProcessEvent(&event);
+
+        // When ImGui is capturing input, don't forward to the game Input system.
+        const ImGuiIO &io = ImGui::GetIO();
+        bool imguiMouse    = m_imguiReady && io.WantCaptureMouse;
+        bool imguiKeyboard = m_imguiReady && io.WantCaptureKeyboard;
 
         switch (event.type)
         {
@@ -283,48 +293,49 @@ bool Device::Run()
         }
         case SDL_KEYDOWN:
         {
-
             if (event.key.keysym.sym == SDLK_ESCAPE)
             {
                 SetShouldClose(true);
                 break;
             }
-            Input::OnKeyDown(event.key);
-
+            if (!imguiKeyboard)
+                Input::OnKeyDown(event.key);
             break;
         }
-
         case SDL_KEYUP:
         {
-            Input::OnKeyUp(event.key);
+            if (!imguiKeyboard)
+                Input::OnKeyUp(event.key);
             break;
         }
         case SDL_TEXTINPUT:
         {
-            Input::OnTextInput(event.text);
+            if (!imguiKeyboard)
+                Input::OnTextInput(event.text);
             break;
         }
         case SDL_MOUSEBUTTONDOWN:
         {
-
-            Input::OnMouseDown(event.button);
+            if (!imguiMouse)
+                Input::OnMouseDown(event.button);
+            break;
         }
-        break;
         case SDL_MOUSEBUTTONUP:
         {
-            Input::OnMouseUp(event.button);
-
+            if (!imguiMouse)
+                Input::OnMouseUp(event.button);
             break;
         }
         case SDL_MOUSEMOTION:
         {
-            Input::OnMouseMove(event.motion);
+            if (!imguiMouse)
+                Input::OnMouseMove(event.motion);
             break;
         }
-
         case SDL_MOUSEWHEEL:
         {
-            Input::OnMouseWheel(event.wheel);
+            if (!imguiMouse)
+                Input::OnMouseWheel(event.wheel);
             break;
         }
         }
@@ -337,10 +348,13 @@ int Device::PollEvents(SDL_Event *event)
 {
     if (!m_ready)
         return false;
-    m_current = GetTime(); // Number of elapsed seconds since InitTimer()
+    m_current = GetTime();
     m_update = m_current - m_previous;
     m_previous = m_current;
-    return SDL_PollEvent(event);
+    int ret = SDL_PollEvent(event);
+    if (ret && m_imguiReady)
+        ImGui_ImplSDL2_ProcessEvent(event);
+    return ret;
 }
 
 void Device::Close()
@@ -349,6 +363,8 @@ void Device::Close()
         return;
 
     m_ready = false;
+
+    ImGuiShutdown();
 
     TextureManager::instance().unloadAll();
     ShaderManager::instance().unloadAll();
@@ -367,6 +383,11 @@ void Device::Close()
 
 void Device::Flip()
 {
+    if (m_imguiReady)
+    {
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
 
     SDL_GL_SwapWindow(m_window);
 
@@ -392,8 +413,44 @@ void Device::Flip()
 
 bool Device::IsRunning() const
 {
-
     return m_ready && !m_shouldclose;
+}
+
+void Device::ImGuiInit(const char *glsl_version)
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO &io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImGui::StyleColorsDark();
+    ImGui_ImplSDL2_InitForOpenGL(m_window, m_context);
+    ImGui_ImplOpenGL3_Init(glsl_version);
+    m_imguiReady = true;
+    SDL_Log("[DEVICE] ImGui initialised (%s)", glsl_version);
+}
+
+void Device::ImGuiBegin()
+{
+    if (!m_imguiReady) return;
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+}
+
+void Device::ImGuiEnd()
+{
+    // Rendering is done in Flip() so the draw data is submitted
+    // right before SDL_GL_SwapWindow — nothing needed here.
+}
+
+void Device::ImGuiShutdown()
+{
+    if (!m_imguiReady) return;
+    m_imguiReady = false;
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+    SDL_Log("[DEVICE] ImGui shut down");
 }
 
 Pixmap *Device::CaptureFramebuffer()

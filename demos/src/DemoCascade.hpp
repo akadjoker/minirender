@@ -3,7 +3,9 @@
 #include "CascadeShadowMap.hpp"
 #include "RenderState.hpp"
 #include "Effects.hpp"
+#include "Batch.hpp"
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 // ============================================================
 //  DemoCascade — 4-cascade shadow maps
@@ -20,7 +22,7 @@ public:
         DemoBase::init();
         camera->setPosition({0.f, 20.f, 60.f});
         camera->lookAt({0.f, 0.f, 0.f});
-        camera->farPlane = 400.f;
+        camera->farPlane = 600.f;
 
         // ── Shaders ─────────────────────────────────────────
         auto *depthShader = shaders().load("csm_depth",
@@ -69,8 +71,8 @@ public:
 
         tech->litShader = litShader_;
         tech->getCsm()->setLightDirection(lightDir);
-        tech->getCsm()->setShadowFarPlane(100.f);
-        tech->getCsm()->setLambda(0.0f); 
+        tech->getCsm()->setShadowFarPlane(350.f);  // cobre a cena (±250 unidades)
+        tech->getCsm()->setLambda(0.6f);           // distribui mais res. perto
 
         // Add depth passes for each cascade
         for (int i = 0; i < CSM_NUM_CASCADES; ++i)
@@ -92,6 +94,7 @@ public:
         sky->shader = skyShader_;
 
         scene.addTechnique(tech);
+        debugBatch_.Init();
         return true;
     }
 
@@ -109,6 +112,8 @@ public:
             if (matGround_) matGround_->setBool("u_showCascades", showCascades_);
             if (matCube_)   matCube_->setBool("u_showCascades",   showCascades_);
         }
+        if (Input::IsKeyPressed(KEY_F))
+            showFrustums_ = !showFrustums_;
     }
 
     void render() override
@@ -131,8 +136,14 @@ public:
         skyShader_->setVec4("u_lightColor", lightColor);
 
         DemoBase::render();
+        if (showFrustums_)
+            drawCascadeDebug();
     }
-    void release() override { DemoBase::release(); }
+    void release() override
+    {
+        debugBatch_.Release();
+        DemoBase::release();
+    }
 
 private:
     CsmTechnique *csm_          = nullptr;
@@ -140,9 +151,87 @@ private:
     Shader       *skyShader_    = nullptr;
     Material     *matGround_    = nullptr;
     Material     *matCube_      = nullptr;
+    RenderBatch   debugBatch_;
     float         time_         = 0.f;
     bool          showCascades_ = false;
+    bool          showFrustums_ = false;
     glm::vec3     lightDir_     = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
+
+    void drawCascadeDebug()
+    {
+        auto *csm = csm_->getCsm();
+
+        // Cascade wireframe colours: red, green, blue, yellow
+        static const u8 cols[CSM_NUM_CASCADES][3] = {
+            {255, 80,  80},
+            {80,  255, 80},
+            {80,  80,  255},
+            {255, 220, 40},
+        };
+
+        auto &rs = RenderState::instance();
+        rs.setDepthTest(true);
+        rs.setBlend(false);
+
+        debugBatch_.SetMatrix(camera->viewProjection);
+
+        float prevSplit = camera->nearPlane;
+        for (int ci = 0; ci < CSM_NUM_CASCADES; ++ci)
+        {
+            float splitFar = csm->cascadeSplits[ci];
+
+            // Reconstruct the 8 world-space corners of this cascade slice
+            glm::mat4 sliceProj = glm::perspective(
+                glm::radians(camera->fov), camera->aspect(), prevSplit, splitFar);
+            glm::mat4 inv = glm::inverse(sliceProj * camera->getView());
+
+            glm::vec3 c[8];
+            int k = 0;
+            for (int x = 0; x < 2; ++x)
+            for (int y = 0; y < 2; ++y)
+            for (int z = 0; z < 2; ++z)
+            {
+                glm::vec4 p = inv * glm::vec4(x*2.f-1.f, y*2.f-1.f, z*2.f-1.f, 1.f);
+                c[k++] = glm::vec3(p) / p.w;
+            }
+            // Corner layout: z-bit=0 → near, z-bit=1 → far
+            // near (0,2,4,6), far (1,3,5,7)
+            debugBatch_.SetColor(cols[ci][0], cols[ci][1], cols[ci][2], 255);
+            // near face
+            debugBatch_.Line3D(c[0],c[2]); debugBatch_.Line3D(c[2],c[6]);
+            debugBatch_.Line3D(c[6],c[4]); debugBatch_.Line3D(c[4],c[0]);
+            // far face
+            debugBatch_.Line3D(c[1],c[3]); debugBatch_.Line3D(c[3],c[7]);
+            debugBatch_.Line3D(c[7],c[5]); debugBatch_.Line3D(c[5],c[1]);
+            // connecting edges
+            debugBatch_.Line3D(c[0],c[1]); debugBatch_.Line3D(c[2],c[3]);
+            debugBatch_.Line3D(c[4],c[5]); debugBatch_.Line3D(c[6],c[7]);
+
+            // Also draw the light-space ortho box for this cascade
+            // (inverse of the lightSpaceMatrix gives us the 8 corners of the shadow volume)
+            debugBatch_.SetColor(cols[ci][0]/2, cols[ci][1]/2, cols[ci][2]/2, 180);
+            glm::mat4 invLS = glm::inverse(csm->lightSpaceMatrices[ci]);
+            glm::vec3 lc[8];
+            k = 0;
+            for (int x = 0; x < 2; ++x)
+            for (int y = 0; y < 2; ++y)
+            for (int zz = 0; zz < 2; ++zz)
+            {
+                glm::vec4 p = invLS * glm::vec4(x*2.f-1.f, y*2.f-1.f, zz*2.f-1.f, 1.f);
+                lc[k++] = glm::vec3(p) / p.w;
+            }
+            debugBatch_.Line3D(lc[0],lc[2]); debugBatch_.Line3D(lc[2],lc[6]);
+            debugBatch_.Line3D(lc[6],lc[4]); debugBatch_.Line3D(lc[4],lc[0]);
+            debugBatch_.Line3D(lc[1],lc[3]); debugBatch_.Line3D(lc[3],lc[7]);
+            debugBatch_.Line3D(lc[7],lc[5]); debugBatch_.Line3D(lc[5],lc[1]);
+            debugBatch_.Line3D(lc[0],lc[1]); debugBatch_.Line3D(lc[2],lc[3]);
+            debugBatch_.Line3D(lc[4],lc[5]); debugBatch_.Line3D(lc[6],lc[7]);
+
+            prevSplit = splitFar;
+        }
+
+        debugBatch_.Render();
+    }
 
     void buildGround(Material *mat)
     {

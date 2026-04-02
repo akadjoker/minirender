@@ -34,7 +34,9 @@ add_library(core SHARED  ${SOURCES})
 if (WIN32)
     target_include_directories(core PUBLIC "${LIBS_DIR}/include" include src)
 else() 
-    target_include_directories(core PUBLIC  include src)
+    target_include_directories(core PUBLIC  include src
+    ${CMAKE_SOURCE_DIR}/vendor/imgui
+)
 endif()
 
 target_include_directories(core PRIVATE 
@@ -44,6 +46,7 @@ target_include_directories(core PRIVATE
 )
 
 target_link_libraries(core 
+    imgui
     OpenGL::GL
     ${SDL2_LIBRARIES}
     SDL2_image

@@ -1,9 +1,11 @@
-#include "glad/glad.h"
+#include "Opengl.hpp"
 #include "ShadowMap.hpp"
 #include "RenderState.hpp"
 #include "Material.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
+#include <cmath>
 #include <SDL2/SDL.h>
 
 // ============================================================
@@ -89,14 +91,49 @@ void ShadowPass::execute(const FrameContext &ctx, RenderQueue &queue) const
 
     auto &rs = RenderState::instance();
 
-    // ── Calcular lightSpaceMatrix ────────────────────────────
-    glm::vec3 dir     = glm::normalize(lightDir);
-    glm::vec3 eye     = -dir * lightDist;          // "posição" da luz
-    glm::mat4 lightV  = glm::lookAt(eye, glm::vec3(0.f), glm::vec3(0.f, 1.f, 0.f));
-    glm::mat4 lightP  = glm::ortho(
-        -orthoSize,  orthoSize,
-        -orthoSize,  orthoSize,
-        nearPlane,   farPlane);
+    // ── Calcular lightSpaceMatrix ajustado ao frustum da câmara ──
+    glm::vec3 dir = glm::normalize(lightDir);
+    // Up vector seguro quando a luz aponta quase verticalmente
+    glm::vec3 up  = (std::fabs(dir.y) > 0.99f) ? glm::vec3(1.f, 0.f, 0.f)
+                                                 : glm::vec3(0.f, 1.f, 0.f);
+
+    // 1. Desprojectar os 8 cantos NDC do frustum da câmara para world space
+    glm::mat4 invVP = glm::inverse(ctx.camera->getProjection() * ctx.camera->getView());
+    static const glm::vec4 ndc[8] = {
+        {-1,-1,-1,1},{1,-1,-1,1},{-1,1,-1,1},{1,1,-1,1},
+        {-1,-1, 1,1},{1,-1, 1,1},{-1,1, 1,1},{1,1, 1,1}
+    };
+    glm::vec3 corners[8];
+    glm::vec3 centroid(0.f);
+    for (int i = 0; i < 8; i++) {
+        glm::vec4 p = invVP * ndc[i];
+        corners[i]  = glm::vec3(p) / p.w;
+        centroid   += corners[i];
+    }
+    centroid /= 8.f;
+
+    // 2. Light view: recua lightDist do centróide do frustum
+    glm::mat4 lightV = glm::lookAt(centroid - dir * lightDist, centroid, up);
+
+    // 3. AABB dos cantos do frustum em light space
+    glm::vec3 lsMin( 1e9f), lsMax(-1e9f);
+    for (auto &c : corners) {
+        glm::vec3 ls = glm::vec3(lightV * glm::vec4(c, 1.f));
+        lsMin        = glm::min(lsMin, ls);
+        lsMax        = glm::max(lsMax, ls);
+    }
+
+    // 4. Ortho ajustado + pequeno padding XY para evitar artefactos de borda
+    float xPad = (lsMax.x - lsMin.x) * 0.02f;
+    float yPad = (lsMax.y - lsMin.y) * 0.02f;
+    // Em right-handed eye space, objectos à frente têm Z negativo.
+    // nearP = -lsMax.z (plano mais próximo), farP = -lsMin.z (plano mais afastado).
+    // Extender farP por lightDist para apanhar shadow casters fora do view frustum.
+    float nearP = std::max(nearPlane, -lsMax.z);
+    float farP  = -lsMin.z + lightDist;
+    glm::mat4 lightP = glm::ortho(lsMin.x - xPad, lsMax.x + xPad,
+                                   lsMin.y - yPad, lsMax.y + yPad,
+                                   nearP, farP);
 
     lightSpaceMatrix_  = lightP * lightV;
     lightSpaceMatrix   = lightSpaceMatrix_; // expõe para o OpaquePass

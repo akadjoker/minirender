@@ -7,16 +7,19 @@ in vec3 v_worldPos;
 in vec3 v_normal;
 in vec2 v_uv;
 in vec4 v_fragViewSpace;
+in float v_clipDists[4];
 
 out vec4 FragColor;
 
 uniform vec4 u_lightDir;
 uniform vec4 u_lightColor;
 uniform vec4 u_ambient;
+uniform int  u_clipPlaneCount;
 
 uniform sampler2D u_shadowMap[NUM_CASCADES];
 uniform mat4      u_lightSpace[NUM_CASCADES];
 uniform float     u_cascadeSplits[NUM_CASCADES];
+uniform float     u_cascadeTexelSize[NUM_CASCADES];  // world-space texel size per cascade
 uniform vec2      u_shadowMapSize;
 
 uniform sampler2D u_albedo;
@@ -45,6 +48,19 @@ const vec2 poissonDisk[16] = vec2[](
 
 // Front-face culling on the depth pass eliminates self-shadowing.
 // We only need a tiny slope bias for grazing-angle light on back faces.
+// Adaptive bias: scales with cascade texel size, minimum floor avoids acne
+// on flat surfaces where NdotL ≈ 1 (slope-only bias would be near zero).
+float adaptiveBias(int c, float NdotL)
+{
+    float slope   = 1.0 - NdotL;
+    float texelSz = u_cascadeTexelSize[c];
+    // constant floor = 1 texel in depth / 1000  (tuned for 24-bit depth)
+    float floor_  = texelSz * 0.001;
+    // slope term grows with cascade size
+    float slope_  = texelSz * 0.008 * slope;
+    return floor_ + slope_;
+}
+
 float shadowDiskPCF(int c, vec4 fragLightSpace)
 {
     vec3 proj = fragLightSpace.xyz / fragLightSpace.w;
@@ -53,7 +69,7 @@ float shadowDiskPCF(int c, vec4 fragLightSpace)
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
 
     float NdotL = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
-    float bias  = 0.0003 * (1.0 - NdotL);   // slope-only, no constant acne
+    float bias  = adaptiveBias(c, NdotL);
 
     vec2  texel  = 1.0 / u_shadowMapSize;
     float shadow = 0.0;
@@ -74,7 +90,7 @@ float shadowGridPCF(int c, vec4 fragLightSpace)
     if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) return 0.0;
 
     float NdotL = max(dot(normalize(v_normal), u_lightDir.xyz), 0.0);
-    float bias  = 0.0005 * (1.0 - NdotL);
+    float bias  = adaptiveBias(c, NdotL);
 
     vec2  texel  = 1.0 / u_shadowMapSize;
     float shadow = 0.0;
@@ -103,6 +119,9 @@ vec3 cascadeDebugColor(int c)
 
 void main()
 {
+    for (int i = 0; i < u_clipPlaneCount; i++)
+        if (v_clipDists[i] < 0.0) discard;
+
     vec3 albedo = texture(u_albedo, v_uv).rgb;
     vec3 normal = normalize(v_normal);
 

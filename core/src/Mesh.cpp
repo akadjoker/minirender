@@ -3,6 +3,35 @@
 #include <glm/gtc/matrix_inverse.hpp>
 
 // ============================================================
+//  InstanceBuffer
+// ============================================================
+void InstanceBuffer::upload()
+{
+    GLenum usage = dynamic ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
+    if (vbo == 0)
+        glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 matrices.size() * sizeof(glm::mat4),
+                 matrices.data(), usage);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void InstanceBuffer::update()
+{
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    matrices.size() * sizeof(glm::mat4),
+                    matrices.data());
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void InstanceBuffer::free()
+{
+    if (vbo) { glDeleteBuffers(1, &vbo); vbo = 0; }
+}
+
+// ============================================================
 //  MeshBuffer
 // ============================================================
 void MeshBuffer::upload()
@@ -72,6 +101,46 @@ void MeshBuffer::free()
         glDeleteVertexArrays(1, &vao);
         vao = 0;
     }
+}
+
+void MeshBuffer::attachInstances(InstanceBuffer *ib)
+{
+    // Bind the instance VBO into this mesh's VAO.
+    // A mat4 occupies 4 consecutive attribute locations (one vec4 each).
+    // We use locations 6-9, leaving 0-5 for vertex data and skinning.
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, ib->vbo);
+
+    for (int col = 0; col < 4; ++col)
+    {
+        GLuint loc = 6 + (GLuint)col;
+        glEnableVertexAttribArray(loc);
+        glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE,
+                              sizeof(glm::mat4),
+                              (void *)(col * sizeof(glm::vec4)));
+        // divisor=1: advance one instance per draw, not per vertex
+        glVertexAttribDivisor(loc, 1);
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+}
+
+void MeshBuffer::drawInstanced(int instanceCount) const
+{
+    glBindVertexArray(vao);
+    glDrawElementsInstanced(mode, (GLsizei)indices.size(),
+                            GL_UNSIGNED_INT, nullptr, instanceCount);
+    glBindVertexArray(0);
+}
+
+void MeshBuffer::drawRangeInstanced(uint32_t start, uint32_t count, int instanceCount) const
+{
+    glBindVertexArray(vao);
+    const void *offset = reinterpret_cast<const void *>(static_cast<uintptr_t>(start * sizeof(uint32_t)));
+    glDrawElementsInstanced(mode, (GLsizei)count,
+                            GL_UNSIGNED_INT, offset, instanceCount);
+    glBindVertexArray(0);
 }
 
 // ============================================================

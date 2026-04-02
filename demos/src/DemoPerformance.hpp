@@ -110,7 +110,7 @@ public:
             frustumEnabled_ = !frustumEnabled_;
             // Setting a huge move delta effectively disables the LOD recalc skip
             // so we don't confuse it with frustum culling toggle.
-            // To truly disable frustum you'd need a flag in TerrainLodNode — this
+            // To truly disable frustum you'd need a flag in TerrainLodNode  this
             // just shows the perf difference with the early-return on/off.
             if (terrain_)
                 terrain_->setCameraMovementDelta(frustumEnabled_ ? 10.f : 0.001f);

@@ -4,14 +4,17 @@ in  vec3 v_worldPos;
 in  vec3 v_normal;
 in  vec2 v_uv;
 in  vec4 v_lightSpacePos;
+in  float v_clipDists[4];
 
 out vec4 FragColor;
 
 uniform sampler2D u_albedo;
 uniform sampler2D u_shadowMap;   // unit 1
-uniform vec3      u_lightDir;    // normalised, world space, pointing TOWARDS light
-uniform vec3      u_lightColor;
+uniform vec4      u_lightDir;    // normalised, world space, pointing TOWARDS light (w=0)
+uniform vec4      u_lightColor;
+uniform vec4      u_ambient;
 uniform float     u_shadowBias;  // default 0.005
+uniform int       u_clipPlaneCount;
 
 // PCF 3×3 soft shadows
 float shadowPCF(vec4 lightSpacePos, float bias)
@@ -36,15 +39,18 @@ float shadowPCF(vec4 lightSpacePos, float bias)
 
 void main()
 {
+    for (int i = 0; i < u_clipPlaneCount; i++)
+        if (v_clipDists[i] < 0.0) discard;
+
     vec4  albedo = texture(u_albedo, v_uv);
     vec3  normal = normalize(v_normal);
 
-    float NdotL  = max(dot(normal, u_lightDir), 0.0);
+    float NdotL  = max(dot(normal, u_lightDir.xyz), 0.0);
     float bias   = max(u_shadowBias * (1.0 - NdotL), u_shadowBias * 0.1);
     float shadow = shadowPCF(v_lightSpacePos, bias);
 
-    vec3 ambient = 0.15 * albedo.rgb;
-    vec3 diffuse = NdotL * u_lightColor * albedo.rgb;
+    vec3 ambient = u_ambient.rgb * albedo.rgb;
+    vec3 diffuse = NdotL * u_lightColor.rgb * albedo.rgb;
     vec3 color   = ambient + (1.0 - shadow) * diffuse;
 
     FragColor = vec4(color, albedo.a);

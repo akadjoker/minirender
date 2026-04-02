@@ -74,11 +74,12 @@ public:
         water_->reflectivity     = 0.6f;
         water_->distortStrength  = 0.025f;
         water_->waveHeight       = 0.15f;
-        water_->waveLength       = 0.1f;    // bump UV scale
+        water_->waveLength       = 0.4f;    // bump UV scale (lower = more tiling = more stripes)
         water_->windForce        = 1.0f;
         water_->windDirection    = {1.f, 0.f};
         water_->foamIntensity    = 0.7f;
-        water_->colorBlendFactor = 0.15f;
+        water_->clipBias         = 1.5f;
+        water_->colorBlendFactor = 0.35f;
         water_->waterColor       = {0.04f, 0.12f, 0.45f, 1.f};
         water_->setPosition({0.f, 5.f, 0.f});
         if (!water_->init(120.f, 120.f, waterShader_))
@@ -88,7 +89,15 @@ public:
         auto *fwd = new ForwardTechnique();
         fwd->addPass<SkyPass>()->shader = skyShader_;
         scene.addTechnique(fwd);
+        // ── Sun light ─────────────────────────────────────────
+        auto *sun = scene.createLight<DirectionalLight>("sun");
+        sun->color     = {1.f, 0.95f, 0.85f};
+        sun->intensity = 1.f;
+        sun->ambient   = {0.10f, 0.12f, 0.16f};
+        // lookAt direction: light comes from upper-right-front
+        sun->lookAt(glm::normalize(glm::vec3(-0.6f, -1.f, -0.5f)));
 
+        lightDir_ = glm::vec4(glm::normalize(glm::vec3(0.6f, 1.f, 0.5f)), 0.f);
         return true;
     }
 
@@ -106,28 +115,19 @@ public:
 
     void render() override
     {
-        const glm::vec4 camPos     = glm::vec4(camera->position, 1.f);
-        const glm::vec4 lightDir   = glm::vec4(glm::normalize(glm::vec3(0.6f, 1.f, 0.5f)), 0.f);
-        const glm::vec4 lightColor = glm::vec4(1.f, 0.95f, 0.85f, 1.f);
-        const glm::vec4 ambient    = glm::vec4(0.10f, 0.12f, 0.16f, 1.f);
+        const glm::vec4 camPos = glm::vec4(camera->position, 1.f);
         auto &rs = RenderState::instance();
-
-        rs.useProgram(litShader_->getId());
-        litShader_->setVec4("u_cameraPos",  camPos);
-        litShader_->setVec4("u_lightDir",   lightDir);
-        litShader_->setVec4("u_lightColor", lightColor);
-        litShader_->setVec4("u_ambient",    ambient);
 
         rs.useProgram(skyShader_->getId());
         skyShader_->setMat4("u_invViewProj", glm::inverse(camera->viewProjection));
         skyShader_->setVec4("u_cameraPos",  camPos);
-        skyShader_->setVec4("u_lightDir",   lightDir);
-        skyShader_->setVec4("u_lightColor", lightColor);
+        skyShader_->setVec4("u_lightDir",   lightDir_);
+        skyShader_->setVec4("u_lightColor", {1.f, 0.95f, 0.85f, 1.f});
 
         rs.useProgram(waterShader_->getId());
         waterShader_->setVec4("u_cameraPos",  camPos);
-        waterShader_->setVec4("u_lightDir",   lightDir);
-        waterShader_->setVec4("u_lightColor", lightColor);
+        waterShader_->setVec4("u_lightDir",   lightDir_);
+        waterShader_->setVec4("u_lightColor", {1.f, 0.95f, 0.85f, 1.f});
 
         DemoBase::render();
 
@@ -165,7 +165,8 @@ private:
     Shader      *waterShader_ = nullptr;
     Shader      *skyShader_   = nullptr;
     float        time_        = 1.0f;
-    bool         showDebug_   = true;  // press F1 in update() to toggle
+    bool         showDebug_   = true;
+    glm::vec4    lightDir_    = {};
 
     void buildIslandBoxes(Material *mat)
     {

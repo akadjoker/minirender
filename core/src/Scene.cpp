@@ -74,7 +74,11 @@ void Scene::remove(Node *node)
 {
     auto it = std::find(roots_.begin(), roots_.end(), node);
     if (it != roots_.end())
-        roots_.erase(it);
+    {
+        // Swap-and-pop: O(1) instead of O(n) erase
+        *it = roots_.back();
+        roots_.pop_back();
+    }
 }
 
 void Scene::markForRemoval(Node *node)
@@ -199,6 +203,18 @@ void Scene::release()
  
 }
 
+// ============================================================
+//  Light-only pre-gather
+// ============================================================
+void Scene::gatherLightsOnly(Node *node)
+{
+    if (!node || !node->visible) return;
+    if (auto *l = node->asLight())
+        frameCtx_.lights.push_back(l);
+    for (auto *c : node->getChildren())
+        gatherLightsOnly(c);
+}
+
 void Scene::renderCamera(Camera *cam)
 {
     cam->updateMatrices();
@@ -211,11 +227,14 @@ void Scene::renderCamera(Camera *cam)
     frameCtx_.stats    = &stats_;
     stats_.reset();
 
+    // Pre-gather lights so water's preRender has correct lighting this frame
+    frameCtx_.lights.clear();
+    for (auto *root : roots_)
+        gatherLightsOnly(root);
 
     preRenderNodes(cam);
 
- 
-
+    // Main gather — re-clears lights (gatherNode re-adds them) to avoid duplicates
     frameCtx_.lights.clear();
     renderQueue_.clear();
     frameCtx_.shadowQueue.clear();
@@ -280,8 +299,9 @@ void Scene::renderToTarget(Camera *tmpCam, RenderTarget *rt)
     ctx.frustum     = Frustum::from_matrix(tmpCam->viewProjection);
     ctx.stats       = nullptr;
     ctx.shadowQueue = frameCtx_.shadowQueue;
-    ctx.clipPlane   = clipPlane_;
-    clipPlane_      = {0.f, 0.f, 0.f, 0.f}; // auto-reset after use
+    ctx.clipPlanes     = clipPlanes_;
+    ctx.clipPlaneCount = clipPlaneCount_;
+    clipPlaneCount_ = 0; // auto-reset after use
 
 
     // Gather + render (no recursive preRender calls).
@@ -291,11 +311,11 @@ void Scene::renderToTarget(Camera *tmpCam, RenderTarget *rt)
     const bool prevSecondary = frameCtx_.secondary;
     frameCtx_.secondary = true;
 
-    RenderQueue q;
+    rtQueue_.clear();
     for (auto *node : roots_)
     {
          
-            gatherNode(node, ctx.frustum, q);
+            gatherNode(node, ctx.frustum, rtQueue_);
         
     }
     
@@ -303,7 +323,7 @@ void Scene::renderToTarget(Camera *tmpCam, RenderTarget *rt)
     frameCtx_.secondary = prevSecondary;
 
     for (auto *t : techniques_)
-        t->render(ctx, q);
+        t->render(ctx, rtQueue_);
 
     rt->unbind();
 }
@@ -485,11 +505,22 @@ static void pickNode(Node *node, const Ray &ray, ScenePickResult &best)
     {
         if (mn->mesh)
         {
-            PickResult r = mn->mesh->pick(ray, mn->worldMatrix());
-            if (r.hit && r.distance < best.result.distance)
+            // Broad phase: ray-AABB test before expensive triangle intersection
+            const glm::mat4 world = mn->worldMatrix();
+            const BoundingBox worldAABB = mn->mesh->aabb.transformed(world);
+            if (worldAABB.is_valid())
             {
-                best.result = r;
-                best.node   = mn;
+                float aabbHit = worldAABB.intersects_ray(ray.origin, ray.direction);
+                if (aabbHit < 0.f || aabbHit >= best.result.distance)
+                    goto pickChildren;
+            }
+            {
+                PickResult r = mn->mesh->pick(ray, world);
+                if (r.hit && r.distance < best.result.distance)
+                {
+                    best.result = r;
+                    best.node   = mn;
+                }
             }
         }
     }
@@ -497,15 +528,26 @@ static void pickNode(Node *node, const Ray &ray, ScenePickResult &best)
     {
         if (amn->mesh)
         {
-            PickResult r = amn->mesh->pick(ray, amn->worldMatrix());
-            if (r.hit && r.distance < best.result.distance)
+            const glm::mat4 world = amn->worldMatrix();
+            const BoundingBox worldAABB = amn->mesh->aabb.transformed(world);
+            if (worldAABB.is_valid())
             {
-                best.result = r;
-                best.node   = amn;
+                float aabbHit = worldAABB.intersects_ray(ray.origin, ray.direction);
+                if (aabbHit < 0.f || aabbHit >= best.result.distance)
+                    goto pickChildren;
+            }
+            {
+                PickResult r = amn->mesh->pick(ray, world);
+                if (r.hit && r.distance < best.result.distance)
+                {
+                    best.result = r;
+                    best.node   = amn;
+                }
             }
         }
     }
 
+pickChildren:
     for (auto *child : node->getChildren())
         pickNode(child, ray, best);
 }

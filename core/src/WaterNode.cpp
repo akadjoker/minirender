@@ -82,7 +82,9 @@ bool WaterNode3D::init(float width, float depth, Shader *waterShader)
              ->setFloat("u_foamRange",         foamRange)
              ->setFloat("u_depthMult",         depthMult)
              ->setVec4 ("u_waterColor",        waterColor)
-             ->setFloat("u_colorBlendFactor",  colorBlendFactor);
+             ->setFloat("u_colorBlendFactor",  colorBlendFactor)
+             ->setFloat("u_near",              0.1f)
+             ->setFloat("u_far",               1000.f);
 
  
 
@@ -181,6 +183,13 @@ void WaterNode3D::preRender(Scene *scene, const Camera *mainCam)
 
     rendering_ = true;
 
+    // Update near/far from current camera so depth linearisation is correct
+    if (material_)
+    {
+        material_->setFloat("u_near", mainCam->nearPlane);
+        material_->setFloat("u_far",  mainCam->farPlane);
+    }
+
     const float waterY = worldPosition().y;
     const glm::vec3 camPos = mainCam->position;
 
@@ -204,18 +213,16 @@ void WaterNode3D::preRender(Scene *scene, const Camera *mainCam)
 
 
 
-    scene->setClipPlane({0, 1, 0, 0});
-
+    // Reflection: clip everything below water surface (+bias to hide gap)
+    scene->setClipPlane({0.f, 1.f, 0.f, -(waterY - clipBias)});
     scene->renderToTarget(&reflCam, reflRT_);
 
     Camera *mutableCam = const_cast<Camera *>(mainCam);
-    //scene->setClipPlane({0, -1, 0, 0});
-    scene->setClipPlane({0, -1, 0, 0});
-
+    // Refraction: clip everything above water surface (+bias to capture shore)
+    scene->setClipPlane({0.f, -1.f, 0.f, waterY + clipBias});
     scene->renderToTarget(mutableCam, refrRT_);
 
-
-    scene->setClipPlane({0, 0, 0, 0});
+    scene->clearClipPlanes();
 
     rendering_ = false;
 }

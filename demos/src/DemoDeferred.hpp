@@ -79,9 +79,6 @@ public:
 
         tech->geometryPass()->shader  = gbufferShader;
         tech->lightingPass()->shader  = lightingShader;
-        // Directional fill light
-        tech->lightingPass()->dirLightDir   = glm::normalize(glm::vec3(-1.f, -2.f, -1.f));
-        tech->lightingPass()->dirLightColor = glm::vec3(0.4f, 0.4f, 0.5f);
 
         scene.addTechnique(tech);
         return true;

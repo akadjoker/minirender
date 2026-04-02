@@ -9,12 +9,15 @@ out vec3 v_worldPos;
 out vec3 v_normal;
 out vec2 v_uv;
 out vec4 v_lightSpacePos;
+out float v_clipDists[4];
 
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat4 u_lightSpace;
 uniform mat4 u_boneMatrices[100];
+uniform vec4 u_clipPlanes[4];
+uniform int  u_clipPlaneCount;
 
 void main()
 {
@@ -29,6 +32,8 @@ void main()
     v_normal        = normalize(mat3(transpose(inverse(u_model * skinMat))) * a_normal);
     v_uv            = a_uv;
     v_lightSpacePos = u_lightSpace * worldPos;
+    for (int i = 0; i < u_clipPlaneCount; i++)
+        v_clipDists[i] = dot(worldPos, u_clipPlanes[i]);
 
     gl_Position = u_proj * u_view * worldPos;
 }

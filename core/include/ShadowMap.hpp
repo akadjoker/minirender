@@ -1,5 +1,5 @@
 #pragma once
-#include "glad/glad.h"
+#include "Opengl.hpp"
 #include "RenderPipeline.hpp"
 #include "Node.hpp"
 #include <glm/glm.hpp>

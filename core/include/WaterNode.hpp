@@ -44,10 +44,10 @@ public:
     float windForce     = 1.0f;            // bump UV scroll speed
     glm::vec2 windDirection = {1.f, 0.f};  // scroll direction
 
-    glm::vec4 wave1 = { 1.0f,  0.0f, 0.5f, 10.0f};
-    glm::vec4 wave2 = { 0.7f,  0.7f, 0.3f,  6.0f};
-    glm::vec4 wave3 = { 0.0f,  1.0f, 0.2f,  3.0f};
-    glm::vec4 wave4 = {-0.5f,  0.5f, 0.15f, 2.0f};
+    glm::vec4 wave1 = { 1.0f,  0.0f, 0.12f, 30.0f};
+    glm::vec4 wave2 = { 0.7f,  0.7f, 0.08f, 20.0f};
+    glm::vec4 wave3 = { 0.0f,  1.0f, 0.06f, 14.0f};
+    glm::vec4 wave4 = {-0.5f,  0.5f, 0.04f,  9.0f};
 
     // Foam params
     float foamScale     = 0.9f;

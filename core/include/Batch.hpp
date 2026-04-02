@@ -21,25 +21,6 @@ struct HermitePoint
     glm::vec2 tangent;
 };
 
-struct BatchVertexBuffer
-{
-    int elementCount;
-    std::vector<float> vertices;
-    std::vector<float> texcoords;
-    std::vector<unsigned char> colors;
-    std::vector<unsigned int> indices;
-    unsigned int vaoId;
-    unsigned int vboId[4];
-};
-
-struct DrawCall
-{
-    int mode;
-    int vertexCount;
-    int vertexAlignment;
-    unsigned int textureId;
-};
-
 class RenderBatch
 {
 public:
@@ -130,6 +111,30 @@ public:
                   float u0, float v0, float u1, float v1,
                   const Color& color);
 
+    // Sprite / atlas helpers
+    void TexturedRect(unsigned int textureId, float x, float y, float width, float height);
+    void Sprite(unsigned int textureId,
+                float srcX, float srcY, float srcW, float srcH,
+                float dstX, float dstY, float dstW, float dstH,
+                float texWidth, float texHeight);
+    void SpriteEx(unsigned int textureId,
+                  float srcX, float srcY, float srcW, float srcH,
+                  float dstX, float dstY, float dstW, float dstH,
+                  float angle, float originX, float originY,
+                  bool flipH, bool flipV,
+                  float texWidth, float texHeight);
+    void NineSlice(unsigned int textureId,
+                   float x, float y, float width, float height,
+                   float borderLeft, float borderTop, float borderRight, float borderBottom,
+                   float texWidth, float texHeight);
+
+    // Thick primitives
+    void ThickLine2D(float x1, float y1, float x2, float y2, float thickness);
+    void Ring(int centerX, int centerY, float innerRadius, float outerRadius,
+              float startAngle, float endAngle, int segments = 16, bool fill = true);
+    void Arc(int centerX, int centerY, float radius,
+             float startAngle, float endAngle, float thickness, int segments = 16);
+
     void BeginTransform(const glm::mat4 &transform);
     void EndTransform();
 
@@ -142,32 +147,61 @@ public:
     void TexCoord2f(float x, float y);
 
     void SetTexture(unsigned int id);
-
     void SetTexture(Texture *texture);
 
     void SetMatrix(const glm::mat4 &matrix);
 
 private:
+    // Interleaved vertex layout (pos xyz + uv + color rgba)
+    struct Vertex
+    {
+        float x, y, z;
+        float u, v;
+        u8 r, g, b, a;
+    };
+
+    struct DrawCall
+    {
+        int   mode;
+        int   first; // index into vertices[] where this draw starts
+        int   count;
+        unsigned int textureId;
+    };
+
     bool CheckRenderBatchLimit(int vCount);
+    void ensureDrawCall();
+    bool createDeviceObjects();
+    void destroyDeviceObjects();
+    bool ensureIndexCapacity(std::size_t vertexCount);
+    bool compileShaderProgram();
+    glm::vec3 transformPoint(const glm::vec3 &p) const;
 
-    int bufferCount;
-    int currentBuffer;
-    int drawCounter;
-    float currentDepth;
-    int vertexCounter;
-    s32 defaultTextureId;
-    bool use_matrix;
-    glm::mat4 modelMatrix;
-    glm::mat4 viewMatrix;
+    int          maxVertices;
+    int          currentMode;
+    unsigned int currentTexture;
+    float        currentDepth;
 
-    Texture *m_defaultTexture;
+    bool         gpuReady;
+    bool         use_matrix;
+    glm::mat4    modelMatrix;
+    glm::mat4    viewMatrix;
 
-    std::vector<DrawCall *> draws;
-    std::vector<BatchVertexBuffer *> vertexBuffer;
+    std::vector<Vertex>   vertices;
+    std::vector<DrawCall> draws;
+    std::vector<unsigned int> quadIndices;
 
     float texcoordx, texcoordy;
     u8 colorr, colorg, colorb, colora;
-    Shader *shader;
 
-private:
+    // GL objects
+    GLuint programId;
+    GLuint vaoId;
+    GLuint vboId;
+    GLuint eboId;
+    GLuint whiteTextureId;
+    GLint  uMvpLocation;
+    GLint  uTextureLocation;
+    GLint  aPosLocation;
+    GLint  aUvLocation;
+    GLint  aColorLocation;
 };

@@ -5,6 +5,7 @@
  
 #include "RenderTarget.hpp"
 #include "WaterNode.hpp"
+#include <array>
 #include <vector>
 
 class RenderBatch;
@@ -76,10 +77,15 @@ public:
     // Resets automatically after one frame.
     bool debugRTGather = false;
 
-    // Clip plane in world space (xyz=normal, w=offset).
-    // Active only during renderToTarget — auto-reset to {0,0,0,0} afterwards.
-    void setClipPlane(const glm::vec4 &plane) { clipPlane_ = plane; }
-    glm::vec4 getClipPlane() const { return clipPlane_; }
+    // Clip planes in world space (xyz=normal, w=offset).
+    // Active only during the NEXT renderToTarget call — auto-reset afterwards.
+    //
+    // setClipPlane(plane)        — shorthand: sets slot 0, count = 1 (water etc.)
+    // setClipPlane(idx, plane)   — set a specific slot (0..3)
+    // clearClipPlanes()          — disable all planes
+    void setClipPlane(const glm::vec4 &plane)         { clipPlanes_[0] = plane; clipPlaneCount_ = 1; }
+    void setClipPlane(int idx, const glm::vec4 &plane){ if (idx >= 0 && idx < 4) { clipPlanes_[idx] = plane; clipPlaneCount_ = std::max(clipPlaneCount_, idx + 1); } }
+    void clearClipPlanes()                            { clipPlaneCount_ = 0; }
 
     void renderToTarget(Camera *cam, RenderTarget *rt);
 
@@ -103,6 +109,9 @@ private:
     void debugNode(Node *node, RenderBatch *batch);
     // Frustum-cull traverse: only adds nodes whose world AABB is inside frustum
     void gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue);
+    // Collect only lights (no render items) — called before preRenderNodes so
+    // secondary renders (water reflection / refraction) have correct lights.
+    void gatherLightsOnly(Node *node);
     // Animator update traverse
     void updateNode(Node *node, float dt);
 
@@ -111,9 +120,11 @@ private:
     std::vector<Node *>      roots_;
     std::vector<Technique *> techniques_; // owned
     RenderQueue              renderQueue_;
+    RenderQueue              rtQueue_;     // persistent — reused by renderToTarget()
     FrameContext             frameCtx_;
     RenderStats              stats_;
-    glm::vec4                clipPlane_ = {0.f, 0.f, 0.f, 0.f};
+    std::array<glm::vec4, 4> clipPlanes_     = {};
+    int                      clipPlaneCount_  = 0;
    
 
     std::vector<Node *>      pendingRemoval_; // flushed at the start of update()

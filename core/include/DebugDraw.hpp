@@ -1,5 +1,5 @@
 #pragma once
-#include "glad/glad.h"
+#include "Opengl.hpp"
 
 // ============================================================
 //  DebugDraw — lightweight 2D textured-quad overlay

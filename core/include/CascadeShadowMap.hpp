@@ -1,5 +1,5 @@
 #pragma once
-#include "glad/glad.h"
+#include "Opengl.hpp"
 #include "RenderPipeline.hpp"
 #include "Camera.hpp"
 #include "Node.hpp"
@@ -36,8 +36,10 @@ public:
     float     farPlane       = 300.f;  // only shadow this far
 
     // ── Public state (read-only after update()) ───────────────
-    std::array<float,     CSM_NUM_CASCADES> cascadeSplits = {};
+    std::array<float,     CSM_NUM_CASCADES> cascadeSplits      = {};
     std::array<glm::mat4, CSM_NUM_CASCADES> lightSpaceMatrices = {};
+    // World-space size of one shadow-map texel per cascade (used for adaptive bias)
+    std::array<float,     CSM_NUM_CASCADES> texelSizeWorld     = {};
 
     // ── Setup ─────────────────────────────────────────────────
     bool initialize(unsigned int width = 2048, unsigned int height = 2048);
@@ -85,9 +87,10 @@ private:
     std::array<GLuint, CSM_NUM_CASCADES> textures_ = {};
 
     glm::mat4 computeLightSpaceMatrix(const Camera& cam,
-                                       float nearSplit, float farSplit) const;
+                                       float nearSplit, float farSplit,
+                                       float &texelSizeOut) const;
 
-    void computeSplits(float camNear, float camFar);
+
 };
 
 // ============================================================
@@ -97,8 +100,11 @@ private:
 class CsmDepthPass : public RenderPass
 {
 public:
-    CascadeShadowMap* csm      = nullptr;
-    int               cascade  = 0;
+    CascadeShadowMap* csm             = nullptr;
+    int               cascade         = 0;
+    // Optional: if set, instanced items (instanceCount>1) use this shader instead.
+    // Leave null to skip instanced items entirely (e.g. no instancing in the scene).
+    Shader*           instancedShader = nullptr;
 
     void execute(const FrameContext& ctx, RenderQueue& queue) const override;
 };

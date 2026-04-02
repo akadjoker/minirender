@@ -1,6 +1,6 @@
 #pragma once
 #include "Types.hpp"
-#include "glad/glad.h"
+#include "Opengl.hpp"
 #include <SDL2/SDL.h>
 #include <string>
 #include <vector>

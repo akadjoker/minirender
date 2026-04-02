@@ -95,28 +95,12 @@ void CascadeShadowMap::release()
 }
 
 // ============================================================
-//  Compute split planes (practical split scheme)
-// ============================================================
-void CascadeShadowMap::computeSplits(float camNear, float camFar)
-{
-    float near = camNear;
-    float far = glm::min(camFar, farPlane);
-
-    for (int i = 0; i < CSM_NUM_CASCADES; ++i)
-    {
-        float p = (float)(i + 1) / (float)CSM_NUM_CASCADES;
-        float logSplit = near * std::pow(far / near, p);
-        float uniSplit = near + (far - near) * p;
-        cascadeSplits[i] = lambda * logSplit + (1.f - lambda) * uniSplit;
-    }
-}
-
-// ============================================================
 //  Build a tight ortho light matrix fitting the sub-frustum
 // ============================================================
 glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
                                                     float splitNear,
-                                                    float splitFar) const
+                                                    float splitFar,
+                                                    float &texelSizeOut) const
 {
     // Build a projection for just this slice
     float fovRad = glm::radians(cam.fov);
@@ -125,9 +109,10 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
 
     auto corners = frustumCornersWorldSpace(sliceProj, view);
 
-    // ── Sphere-fit the sub-frustum for X/Y ───────────────────────────────
-    // Fitting X/Y to a sphere makes the shadow area constant regardless of
-    // camera rotation (AABB changes with view angle; sphere does not).
+    // ── Sphere-fit the sub-frustum ────────────────────────────────────────
+    // Use the average of the 8 corners as centre, then measure the max radius.
+    // The ortho bounds are kept at ±radius so the shadow map footprint is
+    // constant regardless of camera rotation (AABB changes; sphere does not).
     glm::vec3 centre(0.f);
     for (const auto &c : corners)
         centre += glm::vec3(c);
@@ -137,14 +122,40 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
     for (const auto &c : corners)
         radius = std::max(radius, glm::length(glm::vec3(c) - centre));
 
-    // Light-view matrix looking at the centroid
-    glm::mat4 lightView = glm::lookAt(
-        centre,
-        centre  + glm::normalize(lightDirection),
-        
-        glm::vec3(0.f, 1.f, 0.f));
+    // ── Texel-snap the centroid in light space ────────────────────────────
+    // Snapping world (0,0,0) only stabilises light rotation; the centroid moves
+    // continuously with the camera, which is what causes camera-move shimmer.
+    // Fix: snap the centroid itself to a texel-sized grid in light space so
+    // the entire shadow frustum jumps in discrete texel-sized steps.
+    const float texelWorld = (2.f * radius) / (float)width_;   // world units per texel
+    texelSizeOut = texelWorld;
 
-    // Symmetric ortho from sphere radius — stable size no matter how camera rotates
+    // Build a temporary light-space basis from the unsnapped centroid
+    const glm::vec3 lightDir = glm::normalize(lightDirection);
+    // Choose a stable up vector — avoid gimbal lock when light is near vertical
+    glm::vec3 up = (std::abs(glm::dot(lightDir, glm::vec3(0,1,0))) < 0.99f)
+                   ? glm::vec3(0,1,0) : glm::vec3(1,0,0);
+    glm::vec3 right   = glm::normalize(glm::cross(up, lightDir));
+    glm::vec3 lightUp = glm::cross(lightDir, right);
+
+    // Project centre onto the light-space XY axes, then round to texel grid
+    float cx = glm::dot(centre, right);
+    float cy = glm::dot(centre, lightUp);
+    cx = std::round(cx / texelWorld) * texelWorld;
+    cy = std::round(cy / texelWorld) * texelWorld;
+
+    // Reconstruct snapped centroid in world space
+    // (Z component stays free — depth range doesn't need snapping)
+    float cz = glm::dot(centre, lightDir);
+    glm::vec3 snappedCentre = cx * right + cy * lightUp + cz * lightDir;
+
+    // Light-view matrix looking at the snapped centroid
+    glm::mat4 lightView = glm::lookAt(
+        snappedCentre,
+        snappedCentre + lightDir,
+        lightUp);
+
+    // Symmetric ortho from sphere radius — stable size regardless of camera rotation
     float minX = -radius, maxX = radius;
     float minY = -radius, maxY = radius;
 
@@ -161,13 +172,6 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
     if (minZ < 0.f) minZ *= zMult; else minZ /= zMult;
     if (maxZ < 0.f) maxZ /= zMult; else maxZ *= zMult;
 
-    // Texel snapping on X/Y to eliminate sub-pixel shimmer
-    float worldUnitsPerTexel = (2.f * radius) / (float)width_;
-    minX = std::floor(minX / worldUnitsPerTexel) * worldUnitsPerTexel;
-    maxX = std::floor(maxX / worldUnitsPerTexel) * worldUnitsPerTexel;
-    minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
-    maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
-
     glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
     return lightProj * lightView;
 }
@@ -177,12 +181,25 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
 // ============================================================
 void CascadeShadowMap::update(const Camera &cam)
 {
-    computeSplits(cam.nearPlane, cam.farPlane);
+    // Use the CSM shadow far plane (set via setShadowFarPlane()), NOT the camera
+    // far plane, so the logarithmic+uniform split scheme (GPU Gems 3) distributes
+    // cascades only within the shadow range rather than the full view distance.
+    const float near = cam.nearPlane;
+    const float far  = farPlane;          // this->farPlane, controlled by setLambda/setShadowFarPlane
+    const float ratio = far / near;
+    for (int i = 0; i < CSM_NUM_CASCADES; ++i)
+    {
+        float p          = (float)(i + 1) / (float)CSM_NUM_CASCADES;
+        float logSplit   = near * std::pow(ratio, p);
+        float uniSplit   = near + (far - near) * p;
+        cascadeSplits[i] = lambda * logSplit + (1.f - lambda) * uniSplit;
+    }
 
     float prevSplit = cam.nearPlane;
     for (int i = 0; i < CSM_NUM_CASCADES; ++i)
     {
-        lightSpaceMatrices[i] = computeLightSpaceMatrix(cam, prevSplit, cascadeSplits[i]);
+        lightSpaceMatrices[i] = computeLightSpaceMatrix(cam, prevSplit, cascadeSplits[i],
+                                                        texelSizeWorld[i]);
         prevSplit = cascadeSplits[i];
     }
 }
@@ -206,6 +223,23 @@ void CascadeShadowMap::endCascade()
 // ============================================================
 //  Upload to shader
 // ============================================================
+
+// Hardcoded uniform name tables — avoids std::to_string + string concatenation
+// heap allocations every frame.  Must match CSM_NUM_CASCADES = 4.
+static_assert(CSM_NUM_CASCADES == 4, "Update hardcoded uniform name tables below");
+static constexpr const char* kShadowMap[4] = {
+    "u_shadowMap[0]", "u_shadowMap[1]", "u_shadowMap[2]", "u_shadowMap[3]"
+};
+static constexpr const char* kLightSpace[4] = {
+    "u_lightSpace[0]", "u_lightSpace[1]", "u_lightSpace[2]", "u_lightSpace[3]"
+};
+static constexpr const char* kCascadeSplits[4] = {
+    "u_cascadeSplits[0]", "u_cascadeSplits[1]", "u_cascadeSplits[2]", "u_cascadeSplits[3]"
+};
+static constexpr const char* kTexelSize[4] = {
+    "u_cascadeTexelSize[0]", "u_cascadeTexelSize[1]", "u_cascadeTexelSize[2]", "u_cascadeTexelSize[3]"
+};
+
 void CascadeShadowMap::bindToShader(Shader *shader, int baseTextureUnit) const
 {
     if (!shader)
@@ -215,14 +249,12 @@ void CascadeShadowMap::bindToShader(Shader *shader, int baseTextureUnit) const
     for (int i = 0; i < CSM_NUM_CASCADES; ++i)
     {
         rs.bindTexture(baseTextureUnit + i, GL_TEXTURE_2D, textures_[i]);
-        shader->setInt("u_shadowMap[" + std::to_string(i) + "]", baseTextureUnit + i);
-        shader->setMat4("u_lightSpace[" + std::to_string(i) + "]",
-                        lightSpaceMatrices[i]);
-        shader->setFloat("u_cascadeSplits[" + std::to_string(i) + "]",
-                         cascadeSplits[i]);
+        shader->setInt  (kShadowMap[i],    baseTextureUnit + i);
+        shader->setMat4 (kLightSpace[i],   lightSpaceMatrices[i]);
+        shader->setFloat(kCascadeSplits[i],cascadeSplits[i]);
+        shader->setFloat(kTexelSize[i],    texelSizeWorld[i]);
     }
-    shader->setVec2("u_shadowMapSize",
-                    glm::vec2((float)width_, (float)height_));
+    shader->setVec2("u_shadowMapSize", glm::vec2((float)width_, (float)height_));
 }
 
 // ============================================================
@@ -249,17 +281,34 @@ void CsmDepthPass::execute(const FrameContext &ctx, RenderQueue &queue) const
     rs.useProgram(shader->getId());
     shader->setMat4("u_lightSpace", csm->lightSpaceMatrices[cascade]);
 
-    // Use shadow queue (gathered without camera frustum culling)
-    // so casters outside the camera view still cast shadows.
     for (const auto &item : ctx.shadowQueue.getOpaque())
     {
         if (!item.drawable)
             continue;
-        shader->setMat4("u_model", item.model);
-        if (item.indexCount > 0)
-            item.drawable->drawRange(item.indexStart, item.indexCount);
+
+        if (item.instanceCount > 1)
+        {
+            // Instanced draw — model matrix comes from the per-instance buffer,
+            // not from u_model.  Requires instancedShader (csm_depth_instanced.vert).
+            if (!instancedShader) continue;
+            rs.useProgram(instancedShader->getId());
+            instancedShader->setMat4("u_lightSpace", csm->lightSpaceMatrices[cascade]);
+            if (item.indexCount > 0)
+                item.drawable->drawRangeInstanced(item.indexStart, item.indexCount, item.instanceCount);
+            else
+                item.drawable->drawInstanced(item.instanceCount);
+            // Switch back to regular shader for any subsequent non-instanced items
+            rs.useProgram(shader->getId());
+            shader->setMat4("u_lightSpace", csm->lightSpaceMatrices[cascade]);
+        }
         else
-            item.drawable->draw();
+        {
+            shader->setMat4("u_model", item.model);
+            if (item.indexCount > 0)
+                item.drawable->drawRange(item.indexStart, item.indexCount);
+            else
+                item.drawable->draw();
+        }
     }
 
     glDisable(GL_POLYGON_OFFSET_FILL);

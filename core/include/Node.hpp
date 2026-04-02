@@ -163,6 +163,26 @@ public:
     // Reset transform to identity
     void resetTransform();
 
+    // ── RotateTowards / MoveTowards ──────────────────────────
+    // Rotate toward targetRot by at most maxDegrees — returns true when reached
+    bool rotateTo(const glm::quat &targetRot, float maxDegrees);
+
+    // Move toward worldTarget by at most maxDelta units — returns true when reached
+    bool moveTo(const glm::vec3 &worldTarget, float maxDelta);
+
+    // ── Space conversion ─────────────────────────────────────
+    // Transform a world-space point into this node's local space
+    glm::vec3 worldToLocalPoint(const glm::vec3 &worldPoint) const;
+
+    // Transform a local-space point into world space
+    glm::vec3 localToWorldPoint(const glm::vec3 &localPoint) const;
+
+    // ── Re-parent ────────────────────────────────────────────
+    // Attach to newParent. If keepWorldTransform=true the node stays
+    // visually in place (position/rotation/scale are recalculated in
+    // the new parent's space).
+    void setParent(Node3D *newParent, bool keepWorldTransform = true);
+
     // ── Dirty flag ───────────────────────────────────────────
     void markDirty();
     bool isDirty() const { return dirty_; }
@@ -272,6 +292,8 @@ class DirectionalLight : public Light
 {
 public:
     // Direction is Node3D::forward() in world space (-Z local)
+    // u_lightDir sent to shaders = -forward() (pointing TOWARD the light)
+    glm::vec3 ambient = {0.08f, 0.08f, 0.08f}; // scene ambient contribution
     DirectionalLight() { lightType = LightType::Directional; }
 };
 

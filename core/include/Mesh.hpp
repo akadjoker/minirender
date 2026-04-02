@@ -1,5 +1,5 @@
 #pragma once
-#include "Opengl.hpp"
+#include "glad/glad.h"
 #include "Math.hpp"
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
@@ -37,42 +37,6 @@ struct AnimatedVertex
 };
 
 // ============================================================
-//  InstanceBuffer — per-instance model matrices (mat4)
-//  Attach to a MeshBuffer VAO; locations 6-9 hold the 4 columns.
-//
-//  Usage:
-//    InstanceBuffer ib;
-//    ib.resize(N);                    // allocate GPU buffer
-//    ib.set(i, modelMatrix);          // fill per instance
-//    ib.upload();                     // stream to GPU
-//    mesh.attachInstances(&ib);       // bind divisor 1 to VAO
-//    mesh.drawInstanced(ib.count());  // glDrawElementsInstanced
-// ============================================================
-struct InstanceBuffer
-{
-    std::vector<glm::mat4> matrices;   // CPU-side data
-    GLuint vbo = 0;
-    bool   dynamic = true;
-
-    // (Re)allocate and upload all matrices to the GPU.
-    void upload();
-
-    // Stream updated matrices without reallocation (same size).
-    void update();
-
-    void resize(int n)  { matrices.resize(n, glm::mat4(1.f)); }
-    void set(int i, const glm::mat4 &m) { matrices[i] = m; }
-    int  count() const  { return (int)matrices.size(); }
-
-    void free();
-
-    InstanceBuffer() = default;
-    InstanceBuffer(const InstanceBuffer &) = delete;
-    InstanceBuffer &operator=(const InstanceBuffer &) = delete;
-    ~InstanceBuffer() { free(); }
-};
-
-// ============================================================
 //  IDrawable — interface for anything that can be rendered
 // ============================================================
 class IDrawable
@@ -81,9 +45,6 @@ public:
     virtual ~IDrawable() = default;
     virtual void draw() const = 0;
     virtual void drawRange(uint32_t start, uint32_t count) const = 0;
-    // Instanced draw — default no-op; MeshBuffer implements it.
-    virtual void drawInstanced(int instanceCount) const {}
-    virtual void drawRangeInstanced(uint32_t start, uint32_t count, int instanceCount) const {}
     virtual BoundingBox getAABB() const = 0;
     virtual int vertexCount() const = 0;
     virtual int indexCount() const = 0;
@@ -108,15 +69,6 @@ struct MeshBuffer : public IDrawable
     void update();
     void draw() const override;
     void drawRange(uint32_t start, uint32_t count) const override;
-
-    // Attach an InstanceBuffer — binds its VBO into this VAO at locations 6-9
-    // with divisor=1. Call once after upload().
-    void attachInstances(InstanceBuffer *ib);
-
-    // Draw N instances. Requires attachInstances() to have been called first.
-    void drawInstanced(int instanceCount) const override;
-    void drawRangeInstanced(uint32_t start, uint32_t count, int instanceCount) const override;
-
     void free();
 
     // IDrawable

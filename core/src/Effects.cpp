@@ -769,18 +769,20 @@ void ManualMeshNode::gatherRenderItems(RenderQueue& q, const FrameContext& ctx)
 {
     if (!visible || !material || buffer_.indices.empty()) return;
 
-    const glm::mat4  world     = worldMatrix();
+    const glm::mat4   world     = worldMatrix();
     const BoundingBox worldAABB = buffer_.aabb.transformed(world);
 
-    // Frustum cull — skip if AABB is completely outside the view frustum.
-    if (worldAABB.is_valid() && !ctx.frustum.contains(worldAABB))
-        return;
+    const bool inCam = !worldAABB.is_valid() || ctx.frustum.contains(worldAABB);
+    if (!inCam) return;
 
     RenderItem item;
     item.drawable  = &buffer_;
     item.material  = material;
     item.model     = world;
     item.worldAABB = worldAABB;
-    item.passMask  = RenderPassMask::Opaque;
+    item.passMask  = passMask;
     q.add(item);
+
+    if (castShadow && !(passMask & (RenderPassMask::Transparent | RenderPassMask::Flat)))
+        q.shadow.push_back(item);
 }

@@ -335,7 +335,6 @@ Texture *TextureManager::uploadSurface(const std::string &name,
     glBindTexture(GL_TEXTURE_2D, 0);
     SDL_FreeSurface(surf);
 
-    t->name = name;
     cache[name] = t;
     return t;
 }

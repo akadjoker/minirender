@@ -1,11 +1,10 @@
 #pragma once
 
+
 #include "Config.hpp"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
 
-// Forward-declare so Device.hpp doesn't pull all of imgui.h into every TU
-struct ImGuiContext;
 class Pixmap;
 
 class     Device final
@@ -46,17 +45,6 @@ public:
     Pixmap* CaptureFramebuffer();
 
     SDL_Window*   GetWindow() const { return m_window; }
-    SDL_GLContext  GetGLContext() const { return m_context; }
-
-    // ── ImGui integration ────────────────────────────────────────
-    // Call once after Create().  glsl_version e.g. "#version 300 es"
-    void ImGuiInit(const char *glsl_version = "#version 300 es");
-    // Call at the start of render — opens a new ImGui frame
-    void ImGuiBegin();
-    // Call at the end of render — renders ImGui draw data
-    void ImGuiEnd();
-    // Called automatically by Close(), but safe to call manually
-    void ImGuiShutdown();
 
     static Device& Instance();
     static Device* InstancePtr();
@@ -79,7 +67,6 @@ private:
     double m_target;
     bool m_ready;
     Sint32 m_closekey;
-    bool m_imguiReady = false;
 
     Device();
     ~Device();

@@ -1,48 +1,46 @@
 #pragma once
 #include "Node.hpp"
 #include "RenderPipeline.hpp"
-#include "Math.hpp"
- 
 #include "RenderTarget.hpp"
-#include "WaterNode.hpp"
-#include <array>
+#include "Math.hpp"
 #include <vector>
 
 class RenderBatch;
 
-// Result of a scene-level pick: closest hit across all pickable nodes.
+// Result of a scene-level pick.
 struct ScenePickResult
 {
-    PickResult  result;           // geometry hit details (hit, distance, point, normal ...)
-    Node3D     *node    = nullptr; // the node that was hit (nullptr = no hit)
+    PickResult  result;
+    Node3D     *node = nullptr;
 };
 
-// Scene manages the node tree and dispatches per-frame rendering
-// through a configurable list of Technique* (non-owning).
+// ─── Scene ───────────────────────────────────────────────────────────────────
+// Manual render pipeline — caller drives every pass explicitly.
+//
+//   scene.gatherScene(cam);
+//   scene.drawShadowDepth(depthShader, lightSpace);
+//   scene.drawPass(litShader, RenderPassMask::Opaque);
+//   scene.drawPass(litShader, RenderPassMask::Flat);
+//
 class Scene
 {
 public:
-    Scene()  ;
+    Scene();
     ~Scene();
 
- 
-
-    // --- Camera management (scene owns cameras) ---
+    // ── Camera ───────────────────────────────────────────────────────────────
     Camera *createCamera(const std::string &name = "");
     void    removeCamera(Camera *cam);
-    const std::vector<Camera *> &cameras() const { return cameras_; }
     Camera *currentCamera() const { return currentCamera_; }
     void    setCurrentCamera(Camera *cam);
+    const std::vector<Camera *> &cameras() const { return cameras_; }
 
-    // --- Node management ---
+    // ── Node management ───────────────────────────────────────────────────────
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
-    VertexAnimMeshNode   *createVertexAnimMeshNode(const std::string &name = "", Mesh *mesh = nullptr);
-    class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
-    WaterNode3D          *createWaterNode       (const std::string &name = "");
+    ManualMeshNode       *createManualMeshNode  (const std::string &name = "");
+ 
 
-    // Creates a light node, adds it to the root of the scene tree.
-    // Example: auto *sun = scene.createLight<DirectionalLight>("sun");
     template<typename T>
     T *createLight(const std::string &nodeName = "")
     {
@@ -54,79 +52,74 @@ public:
 
     void add(Node *node);
     void remove(Node *node);
-    void clear(); // deletes owned nodes
-
-    /// Mark a node to be removed (and deleted) at the start of the next update().
-    /// Safe to call from update() callbacks (e.g. on collision, on lifetime expiry).
+    void clear();
     void markForRemoval(Node *node);
 
-    // --- Technique list (owned, executed in order) ---
-    void addTechnique(Technique *t) { techniques_.push_back(t); }
-    void clearTechniques()          { for (auto *t : techniques_) delete t; techniques_.clear(); }
-
-    // --- Per-frame API ---
-    // Update animators — call BEFORE render()
+    // ── Per-frame ─────────────────────────────────────────────────────────────
     void update(float dt);
 
-    // Gather visible nodes (frustum cull) + render all cameras
-    void render();
- 
-    // Render the scene into an off-screen RenderTarget using a custom camera.
-    // secondary=true: expensive pre-passes (e.g. CSM depth) are skipped.
-    // Light/clip data are taken from sceneData at the time of the call.
-    // Debug: print which nodes are gathered into the next renderToTarget call.
-    // Resets automatically after one frame.
-    bool debugRTGather = false;
+    // ── Sky ───────────────────────────────────────────────────────────────────
+    // Optional: set a sky shader and call drawSky() manually after opaque pass.
+    Shader *skyShader = nullptr;
+    void drawSky();
 
-    // Clip planes in world space (xyz=normal, w=offset).
-    // Active only during the NEXT renderToTarget call — auto-reset afterwards.
-    //
-    // setClipPlane(plane)        — shorthand: sets slot 0, count = 1 (water etc.)
-    // setClipPlane(idx, plane)   — set a specific slot (0..3)
-    // clearClipPlanes()          — disable all planes
-    void setClipPlane(const glm::vec4 &plane)         { clipPlanes_[0] = plane; clipPlaneCount_ = 1; }
-    void setClipPlane(int idx, const glm::vec4 &plane){ if (idx >= 0 && idx < 4) { clipPlanes_[idx] = plane; clipPlaneCount_ = std::max(clipPlaneCount_, idx + 1); } }
-    void clearClipPlanes()                            { clipPlaneCount_ = 0; }
-
-    void renderToTarget(Camera *cam, RenderTarget *rt);
-
+    // ── Debug ─────────────────────────────────────────────────────────────────
     void debug(RenderBatch *batch);
 
-    // Debug stats accumulated during the last render() call
+    // ── Stats ─────────────────────────────────────────────────────────────────
     const RenderStats &stats() const { return stats_; }
 
-    // --- Picking ---
-    // Cast a world-space ray against all MeshNode / AnimatedMeshNode in the tree.
-    // Returns the closest hit across all nodes (result.node == nullptr = no hit).
-    // Use Ray::from_screen() to build the ray from a mouse position.
+    // ── Picking ───────────────────────────────────────────────────────────────
     ScenePickResult pick(const Ray &ray) const;
 
     void release();
 
+    // ── Manual pipeline API ──────────────────────────────────────────────────
+    // Drive rendering explicitly from the demo / game loop:
+    //
+    //   scene.gatherScene(cam);
+    //   myShader->bind();
+    //   myShader->setMat4("u_view", view); // caller sets ALL uniforms
+    //   scene.drawPass(myShader, RenderPassMask::Opaque);
+    //
+    // GL state, RTs, shadow maps, clip planes — fully managed by the caller.
+
+    // Cull scene with cam and fill internal render queues.
+    // Call once per frame before drawPass / drawShadowDepth.
+    void gatherScene(Camera *cam);
+
+    // Draw queued items matching passMask using sh.
+    // sh must already be bound; only u_model and material textures are set here.
+    void drawPass(Shader *sh, uint32_t passMask,
+                  RenderSortMode sort = RenderSortMode::None);
+
+    // Draw shadow-caster queue with depthSh, injecting u_lightSpace.
+    void drawShadowDepth(Shader *depthSh, const glm::mat4 &lightSpace);
+
+    // Direct access to render queues (read-only).
+    const RenderQueue &renderQueue() const { return queue_; }
+
+
+    // ── Collected lights (valid after gather, before render) ─────────────────
+    const std::vector<const Light *> &lights() const { return frameCtx_.lights; }
+
 private:
-    void renderCamera(Camera *cam);
-    void preRenderNodes(Camera *cam);
-    void preRenderNode(Node *node, Camera *cam);
-    void debugNode(Node *node, RenderBatch *batch);
-    // Frustum-cull traverse: only adds nodes whose world AABB is inside frustum
-    void gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue);
-    // Collect only lights (no render items) — called before preRenderNodes so
-    // secondary renders (water reflection / refraction) have correct lights.
-    void gatherLightsOnly(Node *node);
-    // Animator update traverse
+    // Gather visible items into queues
+    void gather(const Frustum &camFrustum, const Frustum &shadowFrustum,
+                RenderQueue &queue);
+    void gatherNode(Node *node, const Frustum &camFrustum,
+                    const Frustum &shadowFrustum, RenderQueue &queue);
+
+    // Node traversal helpers
     void updateNode(Node *node, float dt);
+    void debugNode (Node *node, RenderBatch *batch);
 
-    std::vector<Camera *>    cameras_;    // owned
-    Camera                  *currentCamera_ = nullptr;
-    std::vector<Node *>      roots_;
-    std::vector<Technique *> techniques_; // owned
-    RenderQueue              renderQueue_;
-    RenderQueue              rtQueue_;     // persistent — reused by renderToTarget()
-    FrameContext             frameCtx_;
-    RenderStats              stats_;
-    std::array<glm::vec4, 4> clipPlanes_     = {};
-    int                      clipPlaneCount_  = 0;
-   
+    std::vector<Camera *> cameras_;
+    Camera               *currentCamera_ = nullptr;
+    std::vector<Node *>   roots_;
+    std::vector<Node *>   pendingRemoval_;
 
-    std::vector<Node *>      pendingRemoval_; // flushed at the start of update()
+    RenderQueue   queue_;
+    FrameContext  frameCtx_;
+    RenderStats   stats_;
 };

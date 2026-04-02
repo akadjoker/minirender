@@ -38,39 +38,31 @@ out vec3 v_normal;
 const float PI = 3.14159265359;
 
  
-vec3 GerstnerWave(vec2 position, vec2 direction, float steepness, float wavelength, float time)
-{
-    float k = 2.0 * PI / wavelength; // Wave number
-    float c = sqrt(9.8 / k); // Wave speed (física real!)
-    vec2 d = normalize(direction);
-    float f = k * (dot(d, position) - c * time);
-    float a = steepness / k;
-    
-    // Deslocamento da onda
-    return vec3(
-        d.x * a * cos(f),           // X displacement
-        a * sin(f),                 // Y displacement (altura)
-        d.y * a * cos(f)            // Z displacement
-    );
-}
 
- 
-vec3 GerstnerWaveNormal(vec2 position, vec2 direction, float steepness, float wavelength, float time)
+vec3 GerstnerWave(vec2 position, vec2 direction, float steepness, float wavelength, float time)
 {
     float k = 2.0 * PI / wavelength;
     float c = sqrt(9.8 / k);
     vec2 d = normalize(direction);
     float f = k * (dot(d, position) - c * time);
     float a = steepness / k;
-    
-    // Derivadas para calcular normal
-    float dx = -d.x * d.x * steepness * sin(f);
-    float dy = steepness * cos(f);
-    float dz = -d.x * d.y * steepness * sin(f);
-    
-    return vec3(-dx, 1.0, -dz);
+    return vec3(
+        d.x * a * cos(f),
+        a * sin(f),
+        d.y * a * cos(f)
+    );
 }
 
+vec3 GerstnerWaveNormal(vec2 position, vec2 direction, float steepness, float wavelength, float time)
+{
+    float k = 2.0 * PI / wavelength;
+    float c = sqrt(9.8 / k);
+    vec2 d = normalize(direction);
+    float f = k * (dot(d, position) - c * time);
+    float dx = -d.x * d.x * steepness * sin(f);
+    float dz = -d.x * d.y * steepness * sin(f);
+    return vec3(-dx, 1.0, -dz);
+}
  
 
     

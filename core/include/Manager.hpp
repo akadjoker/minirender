@@ -183,6 +183,10 @@ public:
     // after loading, but can also be called manually.
     void applyDefaults();
 
+    // Returns the shared fallback material "__default".
+    // Meshes without an explicit material use this automatically.
+    Material *getDefault();
+
     const Material *activeMaterial() const { return active; }
 
 private:

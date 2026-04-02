@@ -8,12 +8,11 @@ layout(location = 3) in vec2 a_uv;
 out vec3 v_worldPos;
 out vec3 v_normal;
 out vec2 v_uv;
-out float v_clipDists[4];
+out float v_clipDist;
 
 uniform mat4 u_viewProj;
 uniform mat4 u_model;
-uniform vec4 u_clipPlanes[4];
-uniform int  u_clipPlaneCount;
+uniform vec4 u_clipPlane;
 
 void main()
 {
@@ -21,7 +20,7 @@ void main()
     v_worldPos    = worldPos.xyz;
     v_normal      = normalize(mat3(transpose(inverse(u_model))) * a_normal);
     v_uv          = a_uv;
-    for (int i = 0; i < u_clipPlaneCount; i++)
-        v_clipDists[i] = dot(worldPos, u_clipPlanes[i]);
+    // Clip plane: dot(worldPos, plane) — negative = discard in frag
+    v_clipDist    = dot(worldPos, u_clipPlane);
     gl_Position   = u_viewProj * worldPos;
 }

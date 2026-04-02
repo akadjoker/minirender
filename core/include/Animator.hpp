@@ -26,18 +26,22 @@ public:
 
     // ── Playback ─────────────────────────────────────────────
     void play      (const std::string &name, PlayMode mode = PlayMode::Loop, float blendTime = 0.3f);
-    void crossFade (const std::string &name, float duration = 0.3f);
+    void crossFade (const std::string &name, float duration = -1.f);
     void playOneShot(const std::string &name, const std::string &returnTo,
                      float blendIn = 0.2f, PlayMode returnMode = PlayMode::Loop);
     void triggerAction(const std::string &name, float blendTime = 0.2f);
+    bool requestAction(const std::string &name, float blendTime = 0.2f, bool queueIfBusy = true);
     void stop      (float blendOutTime = 0.2f);
     void pause     ();
     void resume    ();
 
     // ── Queries ──────────────────────────────────────────────
     bool        isPlaying(const std::string &name) const;
+    bool        isTransitioning() const { return blending_; }
+    bool        isBusy() const { return current_ && mode_ == PlayMode::Once && !paused_; }
     bool        hasFinished() const;
     float       getNormalizedTime() const;
+    void        setNormalizedTime(float normalized);
     PlayMode    currentMode()       const { return mode_; }
     const std::string &currentName() const { return currentName_; }
 
@@ -66,6 +70,10 @@ public:
     // Blend time default para crossfade
     float defaultBlendTime = 0.3f;
     float poseBlendTime    = 0.15f;
+
+    // Profiles de transicao: from->to (e.g. "IdleBase" -> "RunBase")
+    void setTransitionBlend(const std::string &from, const std::string &to, float duration);
+    void clearTransitionBlends();
 
 private:
     std::unordered_map<std::string, Animation *> anims_; // owned
@@ -102,6 +110,15 @@ private:
                       const std::vector<Bone> &bones) const;
 
     std::unordered_set<int> boneMask_; // empty = all bones
+    std::unordered_map<std::string, float> transitionBlends_;
+
+    // Queued one-shot action (single-slot queue)
+    std::string pendingAction_;
+    std::string pendingReturnTo_;
+    PlayMode    pendingReturnMode_ = PlayMode::Loop;
+    float       pendingBlend_ = 0.2f;
+
+    float resolveBlendDuration(const std::string &nextName, float requestedBlend) const;
 };
 
 // ============================================================

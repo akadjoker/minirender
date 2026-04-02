@@ -27,7 +27,7 @@ add_compile_options(
     -funsigned-char
 )
 
-file(GLOB SOURCES "src/*.cpp")
+file(GLOB SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
 add_library(core SHARED  ${SOURCES})
 

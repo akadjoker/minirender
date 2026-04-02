@@ -78,6 +78,11 @@ AnimatedMeshNode::~AnimatedMeshNode()
     delete animator;
 }
 
+VertexAnimMeshNode::VertexAnimMeshNode() : MeshNode()
+{
+    type = NodeType::MeshNode;
+}
+
 void AnimatedMeshNode::setMaterial(const std::string &name)
 {
     materialName_ = name;
@@ -154,4 +159,70 @@ void AnimatedMeshNode::updateSockets()
             s.node->scale    = scl;
         }
     }
+}
+
+VertexTagSocket *VertexAnimMeshNode::addTagSocket(const std::string &tagName, Node3D *node,
+                                                   const glm::mat4 &localOffset)
+{
+    if (!node) return nullptr;
+
+    for (auto &s : tagSockets_)
+    {
+        if (s.tagName == tagName)
+        {
+            if (s.node != node)
+            {
+                if (s.node) removeChild(s.node);
+                addChild(node);
+            }
+            s.node = node;
+            s.localOffset = localOffset;
+            tagBinder_.addSocket(tagName, node, localOffset);
+            return &s;
+        }
+    }
+
+    VertexTagSocket s;
+    s.tagName = tagName;
+    s.node = node;
+    s.localOffset = localOffset;
+    tagSockets_.push_back(s);
+
+    addChild(node);
+    tagBinder_.addSocket(tagName, node, localOffset);
+    return &tagSockets_.back();
+}
+
+VertexTagSocket *VertexAnimMeshNode::getTagSocket(const std::string &tagName)
+{
+    for (auto &s : tagSockets_)
+        if (s.tagName == tagName) return &s;
+    return nullptr;
+}
+
+void VertexAnimMeshNode::removeTagSocket(const std::string &tagName)
+{
+    for (auto it = tagSockets_.begin(); it != tagSockets_.end(); ++it)
+    {
+        if (it->tagName == tagName)
+        {
+            if (it->node) removeChild(it->node);
+            tagBinder_.removeSocket(tagName);
+            tagSockets_.erase(it);
+            return;
+        }
+    }
+}
+
+void VertexAnimMeshNode::clearTagSockets()
+{
+    for (auto &s : tagSockets_)
+        if (s.node) removeChild(s.node);
+    tagSockets_.clear();
+    tagBinder_.clear();
+}
+
+void VertexAnimMeshNode::updateTagSockets()
+{
+    tagBinder_.updateSockets(controller, tagTracks_);
 }

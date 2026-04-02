@@ -1,6 +1,7 @@
 #pragma once
 #include "Mesh.hpp"
 #include "Material.hpp"
+#include "VertexAnimation.hpp"
 #include "Types.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -59,6 +60,7 @@ class Node
     virtual class Node3D   *asNode3D()            { return nullptr; }
     virtual class MeshNode *asMeshNode()          { return nullptr; }
     virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
+    virtual class VertexAnimMeshNode *asVertexAnimMeshNode() { return nullptr; }
     virtual class Light    *asLight()             { return nullptr; }
 
     // Override to submit custom draw calls (terrains, particles, etc.)
@@ -261,6 +263,37 @@ private:
     std::string  materialName_;
     Material    *material_ = nullptr;
     std::vector<BoneSocket> sockets_; // bone attachments
+};
+
+// ─── VertexAnimMeshNode ────────────────────────────────────────────────────
+// Reuses MeshNode render path, but updates frame/clip state through
+// VertexAnimController and drives attach nodes from MD3-like tags.
+class VertexAnimMeshNode : public MeshNode
+{
+public:
+    VertexAnimMeshNode();
+    ~VertexAnimMeshNode() override = default;
+
+    VertexAnimMeshNode *asVertexAnimMeshNode() override { return this; }
+
+    VertexAnimController controller;
+
+    void setTagTracks(const std::vector<VertexTagTrack> &tracks) { tagTracks_ = tracks; }
+    std::vector<VertexTagTrack> &tagTracks() { return tagTracks_; }
+    const std::vector<VertexTagTrack> &tagTracks() const { return tagTracks_; }
+
+    VertexTagSocket *addTagSocket(const std::string &tagName, Node3D *node,
+                                  const glm::mat4 &localOffset = glm::mat4(1.f));
+    VertexTagSocket *getTagSocket(const std::string &tagName);
+    void             removeTagSocket(const std::string &tagName);
+    void             clearTagSockets();
+
+    void updateTagSockets();
+
+private:
+    VertexTagBinder              tagBinder_;
+    std::vector<VertexTagSocket> tagSockets_;
+    std::vector<VertexTagTrack>  tagTracks_;
 };
 
 // ─── Lights ──────────────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@
 #include "DemoDeferred.hpp"
 #include "DemoSimples.hpp"
 #include "DemoH3D.hpp"
+#include "DemoMD2.hpp"
 #include "DemoSinbad.hpp"
 #include "DemoEffects.hpp"
 #include "DemoCascade.hpp"
@@ -69,11 +70,12 @@ int main()
     // manager.add(new DemoDeferred());
     //manager.add(new DemoSimples());
      //manager.add(new DemoH3D());
-    manager.add(new DemoSinbad());
+    //manager.add(new DemoMD2());
+    //manager.add(new DemoSinbad());
     //manager.add(new DemoEffects());
     //manager.add(new DemoBatch());
     //manager.add(new DemoCascade());
-    //manager.add(new DemoCannonball());
+    manager.add(new DemoCannonball());
     //manager.add(new DemoSponzaCSM());
     //manager.add(new DemoWater());
     //manager.add(new DemoTerrainLod());
@@ -119,6 +121,11 @@ int main()
             manager.onResize(w, h);
         }
         manager.update(dt);
+
+        // ImGui (and the Batch system) change GL state outside RenderState,
+        // so invalidate the cache before the scene pipeline runs.
+        state.resetCache();
+
         manager.render();
 
         // Re-acquire scene/cam after potential demo switch
@@ -149,6 +156,21 @@ int main()
         font.Print(10, 50, "SH:%u  MAT:%u  TX:%u  OBJ:%u",
             st.shaderChanges, st.materialChanges, st.textureBinds, st.objects);
         font.Print(10, 70, "[Tab] switch demo");
+
+        if (auto *sinbad = dynamic_cast<DemoSinbad *>(manager.currentDemo()))
+        {
+            const std::string queued = sinbad->queuedUpperState().empty()
+                ? "-" : sinbad->queuedUpperState();
+            font.SetColor(120, 255, 120);
+            font.Print(10, 92, "LOC:%s  desired:%s",
+                       sinbad->locomotionState().c_str(),
+                       sinbad->desiredGroundState().c_str());
+            font.Print(10, 112, "UPR:%s  queue:%s  sup:%s",
+                       sinbad->upperState().c_str(),
+                       queued.c_str(),
+                       sinbad->isUpperSuppressed() ? "yes" : "no");
+            font.SetColor(255, 255, 255);
+        }
 
         batch.Render();
 

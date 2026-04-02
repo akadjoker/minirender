@@ -4,6 +4,7 @@
 #include "DemoBase.hpp"
 #include "MeshLoader.hpp"
 #include "Animator.hpp"
+#include "AnimationStateMachine.hpp"
 #include "RenderState.hpp"
 
 // ============================================================
@@ -13,6 +14,12 @@ class DemoSinbad : public DemoBase
 {
 public:
     const char *name() override { return "Sinbad"; }
+
+    const std::string &locomotionState() const { return locomotionSm_.currentState(); }
+    const std::string &upperState() const { return upperSm_.currentState(); }
+    const std::string &queuedUpperState() const { return pendingUpperState_; }
+    bool isUpperSuppressed() const { return upperSuppressed_; }
+    const std::string &desiredGroundState() const { return desiredGroundState_; }
 
     bool init() override
     {
@@ -125,8 +132,21 @@ public:
             else
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[DemoSinbad] Missing: %s", a);
         }
-        lowerLayer->play("IdleBase", PlayMode::Loop);
+        locomotionSm_.bind(lowerLayer);
+        locomotionSm_.addState("Idle",  {"IdleBase", PlayMode::Loop, 1.f, 0.3f});
+        locomotionSm_.addState("Run",   {"RunBase",  PlayMode::Loop, 1.f, 0.2f});
+        locomotionSm_.addState("Dance", {"Dance",    PlayMode::Loop, 1.f, 0.3f});
+        locomotionSm_.addState("JumpStart", {"JumpStart", PlayMode::Once, 1.f, 0.08f});
+        locomotionSm_.addState("JumpLoop",  {"JumpLoop",  PlayMode::Loop, 1.f, 0.12f});
+        locomotionSm_.addState("JumpEnd",   {"JumpEnd",   PlayMode::Once, 1.f, 0.10f});
+        locomotionSm_.setInitialState("Idle");
+        desiredGroundState_ = "Idle";
         currentAnim = "IdleBase";
+        lowerLayer->defaultBlendTime = 0.24f;
+        lowerLayer->setTransitionBlend("IdleBase", "RunBase", 0.18f);
+        lowerLayer->setTransitionBlend("RunBase", "IdleBase", 0.26f);
+        lowerLayer->setTransitionBlend("*", "Dance", 0.35f);
+        lowerLayer->setTransitionBlend("Dance", "*", 0.28f);
 
         // ── Layer 1: upper body (ataques) ─────────────────────
         // Bone mask: Stomach [47] + todos os descendentes
@@ -149,7 +169,16 @@ public:
         }
         // Upper layer: IdleTop em loop — ataques fazem triggerAction com blend
         upperLayer->defaultBlendTime = 0.2f;
-        upperLayer->play("IdleTop", PlayMode::Loop);
+        upperLayer->setTransitionBlend("IdleTop", "DrawSwords", 0.10f);
+        upperLayer->setTransitionBlend("IdleTop", "SliceVertical", 0.08f);
+        upperLayer->setTransitionBlend("IdleTop", "SliceHorizontal", 0.08f);
+        upperLayer->setTransitionBlend("*", "IdleTop", 0.14f);
+        upperSm_.bind(upperLayer);
+        upperSm_.addState("IdleTop",        {"IdleTop",        PlayMode::Loop, 1.0f, 0.20f});
+        upperSm_.addState("DrawSwords",     {"DrawSwords",     PlayMode::Once, 0.2f, 0.12f});
+        upperSm_.addState("SliceVertical",  {"SliceVertical",  PlayMode::Once, 0.5f, 0.10f});
+        upperSm_.addState("SliceHorizontal",{"SliceHorizontal",PlayMode::Once, 0.8f, 0.10f});
+        upperSm_.setInitialState("IdleTop");
 
         // ── Forward pass simples (sem shadow) ─────────────────
         tech_ = new ForwardTechnique();
@@ -169,29 +198,93 @@ public:
         auto *upperLayer = sinbadNode->animator->getLayer(1); // upper body
         if (!lowerLayer) return;
 
+        const std::string locStateBefore = locomotionSm_.currentState();
+        const bool inJump = (locStateBefore == "JumpStart" || locStateBefore == "JumpLoop" || locStateBefore == "JumpEnd");
+
         // ── Locomotion (layer 0 — full body) ─────────────────
-        if (Input::IsKeyPressed(KEY_ONE)) { lowerLayer->crossFade("IdleBase", 0.3f); currentAnim = "IdleBase"; lowerLayer->setSpeed(1.0f); }
-        if (Input::IsKeyPressed(KEY_TWO)) { lowerLayer->crossFade("RunBase",  0.2f); currentAnim = "RunBase";  lowerLayer->setSpeed(1.0f); }
-        if (Input::IsKeyPressed(KEY_THREE)) { lowerLayer->crossFade("Dance",    0.3f); currentAnim = "Dance";    lowerLayer->setSpeed(1.0f); }
+        if (Input::IsKeyPressed(KEY_ONE)) { desiredGroundState_ = "Idle"; if (!inJump) locomotionSm_.requestState("Idle"); }
+        if (Input::IsKeyPressed(KEY_TWO)) { desiredGroundState_ = "Run"; if (!inJump) locomotionSm_.requestState("Run"); }
+        if (Input::IsKeyPressed(KEY_THREE)) { desiredGroundState_ = "Dance"; if (!inJump) locomotionSm_.requestState("Dance"); }
+
+        // Jump flow via FSM states
+        if (Input::IsKeyPressed(KEY_SPACE) && !inJump)
+        {
+            lowerLayer->setSpeed(1.0f);
+            locomotionSm_.requestState("JumpStart");
+        }
+        if (locStateBefore == "JumpStart" && lowerLayer->hasFinished())
+            locomotionSm_.requestState("JumpLoop");
+        if (Input::IsKeyPressed(KEY_R) && locStateBefore == "JumpLoop")
+            locomotionSm_.requestState("JumpEnd");
+        if (locStateBefore == "JumpEnd" && lowerLayer->hasFinished())
+            locomotionSm_.requestState(desiredGroundState_);
+
+        locomotionSm_.update();
+        {
+            std::string a = locomotionSm_.currentAnim();
+            if (!a.empty()) currentAnim = a;
+        }
+
+        const std::string locState = locomotionSm_.currentState();
+        const bool danceActive = (locState == "Dance");
 
         // ── Ataques (layer 1 — upper body apenas) ────────────
         // As pernas continuam a correr/idle enquanto os braços atacam!
         if (upperLayer)
         {
-            // triggerAction = blend in do ataque + volta ao IdleTop com blend out
-            if (Input::IsKeyPressed(KEY_FOUR)) { upperLayer->setSpeed(0.2f);  upperLayer->triggerAction("DrawSwords"); }
-            if (Input::IsKeyPressed(KEY_FIVE)) { upperLayer->setSpeed(0.5f);  upperLayer->triggerAction("SliceVertical"); }
-            if (Input::IsKeyPressed(KEY_SIX)) { upperLayer->setSpeed(0.8f);  upperLayer->triggerAction("SliceHorizontal"); }
-        }
+            if (danceActive)
+            {
+                if (!upperSuppressed_)
+                {
+                    upperLayer->stop(0.12f);
+                    pendingUpperState_.clear();
+                    upperSuppressed_ = true;
+                }
+            }
+            else if (upperSuppressed_)
+            {
+                upperSm_.requestState("IdleTop");
+                upperSm_.update();
+                upperSuppressed_ = false;
+            }
 
-        // ── Salto — full body (layer 0) ───────────────────────
-        if (Input::IsKeyPressed(KEY_SPACE))
-        {
-            lowerLayer->setSpeed(1.0f);
-            lowerLayer->playOneShot("JumpStart", "JumpLoop");
+            if (!danceActive)
+            {
+                const std::string upState = upperSm_.currentState();
+                const bool upperIdle = (upState == "IdleTop");
+
+                if (Input::IsKeyPressed(KEY_FOUR))
+                {
+                    if (upperIdle) upperSm_.requestState("DrawSwords");
+                    else pendingUpperState_ = "DrawSwords";
+                }
+                if (Input::IsKeyPressed(KEY_FIVE))
+                {
+                    if (upperIdle) upperSm_.requestState("SliceVertical");
+                    else pendingUpperState_ = "SliceVertical";
+                }
+                if (Input::IsKeyPressed(KEY_SIX))
+                {
+                    if (upperIdle) upperSm_.requestState("SliceHorizontal");
+                    else pendingUpperState_ = "SliceHorizontal";
+                }
+
+                if (!upperIdle && upperLayer->hasFinished())
+                {
+                    if (!pendingUpperState_.empty())
+                    {
+                        upperSm_.requestState(pendingUpperState_);
+                        pendingUpperState_.clear();
+                    }
+                    else
+                    {
+                        upperSm_.requestState("IdleTop");
+                    }
+                }
+
+                upperSm_.update();
+            }
         }
-        if (Input::IsKeyPressed(KEY_R) && lowerLayer->isPlaying("JumpLoop"))
-            lowerLayer->playOneShot("JumpEnd", currentAnim);
 
         // ── T — cicla mapeamento de materiais para debug ──────
         if (Input::IsKeyPressed(KEY_T))
@@ -232,6 +325,11 @@ private:
     AnimatedMeshNode *sinbadNode    = nullptr;
     Shader           *skinnedShader = nullptr;
     ForwardTechnique *tech_         = nullptr;
+    AnimationStateMachine locomotionSm_;
+    AnimationStateMachine upperSm_;
+    std::string       desiredGroundState_ = "Idle";
+    std::string       pendingUpperState_;
+    bool              upperSuppressed_ = false;
     std::string       currentAnim;
     int               texVariant  = 0;
 };

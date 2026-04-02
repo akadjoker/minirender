@@ -16,6 +16,11 @@ static glm::mat4 trsMatrix(const glm::vec3 &pos, const glm::quat &rot, const glm
     return m;
 }
 
+static std::string transitionKey(const std::string &from, const std::string &to)
+{
+    return from + "->" + to;
+}
+
 // ============================================================
 //  AnimationLayer
 // ============================================================
@@ -66,6 +71,8 @@ void AnimationLayer::play(const std::string &name, PlayMode mode, float blendTim
     Animation *anim = getAnimation(name);
     if (!anim) return;
 
+    const float resolvedBlend = resolveBlendDuration(name, blendTime);
+
     // Mesma animação — apenas reinicia se estava pausada
     if (currentName_ == name && current_ == anim)
     {
@@ -81,7 +88,7 @@ void AnimationLayer::play(const std::string &name, PlayMode mode, float blendTim
     }
 
     bool needsBlend = current_ && currentName_ != name
-                      && blendTime > 0.f && !paused_;
+                      && resolvedBlend > 0.f && !paused_;
 
     if (needsBlend)
     {
@@ -90,7 +97,7 @@ void AnimationLayer::play(const std::string &name, PlayMode mode, float blendTim
         timeBlend_    = time_;
         blending_     = true;
         blendTime_    = 0.f;
-        blendDuration_ = glm::max(blendTime, 1e-4f);
+        blendDuration_ = glm::max(resolvedBlend, 1e-4f);
         freezeBlend_  = false;
     }
     else
@@ -115,6 +122,46 @@ void AnimationLayer::crossFade(const std::string &name, float duration)
     play(name, mode_, duration);
 }
 
+void AnimationLayer::setTransitionBlend(const std::string &from, const std::string &to, float duration)
+{
+    transitionBlends_[transitionKey(from, to)] = glm::max(duration, 0.f);
+}
+
+void AnimationLayer::clearTransitionBlends()
+{
+    transitionBlends_.clear();
+}
+
+float AnimationLayer::resolveBlendDuration(const std::string &nextName, float requestedBlend) const
+{
+    if (requestedBlend >= 0.f)
+        return requestedBlend;
+
+    if (currentName_.empty())
+        return 0.f;
+
+    const std::string exact = transitionKey(currentName_, nextName);
+    auto it = transitionBlends_.find(exact);
+    if (it != transitionBlends_.end())
+        return it->second;
+
+    const std::string fromAny = transitionKey("*", nextName);
+    it = transitionBlends_.find(fromAny);
+    if (it != transitionBlends_.end())
+        return it->second;
+
+    const std::string toAny = transitionKey(currentName_, "*");
+    it = transitionBlends_.find(toAny);
+    if (it != transitionBlends_.end())
+        return it->second;
+
+    it = transitionBlends_.find(transitionKey("*", "*"));
+    if (it != transitionBlends_.end())
+        return it->second;
+
+    return defaultBlendTime;
+}
+
 void AnimationLayer::playOneShot(const std::string &name, const std::string &returnTo,
                                  float blendIn, PlayMode returnMode)
 {
@@ -130,6 +177,35 @@ void AnimationLayer::triggerAction(const std::string &name, float blendTime)
         playOneShot(name, currentName_, blendTime, mode_);
     else
         play(name, PlayMode::Once, blendTime);
+}
+
+bool AnimationLayer::requestAction(const std::string &name, float blendTime, bool queueIfBusy)
+{
+    if (!getAnimation(name))
+        return false;
+
+    if (isBusy())
+    {
+        if (!queueIfBusy)
+            return false;
+
+        pendingAction_ = name;
+        pendingBlend_ = blendTime;
+        if (shouldReturn_ && !returnToAnim_.empty())
+        {
+            pendingReturnTo_ = returnToAnim_;
+            pendingReturnMode_ = returnMode_;
+        }
+        else
+        {
+            pendingReturnTo_ = currentName_;
+            pendingReturnMode_ = mode_;
+        }
+        return false;
+    }
+
+    triggerAction(name, blendTime);
+    return true;
 }
 
 void AnimationLayer::stop(float blendOutTime)
@@ -175,6 +251,13 @@ float AnimationLayer::getNormalizedTime() const
 {
     if (!current_ || current_->getDuration() <= 0.f) return 0.f;
     return time_ / current_->getDuration();
+}
+
+void AnimationLayer::setNormalizedTime(float normalized)
+{
+    if (!current_ || current_->getDuration() <= 0.f) return;
+    const float t = glm::clamp(normalized, 0.f, 1.f);
+    time_ = t * current_->getDuration();
 }
 
 // ─── update ─────────────────────────────────────────────────
@@ -345,8 +428,23 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
     // OneShot return
     if (ended && shouldReturn_ && !returnToAnim_.empty())
     {
+        if (!pendingAction_.empty())
+        {
+            std::string action   = pendingAction_;
+            std::string returnTo = pendingReturnTo_;
+            PlayMode    retMode  = pendingReturnMode_;
+            float       blend    = pendingBlend_;
+
+            pendingAction_.clear();
+            pendingReturnTo_.clear();
+
+            shouldReturn_ = false;
+            playOneShot(action, returnTo, blend, retMode);
+            return;
+        }
+
         shouldReturn_ = false;
-        play(returnToAnim_, returnMode_, defaultBlendTime);
+        play(returnToAnim_, returnMode_, -1.f);
     }
 }
 

@@ -29,6 +29,17 @@ public:
     { 
         return demos_[current_]->getScene();
     }
+
+    Demo *currentDemo()
+    {
+        return valid() ? demos_[current_] : nullptr;
+    }
+
+    const Demo *currentDemo() const
+    {
+        return valid() ? demos_[current_] : nullptr;
+    }
+
     void render()
     {
         if (valid()) demos_[current_]->render();

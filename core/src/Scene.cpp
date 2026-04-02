@@ -45,6 +45,15 @@ AnimatedMeshNode *Scene::createAnimatedMeshNode(const std::string &name, Animate
     return node;
 }
 
+VertexAnimMeshNode *Scene::createVertexAnimMeshNode(const std::string &name, Mesh *mesh)
+{
+    auto *node = new VertexAnimMeshNode();
+    node->name = name;
+    node->mesh = mesh;
+    add(node);
+    return node;
+}
+
 ManualMeshNode *Scene::createManualMeshNode(const std::string &name)
 {
     auto *node = new ManualMeshNode();
@@ -181,6 +190,13 @@ void Scene::updateNode(Node *node, float dt)
     if (!node || !node->visible) return;
     // Generic per-node simulation (particles, etc.)
     node->update(dt);
+
+    if (auto *vn = node->asVertexAnimMeshNode())
+    {
+        vn->controller.update(dt);
+        vn->updateTagSockets();
+    }
+
     if (auto *an = node->asAnimatedMeshNode())
         if (an->animator && an->animator->active)
         {

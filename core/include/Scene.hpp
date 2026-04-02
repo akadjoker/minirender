@@ -37,6 +37,7 @@ public:
     // --- Node management ---
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
+    VertexAnimMeshNode   *createVertexAnimMeshNode(const std::string &name = "", Mesh *mesh = nullptr);
     class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
     WaterNode3D          *createWaterNode       (const std::string &name = "");
 

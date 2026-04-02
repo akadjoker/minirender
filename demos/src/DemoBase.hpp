@@ -40,6 +40,7 @@ public:
     // ── Chamado pela subclasse no seu render() ───────────────
     void render() override
     {
+            
         scene.render();
     }
 

@@ -1,7 +1,6 @@
 #pragma once
 #include "Mesh.hpp"
 #include "Material.hpp"
-#include "VertexAnimation.hpp"
 #include "Types.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -12,7 +11,7 @@
 #include <cstdint>
 
 // Forward declarations for render integration
-class RenderQueue;
+struct RenderQueue;
 struct FrameContext;
 
 enum class NodeType
@@ -60,7 +59,6 @@ class Node
     virtual class Node3D   *asNode3D()            { return nullptr; }
     virtual class MeshNode *asMeshNode()          { return nullptr; }
     virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
-    virtual class VertexAnimMeshNode *asVertexAnimMeshNode() { return nullptr; }
     virtual class Light    *asLight()             { return nullptr; }
 
     // Override to submit custom draw calls (terrains, particles, etc.)
@@ -165,26 +163,6 @@ public:
     // Reset transform to identity
     void resetTransform();
 
-    // ── RotateTowards / MoveTowards ──────────────────────────
-    // Rotate toward targetRot by at most maxDegrees — returns true when reached
-    bool rotateTo(const glm::quat &targetRot, float maxDegrees);
-
-    // Move toward worldTarget by at most maxDelta units — returns true when reached
-    bool moveTo(const glm::vec3 &worldTarget, float maxDelta);
-
-    // ── Space conversion ─────────────────────────────────────
-    // Transform a world-space point into this node's local space
-    glm::vec3 worldToLocalPoint(const glm::vec3 &worldPoint) const;
-
-    // Transform a local-space point into world space
-    glm::vec3 localToWorldPoint(const glm::vec3 &localPoint) const;
-
-    // ── Re-parent ────────────────────────────────────────────
-    // Attach to newParent. If keepWorldTransform=true the node stays
-    // visually in place (position/rotation/scale are recalculated in
-    // the new parent's space).
-    void setParent(Node3D *newParent, bool keepWorldTransform = true);
-
     // ── Dirty flag ───────────────────────────────────────────
     void markDirty();
     bool isDirty() const { return dirty_; }
@@ -265,37 +243,6 @@ private:
     std::vector<BoneSocket> sockets_; // bone attachments
 };
 
-// ─── VertexAnimMeshNode ────────────────────────────────────────────────────
-// Reuses MeshNode render path, but updates frame/clip state through
-// VertexAnimController and drives attach nodes from MD3-like tags.
-class VertexAnimMeshNode : public MeshNode
-{
-public:
-    VertexAnimMeshNode();
-    ~VertexAnimMeshNode() override = default;
-
-    VertexAnimMeshNode *asVertexAnimMeshNode() override { return this; }
-
-    VertexAnimController controller;
-
-    void setTagTracks(const std::vector<VertexTagTrack> &tracks) { tagTracks_ = tracks; }
-    std::vector<VertexTagTrack> &tagTracks() { return tagTracks_; }
-    const std::vector<VertexTagTrack> &tagTracks() const { return tagTracks_; }
-
-    VertexTagSocket *addTagSocket(const std::string &tagName, Node3D *node,
-                                  const glm::mat4 &localOffset = glm::mat4(1.f));
-    VertexTagSocket *getTagSocket(const std::string &tagName);
-    void             removeTagSocket(const std::string &tagName);
-    void             clearTagSockets();
-
-    void updateTagSockets();
-
-private:
-    VertexTagBinder              tagBinder_;
-    std::vector<VertexTagSocket> tagSockets_;
-    std::vector<VertexTagTrack>  tagTracks_;
-};
-
 // ─── Lights ──────────────────────────────────────────────────────────────────
 
 enum class LightType { Point, Directional, Spot };
@@ -325,8 +272,6 @@ class DirectionalLight : public Light
 {
 public:
     // Direction is Node3D::forward() in world space (-Z local)
-    // u_lightDir sent to shaders = -forward() (pointing TOWARD the light)
-    glm::vec3 ambient = {0.08f, 0.08f, 0.08f}; // scene ambient contribution
     DirectionalLight() { lightType = LightType::Directional; }
 };
 
@@ -337,4 +282,77 @@ public:
     float innerAngle = 20.0f; // degrees
     float outerAngle = 35.0f;
     SpotLight() { lightType = LightType::Spot; }
+};
+
+// ────────────────────────────────────────────────────────────
+//  ManualMeshNode
+//  Ogre-like manual geometry builder.
+//  Supports both a streaming API and direct vertex/index access.
+// ────────────────────────────────────────────────────────────
+class ManualMeshNode : public Node3D
+{
+public:
+    ManualMeshNode();
+    ~ManualMeshNode();
+
+    // ── Streaming builder API ───────────────────────────
+    /// Start defining geometry. Call end() to finalise.
+    void begin(GLenum primitiveType = GL_TRIANGLES, bool dynamic = false);
+
+    /// Set current normal (used for next position()).
+    ManualMeshNode& normal   (float x, float y, float z);
+    ManualMeshNode& normal   (const glm::vec3& n);
+
+    /// Set current UV (used for next position()).
+    ManualMeshNode& texCoord (float u, float v);
+
+    /// Set current colour / tangent handedness (w).
+    ManualMeshNode& colour   (float r, float g, float b, float a = 1.f);
+    ManualMeshNode& colour   (const glm::vec4& c);
+
+    /// Emit one vertex at position, flushing current normal/uv/colour state.
+    ManualMeshNode& position (float x, float y, float z);
+    ManualMeshNode& position (const glm::vec3& p);
+
+    /// Emit an index.
+    ManualMeshNode& index    (uint32_t i);
+    ManualMeshNode& triangle (uint32_t a, uint32_t b, uint32_t c);
+
+    /// Finalise and upload to GPU.
+    void end();
+
+    // ── Direct access (bypass streaming API) ────────────────
+    std::vector<Vertex>   &vertices() { return buffer_.vertices; }
+    std::vector<uint32_t> &indices()  { return buffer_.indices;  }
+
+    /// Re-upload after direct edits.
+    void build();
+
+    // ── Utilities ─────────────────────────────────────
+    void clear();
+
+    /// Recompute flat normals from triangle list (overwrites existing normals).
+    void computeNormals();
+
+    /// Recompute AABB from current vertices.
+    BoundingBox computeAABB() const;
+
+    int vertexCount() const { return (int)buffer_.vertices.size(); }
+    int indexCount()  const { return (int)buffer_.indices.size();  }
+
+    Material   *material  = nullptr;
+    uint32_t    passMask  = RenderPassMask::Opaque;
+    bool        castShadow = true;
+
+    // ── Node overrides ──────────────────────────────────
+    void gatherRenderItems(RenderQueue& q, const FrameContext& ctx) override;
+
+private:
+    MeshBuffer buffer_;
+    bool       building_ = false;
+
+    // Accumulated current-vertex state
+    glm::vec3  curNormal_   = {0.f, 1.f, 0.f};
+    glm::vec2  curUV_       = {0.f, 0.f};
+    glm::vec4  curColour_   = {1.f, 1.f, 1.f, 1.f};
 };

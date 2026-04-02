@@ -191,16 +191,16 @@ void MeshBuffer::Render()
     {
         Build();
     }
-    buffer->Render(GL_TRIANGLES, indices.size());
+    buffer->Render(PrimitiveType::PT_TRIANGLES, indices.size());
 }
 
-void MeshBuffer::Render(GLenum primitiveType, u32 count)
+void MeshBuffer::Render(PrimitiveType type, u32 count)
 {
     if (m_idirty || m_vdirty)
     {
         Build();
     }
-    buffer->Render(primitiveType, count);
+    buffer->Render(type, count);
 }
 
 void MeshBuffer::Debug(RenderBatch *batch)

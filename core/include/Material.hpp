@@ -1,6 +1,6 @@
 #pragma once
 #include "Types.hpp"
-#include "Opengl.hpp"
+#include "glad/glad.h"
 #include <SDL2/SDL.h>
 #include <string>
 #include <vector>
@@ -34,8 +34,10 @@ struct Texture
 
 struct TextureSlot 
 {
-    Texture*    texture = nullptr;
-    std::string uniform; // "u_albedo", "u_normal"
+    Texture*    texture   = nullptr;
+    GLuint      rawId     = 0;              // raw GL texture id (e.g. from RenderTarget)
+    GLenum      rawTarget = GL_TEXTURE_2D;  // target for rawId
+    std::string uniform;   // "u_albedo", "u_normal"
 };
 
 class Shader
@@ -52,7 +54,9 @@ public:
     void setVec3 (const std::string& u, const glm::vec3& v) const;
     void setVec4 (const std::string& u, const glm::vec4& v) const;
     void setMat3 (const std::string& u, const glm::mat3& v) const;
-    void setMat4 (const std::string& u, const glm::mat4& v) const;
+    void setMat4     (const std::string& u, const glm::mat4&  v)                const;
+    void setMat4Array(const std::string& u, int count, const glm::mat4* v) const;
+    void setFloatArray(const std::string& u, int count, const float* v)    const;
  
 
     GLuint   getId()      const { return id; }
@@ -132,6 +136,8 @@ public:
         return this;
     }
     Material *setTexture(const std::string &u, Texture *t);
+    // Bind a raw GL texture id (e.g. RenderTarget::colorTex())
+    Material *setTexture(const std::string &u, GLuint id, GLenum target = GL_TEXTURE_2D);
     Material *setInt(const std::string &u, int v);
     Material *setBool(const std::string &u, bool v) { return setInt(u, v ? 1 : 0); }
     Material *setFloat(const std::string &u, float v);

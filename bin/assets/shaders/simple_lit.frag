@@ -4,7 +4,7 @@ precision highp float;
 in vec3 v_worldPos;
 in vec3 v_normal;
 in vec2 v_uv;
-in float v_clipDists[4];
+in float v_clipDist;
 
 out vec4 FragColor;
 
@@ -12,14 +12,13 @@ uniform vec4 u_cameraPos;
 uniform vec4 u_lightDir;
 uniform vec4 u_lightColor;
 uniform vec4 u_ambient;
-uniform int  u_clipPlaneCount;
 
 uniform sampler2D u_albedo;
 
 void main()
 {
-    for (int i = 0; i < u_clipPlaneCount; i++)
-        if (v_clipDists[i] < 0.0) discard;
+    // Clip plane — discard if on the wrong side (only active when plane != 0)
+  //  if (v_clipDist < 0.0) discard;
 
     vec4  albedo  = texture(u_albedo, v_uv);
     vec3  N       = normalize(v_normal);

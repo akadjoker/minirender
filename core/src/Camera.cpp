@@ -63,37 +63,6 @@ glm::vec3 Camera::unproject(const glm::vec3& windowCoords) const
     return glm::unProject(windowCoords, view, projection, glm::vec4(viewport));
 }
 
-bool Camera::worldToScreen(const glm::vec3& worldPos, glm::vec2& screenPos) const
-{
-    // Clip space
-    glm::vec4 clip = viewProjection * glm::vec4(worldPos, 1.f);
-
-    // Se w <= 0 o ponto está atrás da câmara
-    if (clip.w <= 0.f)
-    {
-        screenPos = { -1.f, -1.f };
-        return false;
-    }
-
-    // NDC [-1, 1]
-    glm::vec3 ndc = glm::vec3(clip) / clip.w;
-
-    // Converter para pixels (top-left origin, como SDL)
-    screenPos.x = (ndc.x * 0.5f + 0.5f) * (float)viewport.z + (float)viewport.x;
-    screenPos.y = (1.f - (ndc.y * 0.5f + 0.5f)) * (float)viewport.w + (float)viewport.y;
-
-    // Visível se dentro do frustum
-    return ndc.x >= -1.f && ndc.x <= 1.f &&
-           ndc.y >= -1.f && ndc.y <= 1.f &&
-           ndc.z >= -1.f && ndc.z <= 1.f;
-}
-
-glm::vec3 Camera::screenToWorldPoint(float mouseX, float mouseY, float distance) const
-{
-    Ray r = getRay(mouseX, mouseY);
-    return r.origin + r.direction * distance;
-}
-
 Ray Camera::getRay(float mouseX, float mouseY) const
 {
     // Inverter Y (SDL 0=topo, GL 0=fundo)

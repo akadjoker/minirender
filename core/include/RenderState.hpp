@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Opengl.hpp"
+#include "glad/glad.h"
 
 class RenderState
 {

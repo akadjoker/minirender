@@ -45,6 +45,11 @@ public:
         if (valid()) demos_[current_]->render();
     }
 
+    void debugDraw(class RenderBatch *batch)
+    {
+        if (valid()) demos_[current_]->debugDraw(batch);
+    }
+
     void onResize(int w, int h)
     {
         if (valid()) demos_[current_]->onResize(w, h);

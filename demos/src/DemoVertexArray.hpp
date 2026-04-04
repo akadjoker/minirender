@@ -5,7 +5,6 @@
 #include "Input.hpp"
 #include "imgui.h"
 #include <glm/gtc/matrix_transform.hpp>
-#include <array>
 #include <cmath>
 
 class DemoVertexArray : public DemoBase
@@ -42,7 +41,7 @@ public:
         if (animateVertices_)
         {
             rebuildVertices();
-            vb_->SetSubData(0, vertexCount_, vertices_.data());
+            vb_->SetSubData(0, vertexCount_, vertices_);
         }
     }
 
@@ -86,21 +85,29 @@ private:
 
     void buildQuad()
     {
-        vertices_ = {
-            TestVertex{{-0.75f, -0.60f, 0.0f}, {0.f, 1.f}},
-            TestVertex{{ 0.75f, -0.60f, 0.0f},  {1.f, 1.f}},
-            TestVertex{{ 0.75f,  0.60f, 0.0f},   {1.f, 0.f}},
-            TestVertex{{-0.75f,  0.60f, 0.0f},   {0.f, 0.f}},
-        };
-        baseVertices_ = vertices_;
-        indices_ = {0, 1, 2, 2, 3, 0};
-        vertexCount_ = static_cast<u32>(vertices_.size());
-        indexCount_  = static_cast<u32>(indices_.size());
+        vertices_[0] = TestVertex{{-0.75f, -0.60f, 0.0f}, {0.f, 1.f}};
+        vertices_[1] = TestVertex{{ 0.75f, -0.60f, 0.0f}, {1.f, 1.f}};
+        vertices_[2] = TestVertex{{ 0.75f,  0.60f, 0.0f}, {1.f, 0.f}};
+        vertices_[3] = TestVertex{{-0.75f,  0.60f, 0.0f}, {0.f, 0.f}};
+
+        for (u32 i = 0; i < 4; ++i)
+            baseVertices_[i] = vertices_[i];
+
+        indices_[0] = 0;
+        indices_[1] = 1;
+        indices_[2] = 2;
+        indices_[3] = 2;
+        indices_[4] = 3;
+        indices_[5] = 0;
+
+        vertexCount_ = 4;
+        indexCount_  = 6;
     }
 
     void rebuildVertices()
     {
-        vertices_ = baseVertices_;
+        for (u32 i = 0; i < vertexCount_; ++i)
+            vertices_[i] = baseVertices_[i];
         for (u32 i = 0; i < vertexCount_; ++i)
         {
             float phase = time_ * speed_ + static_cast<float>(i) * 0.7f;
@@ -125,8 +132,8 @@ private:
         }
 
 
-        vb_->SetData(vertices_.data());
-        ib_->SetData(indices_.data());
+        vb_->SetData(vertices_);
+        ib_->SetData(indices_);
         vao_.Build();
     }
 
@@ -171,9 +178,9 @@ private:
     VertexBuffer *vb_ = nullptr;
     IndexBuffer  *ib_ = nullptr;
     Shader *shader_ = nullptr;
-    std::array<TestVertex, 4> baseVertices_ = {};
-    std::array<TestVertex, 4> vertices_ = {};
-    std::array<u32, 6> indices_ = {};
+    TestVertex baseVertices_[4];
+    TestVertex vertices_[4];
+    u32 indices_[6];
     u32 vertexCount_ = 0;
     u32 indexCount_ = 0;
     float time_ = 0.f;

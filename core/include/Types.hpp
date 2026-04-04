@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <glm/glm.hpp>
 
 
@@ -58,6 +59,28 @@ enum class UniformType
     Vec4,
     Mat3,
     Mat4
+};
+
+enum class PropertyValueType
+{
+    String,
+    Int,
+    Float,
+    Vec3
+};
+
+struct PropertyValue
+{
+    PropertyValueType type;
+    std::string s;
+    int i;
+    float f;
+    glm::vec3 v3;
+
+    PropertyValue()
+        : type(PropertyValueType::String), s(), i(0), f(0.0f), v3(0.0f, 0.0f, 0.0f)
+    {
+    }
 };
 
 struct UniformValue

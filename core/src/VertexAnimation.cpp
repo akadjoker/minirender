@@ -37,6 +37,20 @@ static VertexTagFrame sampleTagFrame(const VertexTagTrack &tag, int frameA, int 
 }
 }
 
+bool VertexAnimAsset::valid() const
+{
+    return templateMesh != nullptr &&
+           applySample != nullptr &&
+           !clips.empty();
+}
+
+void VertexAnimAsset::apply(Mesh *mesh, const VertexAnimSample &sample) const
+{
+    if (!mesh || !applySample)
+        return;
+    applySample(mesh, sample, applyUserData);
+}
+
 VertexAnimClip::VertexAnimClip(const std::string &n, int f0, int f1, float f, bool l)
     : name(n), first(f0), last(f1), fps(f), loop(l)
 {

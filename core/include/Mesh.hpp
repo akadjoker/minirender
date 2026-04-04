@@ -266,6 +266,7 @@ struct ParticleBuffer : public IDrawable
 // ============================================================
 struct Surface
 {
+    std::string name;         // optional sub-object / part name
     uint32_t index_start = 0;
     uint32_t index_count = 0;
     int material_index = 0; // index into MeshBase::materials[]
@@ -300,9 +301,11 @@ public:
     std::vector<Material *> materials; // not owned — manager owns materials
 
     // ── Surfaces ──────────────────────────────────────────
-    Surface &add_surface(uint32_t start, uint32_t count, int material_index = 0)
+    Surface &add_surface(uint32_t start, uint32_t count, int material_index = 0,
+                         const std::string &surface_name = "")
     {
         surfaces.push_back({start, count, material_index});
+        surfaces.back().name = surface_name;
         return surfaces.back();
     }
 
@@ -373,6 +376,10 @@ public:
 
     // upload buffer + compute_aabb
     void upload();
+
+    // Remove all surfaces whose name matches the given string.
+    // Does not repack the GPU buffer — remaining surfaces still draw correctly.
+    void remove_surfaces_by_name(const std::string &surface_name);
 
     void draw() const override { buffer.draw(); }
     void drawRange(uint32_t s, uint32_t c) const override { buffer.drawRange(s, c); }

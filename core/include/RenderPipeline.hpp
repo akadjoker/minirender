@@ -6,7 +6,6 @@
 #include "Math.hpp"
 #include "Types.hpp"
 #include "GBuffer.hpp"
-#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -95,7 +94,7 @@ struct FrameContext
     bool                       secondary   = false;
     // Clip planes in world space: dot(worldPos, plane) < 0 → discard fragment.
     // Active slots: [0, clipPlaneCount). Maximum 4 simultaneous planes.
-    std::array<glm::vec4, 4>   clipPlanes     = {};
+    glm::vec4                  clipPlanes[4]  = {};
     int                        clipPlaneCount = 0;
 };
 

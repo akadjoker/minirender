@@ -12,6 +12,7 @@
 struct Texture
 {
     std::string name;
+    std::string sourcePath;
     GLuint id       = 0;
     int width  = 0;
     int height = 0;
@@ -160,6 +161,13 @@ public:
         auto it = uniforms.find(uniform);
         if (it != uniforms.end() && it->second.type == UniformType::Vec3)
             return it->second.v3;
+        return defaultVal;
+    }
+    float getFloat(const std::string &uniform, float defaultVal = 0.f) const
+    {
+        auto it = uniforms.find(uniform);
+        if (it != uniforms.end() && it->second.type == UniformType::Float)
+            return it->second.f;
         return defaultVal;
     }
     void applyStates() const;

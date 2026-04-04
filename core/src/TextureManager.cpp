@@ -4,7 +4,7 @@
 #include "Manager.hpp"
 #include "Opengl.hpp"
 #include "Pixmap.hpp"
-#include <SDL2/SDL_image.h>
+#include <stb_image.h>
 #include <cstring>
 #include <vector>
 
@@ -35,6 +35,34 @@ PixelType toChannelClass(PixelType type)
     default:
         return type;
     }
+}
+
+PixelType pixelTypeFromChannelCount(int channelCount)
+{
+    switch (channelCount)
+    {
+    case 1:
+        return PixelType::R;
+    case 2:
+        return PixelType::RG;
+    case 3:
+        return PixelType::RGB;
+    case 4:
+    default:
+        return PixelType::RGBA;
+    }
+}
+
+unsigned char *stbiLoadWithFlip(const std::string &path,
+                                bool flipVertical,
+                                int *width,
+                                int *height,
+                                int *channels)
+{
+    stbi_set_flip_vertically_on_load(flipVertical ? 1 : 0);
+    unsigned char *pixels = stbi_load(path.c_str(), width, height, channels, 0);
+    stbi_set_flip_vertically_on_load(0);
+    return pixels;
 }
 
 PixelType inferPixelType(const SDL_Surface *surf)
@@ -251,21 +279,6 @@ void applyPixmapComponentSwizzle(GLuint textureId, int components)
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
 }
 
-void flipSurfaceVertically(SDL_Surface *surf)
-{
-    const int pitch = surf->pitch;
-    std::vector<uint8_t> tmp(pitch);
-    uint8_t *px = static_cast<uint8_t *>(surf->pixels);
-    for (int y = 0; y < surf->h / 2; ++y)
-    {
-        uint8_t *row1 = px + y * pitch;
-        uint8_t *row2 = px + (surf->h - 1 - y) * pitch;
-        std::memcpy(tmp.data(), row1, pitch);
-        std::memcpy(row1, row2, pitch);
-        std::memcpy(row2, tmp.data(), pitch);
-    }
-}
-
 bool buildUploadSpec(const SDL_Surface *surf, const TextureLoadOptions &opts, SurfaceUploadSpec &spec)
 {
     if (!surf || !surf->format || surf->format->BytesPerPixel == 0)
@@ -350,19 +363,35 @@ Texture *TextureManager::load(const std::string &name,
         return existing;
     }
 
-    SDL_Surface *surf = IMG_Load(path.c_str());
-    if (!surf)
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char *pixels = stbiLoadWithFlip(path, opts.flipVertical, &width, &height, &channels);
+    if (!pixels)
     {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "[TextureManager] IMG_Load failed '%s' (%s): %s",
-                     name.c_str(), path.c_str(), IMG_GetError());
+                     "[TextureManager] stbi_load failed '%s' (%s): %s",
+                     name.c_str(), path.c_str(), stbi_failure_reason());
         return nullptr;
     }
 
-    if (opts.flipVertical)
-        flipSurfaceVertically(surf);
+    if (channels < 1 || channels > 4)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[TextureManager] Unsupported channel count (%d) for '%s' (%s)",
+                     channels, name.c_str(), path.c_str());
+        stbi_image_free(pixels);
+        return nullptr;
+    }
 
-    Texture *t = uploadSurface(name, surf, opts);
+    const PixelType pixelType = pixelTypeFromChannelCount(channels);
+    const std::size_t sizeBytes = static_cast<std::size_t>(width) *
+                                  static_cast<std::size_t>(height) *
+                                  static_cast<std::size_t>(channels);
+    Texture *t = uploadMemory(name, width, height, pixelType, pixels, sizeBytes, opts);
+    stbi_image_free(pixels);
+    if (t)
+        t->sourcePath = path;
     if (t)
         SDL_Log("[TextureManager] Loaded '%s' (%dx%d)", name.c_str(), t->width, t->height);
 
@@ -470,6 +499,13 @@ Texture *TextureManager::loadCubemap(const std::string &name,
     const TextureLoadOptions &opts = defaultOpts_;
     if (Texture *existing = get(name))
         return existing;
+    if (faces.size() != 6)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[TextureManager] Cubemap '%s' requires exactly 6 faces (got %zu)",
+                     name.c_str(), faces.size());
+        return nullptr;
+    }
 
     Texture *t = new Texture();
     t->width = 0;
@@ -485,84 +521,93 @@ Texture *TextureManager::loadCubemap(const std::string &name,
         GL_TEXTURE_CUBE_MAP_POSITIVE_Y, GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
         GL_TEXTURE_CUBE_MAP_POSITIVE_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z};
 
-    PixelType cubemapType = PixelType::RGBA;
+    PixelType cubemapType = PixelType::RGB;
     GLenum cubemapInternalFormat = GL_RGBA8;
+    GLenum cubemapFormat = GL_RGB;
+    GLenum cubemapDataType = GL_UNSIGNED_BYTE;
+    int unusedBytesPerPixel = 0;
     for (int i = 0; i < 6; ++i)
     {
-        SDL_Surface *surf = IMG_Load(faces[i].c_str());
-        if (!surf)
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        unsigned char *pixels = stbiLoadWithFlip(faces[i], opts.flipVertical, &width, &height, &channels);
+        if (!pixels)
         {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "[TextureManager] Cubemap face %d failed (%s): %s",
-                         i, faces[i].c_str(), IMG_GetError());
+                         i, faces[i].c_str(), stbi_failure_reason());
             glDeleteTextures(1, &t->id);
             delete t;
             return nullptr;
         }
-        if (opts.flipVertical)
-            flipSurfaceVertically(surf);
-
-        SurfaceUploadSpec faceSpec;
-        if (!buildUploadSpec(surf, opts, faceSpec))
+        if (channels < 1 || channels > 4)
         {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "[TextureManager] Cubemap face %d unsupported format (%s): %s",
-                         i, faces[i].c_str(), SDL_GetPixelFormatName(surf->format->format));
-            SDL_FreeSurface(surf);
+                         "[TextureManager] Cubemap face %d unsupported channel count (%d) (%s)",
+                         i, channels, faces[i].c_str());
+            stbi_image_free(pixels);
             glDeleteTextures(1, &t->id);
             delete t;
             return nullptr;
         }
 
-        const PixelType faceType = faceSpec.pixelType;
+        const PixelType faceType = pixelTypeFromChannelCount(channels);
         if (i == 0)
         {
             cubemapType = faceType;
-            cubemapInternalFormat = faceSpec.internalFormat;
+            cubemapInternalFormat = defaultInternalFormat(cubemapType, opts.sRGB);
+            if (!mapMemoryUploadFormat(cubemapType, cubemapFormat, cubemapDataType, unusedBytesPerPixel))
+            {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             "[TextureManager] Cubemap '%s' unsupported upload format for first face (%s)",
+                             name.c_str(), faces[i].c_str());
+                stbi_image_free(pixels);
+                glDeleteTextures(1, &t->id);
+                delete t;
+                return nullptr;
+            }
+            (void)unusedBytesPerPixel;
             t->type = cubemapType;
         }
         else if (toChannelClass(faceType) != toChannelClass(cubemapType))
         {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "[TextureManager] Cubemap '%s' face %d channel mismatch (%s)",
-                         name.c_str(), i, SDL_GetPixelFormatName(surf->format->format));
-            SDL_FreeSurface(surf);
+                         name.c_str(), i, faces[i].c_str());
+            stbi_image_free(pixels);
             glDeleteTextures(1, &t->id);
             delete t;
             return nullptr;
         }
 
-        if (i > 0 && (surf->w != t->width || surf->h != t->height))
+        if (i > 0 && (width != t->width || height != t->height))
         {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                          "[TextureManager] Cubemap '%s' face %d size mismatch (%dx%d != %dx%d)",
-                         name.c_str(), i, surf->w, surf->h, t->width, t->height);
-            SDL_FreeSurface(surf);
+                         name.c_str(), i, width, height, t->width, t->height);
+            stbi_image_free(pixels);
             glDeleteTextures(1, &t->id);
             delete t;
             return nullptr;
         }
 
         GLint prevAlignment = 0;
-        GLint prevRowLength = 0;
         glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlignment);
-        glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prevRowLength);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, faceSpec.rowLength);
 
         glTexImage2D(targets[i], 0, cubemapInternalFormat,
-                     surf->w, surf->h, 0,
-                     faceSpec.format, faceSpec.type, surf->pixels);
+                     width, height, 0,
+                     cubemapFormat, cubemapDataType, pixels);
 
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, prevRowLength);
         glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlignment);
 
         if (i == 0)
         {
-            t->width = surf->w;
-            t->height = surf->h;
+            t->width = width;
+            t->height = height;
         }
-        SDL_FreeSurface(surf);
+        stbi_image_free(pixels);
     }
 
     glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

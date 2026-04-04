@@ -1,6 +1,7 @@
 #pragma once
 #include "DemoBase.hpp"
 #include "CascadeShadowMap.hpp"
+#include "PipelinePresets.hpp"
 #include "RenderState.hpp"
 #include "Batch.hpp"
 #include "imgui.h"
@@ -66,27 +67,18 @@ public:
         sponzaNode->setScale({0.03f, 0.03f, 0.03f});
 
         // ── CSM technique ────────────────────────────────────
-        auto *tech = new CsmTechnique();
-        if (!tech->initialize(2048)) { delete tech; return false; }
-        csm_ = tech;
+        PipelinePresets::WorldForwardDesc pipelineDesc;
+        pipelineDesc.depthShader      = depthShader;
+        pipelineDesc.skyShader        = skyShader_;
+        pipelineDesc.litShader        = litShader_;
+        pipelineDesc.shadowResolution = 2048;
+        pipelineDesc.lightDirection   = lightDir_;
+        pipelineDesc.shadowFarPlane   = 1200.f;
+        pipelineDesc.csmLambda        = 0.7f;
 
-        tech->litShader = litShader_;
-        tech->getCsm()->setLightDirection(lightDir_);
-        tech->getCsm()->setShadowFarPlane(1200.f);
-        tech->getCsm()->setLambda(0.7f);
+        csm_ = PipelinePresets::createWorldForward(scene, pipelineDesc).mainTechnique;
+        if (!csm_) return false;
 
-        for (int i = 0; i < CSM_NUM_CASCADES; ++i)
-        {
-            auto *dp  = tech->addPass<CsmDepthPass>();
-            dp->csm     = tech->getCsm();
-            dp->cascade = i;
-            dp->shader  = depthShader;
-        }
-        tech->addPass<OpaquePass>();
-        tech->addPass<TransparentPass>();
-        tech->addPass<SkyPass>()->shader = skyShader_;
-
-        scene.addTechnique(tech);
         debugBatch_.Init();
 
         // ── Scene directional light ──────────────────────────

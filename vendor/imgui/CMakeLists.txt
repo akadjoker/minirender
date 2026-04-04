@@ -26,7 +26,7 @@ set(IMGUI_SOURCES
 
 )
 
-if (BUGL_IMGUI_DEMO)
+if (BU3D_IMGUI_DEMO)
     list(APPEND IMGUI_SOURCES ${IMGUI_DIR}/imgui_demo.cpp)
 endif()
 
@@ -58,7 +58,7 @@ target_link_libraries(imgui PUBLIC SDL2 OpenGL::GL)
 
 # IMGUI_IMPL_OPENGL_ES3 is now set project-wide via root CMakeLists.
 
-if (BUGL_IMGUI_DEMO)
+if (BU3D_IMGUI_DEMO)
     target_compile_definitions(imgui PUBLIC)
 else()
     target_compile_definitions(imgui PUBLIC IMGUI_DISABLE_DEMO_WINDOWS)

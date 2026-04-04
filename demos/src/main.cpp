@@ -1,5 +1,4 @@
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
 #include "Opengl.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -31,6 +30,13 @@
 #include "DemoSponzaCSM.hpp"
 #include "DemoInstanceCSM.hpp"
 #include "DemoVertexArray.hpp"
+#include "DemoQ3Bsp.hpp"
+#include "DemoIQM.hpp"
+#include "DemoB3D.hpp"
+#include "DemoGLTFAnimated.hpp"
+#include "DemoCarShowroom.hpp"
+#include "DemoShowroomCSM.hpp"
+#include "DemoShowroomPreset.hpp"
 #include "Input.hpp"
 
 extern "C" const char *__lsan_default_suppressions()
@@ -75,12 +81,19 @@ int main()
     //manager.add(new DemoEffects());
     //manager.add(new DemoBatch());
     //manager.add(new DemoCascade());
-    manager.add(new DemoCannonball());
+    //manager.add(new DemoCannonball());
     //manager.add(new DemoSponzaCSM());
     //manager.add(new DemoWater());
     //manager.add(new DemoTerrainLod());
  //   manager.add(new DemoPerformance());
-    // manager.add(new DemoInstanceCSM());
+     //manager.add(new DemoInstanceCSM());
+    manager.add(new DemoQ3Bsp());
+     //manager.add(new DemoB3D());
+  //   manager.add(new DemoIQM());
+    //manager.add(new DemoShowroomPreset());
+        //manager.add(new DemoShowroomCSM());
+    //manager.add(new DemoCarShowroom());
+    // manager.add(new DemoMD3());
     //manager.add(new DemoVertexArray());
    
     if (!manager.init())
@@ -137,6 +150,7 @@ int main()
         batch.SetMatrix(viewProj);
   //      scene.debug(&batch);
         batch.Grid(10, 1.0f, true);
+        manager.debugDraw(&batch);
         batch.Render();
 
         state.setDepthTest(false);
@@ -169,6 +183,17 @@ int main()
                        sinbad->upperState().c_str(),
                        queued.c_str(),
                        sinbad->isUpperSuppressed() ? "yes" : "no");
+            font.SetColor(255, 255, 255);
+        }
+
+        if (auto *q3bsp = dynamic_cast<DemoQ3Bsp *>(manager.currentDemo()))
+        {
+            font.SetColor(180, 220, 255);
+            font.Print(10, 92, "LM Mul: %.2f  LM Gamma: %.2f",
+                       q3bsp->lightmapStrength(),
+                       q3bsp->lightmapGamma());
+            font.Print(10, 112, "ImGui \"Q3 BSP Debug\" | entity boxes: %s",
+                       q3bsp->debugEntitiesEnabled() ? "on" : "off");
             font.SetColor(255, 255, 255);
         }
 

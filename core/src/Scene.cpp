@@ -54,6 +54,22 @@ VertexAnimMeshNode *Scene::createVertexAnimMeshNode(const std::string &name, Mes
     return node;
 }
 
+Md2Node *Scene::createMd2Node(const std::string &name)
+{
+    auto *node = new Md2Node();
+    node->name = name;
+    add(node);
+    return node;
+}
+
+Md3Node *Scene::createMd3Node(const std::string &name)
+{
+    auto *node = new Md3Node();
+    node->name = name;
+    add(node);
+    return node;
+}
+
 ManualMeshNode *Scene::createManualMeshNode(const std::string &name)
 {
     auto *node = new ManualMeshNode();
@@ -192,10 +208,7 @@ void Scene::updateNode(Node *node, float dt)
     node->update(dt);
 
     if (auto *vn = node->asVertexAnimMeshNode())
-    {
-        vn->controller.update(dt);
-        vn->updateTagSockets();
-    }
+        vn->updateAnimation(dt);
 
     if (auto *an = node->asAnimatedMeshNode())
         if (an->animator && an->animator->active)
@@ -315,7 +328,8 @@ void Scene::renderToTarget(Camera *tmpCam, RenderTarget *rt)
     ctx.frustum     = Frustum::from_matrix(tmpCam->viewProjection);
     ctx.stats       = nullptr;
     ctx.shadowQueue = frameCtx_.shadowQueue;
-    ctx.clipPlanes     = clipPlanes_;
+    for (int i = 0; i < 4; ++i)
+        ctx.clipPlanes[i] = clipPlanes_[i];
     ctx.clipPlaneCount = clipPlaneCount_;
     clipPlaneCount_ = 0; // auto-reset after use
 
@@ -413,6 +427,8 @@ void Scene::gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue)
     if (!node || !node->visible)
         return;
 
+    const bool gatheringShadow = (&queue == &frameCtx_.shadowQueue);
+
     // Lights are nodes too — collect into frame context
     if (auto *light = node->asLight())
         frameCtx_.lights.push_back(light);
@@ -424,6 +440,13 @@ void Scene::gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue)
     // ── Static mesh ─────────────────────────────────────────────────
     if (auto *meshNode = node->asMeshNode())
     {
+        if (gatheringShadow && !meshNode->castShadow)
+        {
+            for (auto *child : node->getChildren())
+                gatherNode(child, frustum, queue);
+            return;
+        }
+
         if (meshNode->mesh)
         {
             const glm::mat4 world    = meshNode->worldMatrix();
@@ -453,12 +476,18 @@ void Scene::gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue)
                         mat = mats[surf.material_index];
                 }
                 if (!mat) continue;
+                if (gatheringShadow && mat->blend) continue;
 
                 RenderItem item;
                 item.drawable   = meshNode->mesh;
                 item.material   = mat;
                 item.model      = world;
-                item.passMask   = meshNode->passMask;
+                item.passMask   = gatheringShadow ? RenderPassMask::Opaque : meshNode->passMask;
+                if (mat->blend)
+                {
+                    item.passMask &= ~(RenderPassMask::Opaque | RenderPassMask::Shadow);
+                    item.passMask |= RenderPassMask::Transparent;
+                }
                 item.indexStart = surf.index_start;
                 item.indexCount = surf.index_count;
                 item.worldAABB  = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;
@@ -498,6 +527,11 @@ void Scene::gatherNode(Node *node, const Frustum &frustum, RenderQueue &queue)
                 item.material   = mat;
                 item.model      = world;
                 item.passMask   = amn->passMask;
+                if (mat->blend)
+                {
+                    item.passMask &= ~(RenderPassMask::Opaque | RenderPassMask::Shadow);
+                    item.passMask |= RenderPassMask::Transparent;
+                }
                 item.indexStart = surf.index_start;
                 item.indexCount = surf.index_count;
                 item.worldAABB  = surf.aabb.is_valid() ? surf.aabb.transformed(world) : worldAABB;

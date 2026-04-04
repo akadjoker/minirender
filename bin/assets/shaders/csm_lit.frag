@@ -1,5 +1,6 @@
 #version 300 es
 precision highp float;
+precision highp int;
 
 #define NUM_CASCADES 4
 

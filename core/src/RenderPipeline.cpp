@@ -4,6 +4,7 @@
 #include <SDL2/SDL.h>
 #include <algorithm>
 #include <string>
+#include <glm/gtc/matrix_inverse.hpp>
 
 // Helper: send all active clip planes to a shader
 static void sendClipPlanes(Shader *sh, const FrameContext &ctx)
@@ -191,6 +192,7 @@ void RenderPass::drawItemNoMaterial(const FrameContext &ctx, const RenderItem &i
         return;
     item.drawable->applyBoneMatrices(sh);
     sh->setMat4("u_model", item.model);
+    sh->setMat3("u_normalMatrix", glm::inverseTranspose(glm::mat3(item.model)));
 
     const uint32_t idxCount = item.indexCount > 0
                                   ? item.indexCount
@@ -228,6 +230,7 @@ void RenderPass::drawItem(const FrameContext &ctx, const RenderItem &item, Shade
     item.material->applyUniformsTo(sh);
     item.drawable->applyBoneMatrices(sh);
     sh->setMat4("u_model", item.model);
+    sh->setMat3("u_normalMatrix", glm::inverseTranspose(glm::mat3(item.model)));
 
     const uint32_t idxCount = item.indexCount > 0
                                   ? item.indexCount

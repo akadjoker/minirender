@@ -1,4 +1,5 @@
 #version 300 es
+precision highp float;
 
 // Depth-only pass for instanced geometry (CSM shadow maps).
 // Per-instance model matrix is split across 4 vec4 attributes at locations 6-9

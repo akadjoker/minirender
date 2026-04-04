@@ -1,0 +1,3 @@
+/media/projectos/projects/cpp/BuGLEs/exporter/build-release/CMakeFiles/exporter.dir
+/media/projectos/projects/cpp/BuGLEs/exporter/build-release/CMakeFiles/edit_cache.dir
+/media/projectos/projects/cpp/BuGLEs/exporter/build-release/CMakeFiles/rebuild_cache.dir

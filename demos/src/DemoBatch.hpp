@@ -234,7 +234,7 @@ private:
 
         // 3,2 — animated star
         batch.SetColor(255, 220, 40, 255);
-        { float pulse = 50.f + 15.f * std::sinf(time * 2.f);
+        { float pulse = 50.f + 15.f * std::sin(time * 2.f);
           batch.Polygon(CELL_X(3), CELL_Y(2), 5, (int)pulse, time * 45.f, true);
           batch.SetColor(255, 255, 200, 255);
           batch.Polygon(CELL_X(3), CELL_Y(2), 5, (int)pulse, time * 45.f, false); }

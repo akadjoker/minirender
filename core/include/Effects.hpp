@@ -5,7 +5,6 @@
 #include "Math.hpp"
 #include <glm/glm.hpp>
 #include <vector>
-#include <functional>
 
 // ============================================================
 //  EffectVertex  (32 bytes)  — shared by Decal + LensFlare

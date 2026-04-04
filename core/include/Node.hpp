@@ -1,6 +1,8 @@
 #pragma once
 #include "Mesh.hpp"
 #include "Material.hpp"
+#include "Md2Loader.hpp"
+#include "Md3Loader.hpp"
 #include "VertexAnimation.hpp"
 #include "Types.hpp"
 #include <glm/glm.hpp>
@@ -20,6 +22,8 @@ enum class NodeType
     Node,
     Node3D,
     MeshNode,
+    Md2Node,
+    Md3Node,
     Light,
     Camera,
     ParticleSystem,
@@ -37,6 +41,7 @@ enum class TransformSpace
 };
 
 class Camera;
+class Shader;
 struct RenderList;
 
 class Node
@@ -61,6 +66,8 @@ class Node
     virtual class MeshNode *asMeshNode()          { return nullptr; }
     virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
     virtual class VertexAnimMeshNode *asVertexAnimMeshNode() { return nullptr; }
+    virtual class Md2Node *asMd2Node()            { return nullptr; }
+    virtual class Md3Node *asMd3Node()            { return nullptr; }
     virtual class Light    *asLight()             { return nullptr; }
 
     // Override to submit custom draw calls (terrains, particles, etc.)
@@ -272,11 +279,28 @@ class VertexAnimMeshNode : public MeshNode
 {
 public:
     VertexAnimMeshNode();
-    ~VertexAnimMeshNode() override = default;
+    ~VertexAnimMeshNode() override;
 
     VertexAnimMeshNode *asVertexAnimMeshNode() override { return this; }
 
+    // Per-instance animator state (independent per node clone/instance)
     VertexAnimController controller;
+
+    // Shared animation asset (optional). If set, updateAnimation() will
+    // update controller, deform this node's mesh and update tag sockets.
+    void setAnimAsset(const VertexAnimAsset *asset, bool cloneTemplateMesh = true);
+    const VertexAnimAsset *animAsset() const { return animAsset_; }
+    bool hasAnimAsset() const { return animAsset_ != nullptr; }
+
+    void setAutoApplySample(bool enabled) { autoApplySample_ = enabled; }
+    bool autoApplySample() const { return autoApplySample_; }
+
+    // Called by Scene::updateNode().
+    virtual void updateAnimation(float dt);
+
+    // Create a new node instance with independent controller state.
+    // If this node has an anim asset, clone inherits it and gets its own mesh clone.
+    VertexAnimMeshNode *cloneInstance(const std::string &newName = "") const;
 
     void setTagTracks(const std::vector<VertexTagTrack> &tracks) { tagTracks_ = tracks; }
     std::vector<VertexTagTrack> &tagTracks() { return tagTracks_; }
@@ -291,9 +315,90 @@ public:
     void updateTagSockets();
 
 private:
+    Mesh                        *ownedMesh_ = nullptr; // optional per-instance mesh
+    const VertexAnimAsset       *animAsset_ = nullptr; // non-owning shared asset
+    bool                         autoApplySample_ = true;
     VertexTagBinder              tagBinder_;
     std::vector<VertexTagSocket> tagSockets_;
     std::vector<VertexTagTrack>  tagTracks_;
+};
+
+// ─── Md2Node ────────────────────────────────────────────────────────────────
+// Dedicated MD2 instance node:
+// - owns per-instance controller state
+// - can clone shared template mesh via setMd2Asset()
+class Md2Node : public VertexAnimMeshNode
+{
+public:
+    Md2Node();
+
+    Md2Node *asMd2Node() override { return this; }
+
+    // Preferred API: loader provides mesh + runtime, node owns animation behavior.
+    bool setMd2Data(Mesh *templateMesh,
+                    const Md2RuntimeData &runtime,
+                    bool cloneTemplateMesh = true,
+                    const std::string &defaultClip = "Stand");
+
+    bool setMd2Asset(const VertexAnimAsset *asset,
+                     bool cloneTemplateMesh = true,
+                     const std::string &defaultClip = "Stand");
+    bool loadMd2(const std::string &modelPath,
+                 const std::string &texturePath,
+                 Shader *shader = nullptr,
+                 bool cloneTemplateMesh = true,
+                 const std::string &defaultClip = "Stand");
+    bool playMd2(const std::string &clipName, float blendTime = 0.12f);
+
+private:
+    VertexAnimAsset md2Asset_;
+    Md2RuntimeData  md2Runtime_;
+    static void applyMd2Sample(Mesh *mesh,
+                               const VertexAnimSample &sample,
+                               const void *userData);
+};
+
+// ─── Md3Node ────────────────────────────────────────────────────────────────
+// Dedicated MD3 instance node:
+// - same per-instance animator behavior as Md2Node
+// - helper attach API for tag-based hierarchy (weapon/head/etc.)
+class Md3Node : public VertexAnimMeshNode
+{
+public:
+    Md3Node();
+
+    Md3Node *asMd3Node() override { return this; }
+
+    bool setMd3Data(Mesh *templateMesh,
+                    const Md3PartRuntime &runtime,
+                    const std::vector<VertexAnimClip> &clips = {},
+                    bool cloneTemplateMesh = true,
+                    const std::string &defaultClip = "");
+
+    bool setMd3Asset(const VertexAnimAsset *asset,
+                     bool cloneTemplateMesh = true,
+                     const std::string &defaultClip = "");
+    bool loadMd3Part(const std::string &modelPath,
+                     const std::string &skinPath = "",
+                     const std::string &partId = "",
+                     const std::string &animationCfgPath = "",
+                     const std::string &clipPrefix = "",
+                     bool includeBoth = false,
+                     Shader *shader = nullptr,
+                     bool cloneTemplateMesh = true,
+                     const std::string &defaultClip = "");
+    bool playMd3(const std::string &clipName, float blendTime = 0.12f);
+
+    VertexTagSocket *attachTagNode(const std::string &tagName,
+                                   Node3D *child,
+                                   const glm::mat4 &localOffset = glm::mat4(1.f));
+
+private:
+    VertexAnimAsset md3Asset_;
+    Md3PartRuntime  md3Runtime_;
+    static void applyMd3Sample(Mesh *mesh,
+                               const VertexAnimSample &sample,
+                               const void *userData);
 };
 
 // ─── Lights ──────────────────────────────────────────────────────────────────

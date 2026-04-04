@@ -55,7 +55,6 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL could not initialize! SDL_Error: %s", SDL_GetError());
         return false;
     }
-    IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG);
     m_current = 0;
     m_previous = 0;
     m_update = 0;
@@ -377,7 +376,6 @@ void Device::Close()
 
     m_window = NULL;
     SDL_Log("[DEVICE] closed!");
-    IMG_Quit();
     SDL_Quit();
 }
 

@@ -1,5 +1,6 @@
 #include "Mesh.hpp"
 #include "Material.hpp"
+#include <algorithm>
 #include <glm/gtc/matrix_inverse.hpp>
 
 // ============================================================
@@ -501,6 +502,14 @@ void Mesh::upload()
     compute_aabb();
     compute_surface_aabbs();
     buffer.upload();
+}
+
+void Mesh::remove_surfaces_by_name(const std::string &surface_name)
+{
+    surfaces.erase(
+        std::remove_if(surfaces.begin(), surfaces.end(),
+                       [&](const Surface &s) { return s.name == surface_name; }),
+        surfaces.end());
 }
 
 // ============================================================

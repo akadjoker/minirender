@@ -4,7 +4,6 @@
 #include "Camera.hpp"
 #include "Node.hpp"
 #include <glm/glm.hpp>
-#include <array>
 
 // ============================================================
 //  CascadeShadowMap — 4-cascade directional shadow maps
@@ -36,10 +35,10 @@ public:
     float     farPlane       = 300.f;  // only shadow this far
 
     // ── Public state (read-only after update()) ───────────────
-    std::array<float,     CSM_NUM_CASCADES> cascadeSplits      = {};
-    std::array<glm::mat4, CSM_NUM_CASCADES> lightSpaceMatrices = {};
+    float     cascadeSplits[CSM_NUM_CASCADES]      = {};
+    glm::mat4 lightSpaceMatrices[CSM_NUM_CASCADES] = {};
     // World-space size of one shadow-map texel per cascade (used for adaptive bias)
-    std::array<float,     CSM_NUM_CASCADES> texelSizeWorld     = {};
+    float     texelSizeWorld[CSM_NUM_CASCADES]     = {};
 
     // ── Setup ─────────────────────────────────────────────────
     bool initialize(unsigned int width = 2048, unsigned int height = 2048);
@@ -83,8 +82,8 @@ private:
     unsigned int width_  = 2048;
     unsigned int height_ = 2048;
 
-    std::array<GLuint, CSM_NUM_CASCADES> fbos_     = {};
-    std::array<GLuint, CSM_NUM_CASCADES> textures_ = {};
+    GLuint fbos_[CSM_NUM_CASCADES]     = {};
+    GLuint textures_[CSM_NUM_CASCADES] = {};
 
     glm::mat4 computeLightSpaceMatrix(const Camera& cam,
                                        float nearSplit, float farSplit,

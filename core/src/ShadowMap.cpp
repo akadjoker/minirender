@@ -53,9 +53,12 @@ bool ShadowMap::initialize(unsigned int w, unsigned int h)
 
 void ShadowMap::bind()
 {
+    auto &rs = RenderState::instance();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    RenderState::instance().setViewport(0, 0, (GLsizei)width, (GLsizei)height);
-    glClear(GL_DEPTH_BUFFER_BIT);
+    rs.setViewport(0, 0, (GLsizei)width, (GLsizei)height);
+    rs.setScissorTest(false);
+    rs.setDepthWrite(true);
+    rs.clear(false, true);
 }
 
 void ShadowMap::unbind()

@@ -5,7 +5,6 @@
  
 #include "RenderTarget.hpp"
 #include "WaterNode.hpp"
-#include <array>
 #include <vector>
 
 class RenderBatch;
@@ -38,6 +37,8 @@ public:
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
     VertexAnimMeshNode   *createVertexAnimMeshNode(const std::string &name = "", Mesh *mesh = nullptr);
+    Md2Node              *createMd2Node         (const std::string &name = "");
+    Md3Node              *createMd3Node         (const std::string &name = "");
     class ManualMeshNode *createManualMeshNode  (const std::string &name = "");
     WaterNode3D          *createWaterNode       (const std::string &name = "");
 
@@ -124,7 +125,7 @@ private:
     RenderQueue              rtQueue_;     // persistent — reused by renderToTarget()
     FrameContext             frameCtx_;
     RenderStats              stats_;
-    std::array<glm::vec4, 4> clipPlanes_     = {};
+    glm::vec4                clipPlanes_[4]   = {};
     int                      clipPlaneCount_  = 0;
    
 

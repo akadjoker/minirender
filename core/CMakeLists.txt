@@ -9,7 +9,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -mtune=native")
 
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
-find_package(SDL2_image REQUIRED)
 find_package(glm REQUIRED)
 
 
@@ -29,7 +28,10 @@ add_compile_options(
 
 file(GLOB SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
-add_library(core SHARED  ${SOURCES})
+add_library(core SHARED
+    ${SOURCES}
+    ${CMAKE_SOURCE_DIR}/vendor/stb/stb_impl.cpp
+)
 
 if (WIN32)
     target_include_directories(core PUBLIC "${LIBS_DIR}/include" include src)
@@ -41,15 +43,14 @@ endif()
 
 target_include_directories(core PRIVATE 
     src
+    ${CMAKE_SOURCE_DIR}/vendor/stb
     ${SDL2_INCLUDE_DIRS}
-    ${SDL2_IMAGE_INCLUDE_DIRS}
 )
 
 target_link_libraries(core 
     imgui
     OpenGL::GL
     ${SDL2_LIBRARIES}
-    SDL2_image
     glm::glm
 )
 target_include_directories(core PUBLIC include src)

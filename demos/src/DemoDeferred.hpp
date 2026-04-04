@@ -1,5 +1,6 @@
 #pragma once
 #include "DemoBase.hpp"
+#include "PipelinePresets.hpp"
 #include "RenderPipeline.hpp"
 #include "RenderState.hpp"
 #include <glm/glm.hpp>
@@ -75,12 +76,13 @@ public:
         }
 
         // ── Technique ────────────────────────────────────────
-        tech = new DeferredTechnique();
+        PipelinePresets::IndoorHybridDesc pipelineDesc;
+        pipelineDesc.gbufferShader  = gbufferShader;
+        pipelineDesc.lightingShader = lightingShader;
+        tech = PipelinePresets::createIndoorHybrid(scene, pipelineDesc).mainTechnique;
+        if (!tech)
+            return false;
 
-        tech->geometryPass()->shader  = gbufferShader;
-        tech->lightingPass()->shader  = lightingShader;
-
-        scene.addTechnique(tech);
         return true;
     }
 
@@ -110,7 +112,6 @@ public:
 
     void release() override
     {
-        delete tech;
         tech = nullptr;
         DemoBase::release();
     }

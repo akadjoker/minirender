@@ -6,7 +6,6 @@
 #include <SDL2/SDL.h>
 #include <cmath>
 #include <algorithm>
-#include <array>
 
 // ============================================================
 //  Helpers
@@ -15,20 +14,19 @@ namespace
 {
 
     /// Return the 8 corners of the camera frustum sub-view between near and far.
-    std::array<glm::vec4, 8> frustumCornersWorldSpace(const glm::mat4 &proj,
-                                                      const glm::mat4 &view)
+    void frustumCornersWorldSpace(const glm::mat4 &proj,
+                                  const glm::mat4 &view,
+                                  glm::vec4 outCorners[8])
     {
         glm::mat4 inv = glm::inverse(proj * view);
-        std::array<glm::vec4, 8> corners;
         int i = 0;
         for (int x = 0; x < 2; ++x)
             for (int y = 0; y < 2; ++y)
                 for (int z = 0; z < 2; ++z)
                 {
                     glm::vec4 pt = inv * glm::vec4(x * 2.f - 1.f, y * 2.f - 1.f, z * 2.f - 1.f, 1.f);
-                    corners[i++] = pt / pt.w;
+                    outCorners[i++] = pt / pt.w;
                 }
-        return corners;
     }
 
 } // namespace
@@ -107,20 +105,27 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
     glm::mat4 sliceProj = glm::perspective(fovRad, cam.aspect(), splitNear, splitFar);
     glm::mat4 view = cam.getView();
 
-    auto corners = frustumCornersWorldSpace(sliceProj, view);
+    glm::vec4 corners[8];
+    frustumCornersWorldSpace(sliceProj, view, corners);
 
     // ── Sphere-fit the sub-frustum ────────────────────────────────────────
     // Use the average of the 8 corners as centre, then measure the max radius.
     // The ortho bounds are kept at ±radius so the shadow map footprint is
     // constant regardless of camera rotation (AABB changes; sphere does not).
     glm::vec3 centre(0.f);
-    for (const auto &c : corners)
+    for (int i = 0; i < 8; ++i)
+    {
+        const glm::vec4 &c = corners[i];
         centre += glm::vec3(c);
-    centre /= (float)corners.size();
+    }
+    centre /= 8.0f;
 
     float radius = 0.f;
-    for (const auto &c : corners)
+    for (int i = 0; i < 8; ++i)
+    {
+        const glm::vec4 &c = corners[i];
         radius = std::max(radius, glm::length(glm::vec3(c) - centre));
+    }
 
     // ── Texel-snap the centroid in light space ────────────────────────────
     // Snapping world (0,0,0) only stabilises light rotation; the centroid moves
@@ -161,8 +166,9 @@ glm::mat4 CascadeShadowMap::computeLightSpaceMatrix(const Camera &cam,
 
     // Z: use actual AABB of sub-frustum corners in light space (tight depth range)
     float minZ = 1e30f, maxZ = -1e30f;
-    for (const auto &c : corners)
+    for (int i = 0; i < 8; ++i)
     {
+        const glm::vec4 &c = corners[i];
         glm::vec4 ls = lightView * c;
         minZ = std::min(minZ, ls.z);
         maxZ = std::max(maxZ, ls.z);
@@ -209,10 +215,12 @@ void CascadeShadowMap::update(const Camera &cam)
 // ============================================================
 void CascadeShadowMap::beginCascade(int c)
 {
-    glDepthMask(GL_TRUE);   // ensure glClear writes depth even if last pass disabled it
+    auto &rs = RenderState::instance();
     glBindFramebuffer(GL_FRAMEBUFFER, fbos_[c]);
-    RenderState::instance().setViewport(0, 0, (GLsizei)width_, (GLsizei)height_);
-    glClear(GL_DEPTH_BUFFER_BIT);
+    rs.setViewport(0, 0, (GLsizei)width_, (GLsizei)height_);
+    rs.setScissorTest(false);
+    rs.setDepthWrite(true);
+    rs.clear(false, true);
 }
 
 void CascadeShadowMap::endCascade()

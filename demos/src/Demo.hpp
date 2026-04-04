@@ -16,6 +16,7 @@ public:
 
  
     virtual void onResize(int w, int h) {}
+    virtual void debugDraw(class RenderBatch *batch) {}
 
     virtual Scene& getScene() { static Scene scene; return scene; }
 

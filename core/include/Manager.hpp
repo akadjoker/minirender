@@ -9,6 +9,7 @@
 
 
 class Pixmap;
+class Animation;
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  Base — raw pointer cache, manager owns the memory
@@ -202,6 +203,11 @@ public:
     static MeshManager &instance();
 
     Mesh *create(const std::string &name);
+    AnimatedMesh *createAnimated(const std::string &name);
+    AnimatedMesh *getAnimated(const std::string &name) const;
+    bool hasAnimated(const std::string &name) const;
+    void unloadAnimated(const std::string &name);
+    void unloadAll();
 
     // Auto-detects format from extension (.obj / .gltf / .glb)
     // texture_dir: base path for textures; defaults to same folder as mesh file
@@ -211,10 +217,30 @@ public:
     // Explicit loaders (static geometry only)
     Mesh *load_obj (const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
+    Mesh *load_3ds (const std::string &name, const std::string &path,
+                    const std::string &texture_dir = "");
     Mesh *load_gltf(const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
     Mesh *load_h3d (const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
+
+    // Extract all surfaces whose Surface::name matches surface_name into a
+    // new, independently-owned Mesh registered under new_name.
+    // The source mesh is unchanged; call src->remove_surfaces_by_name() afterwards
+    // if you want to hide those triangles from the original mesh.
+    // Returns nullptr if no matching surfaces are found.
+    Mesh *extract_submesh(const std::string &new_name, Mesh *src,
+                          const std::string &surface_name);
+
+    Mesh *extract_submesh(const std::string &new_name, Mesh *src,
+                          int surfceIndex);
+
+
+
+    AnimatedMesh *load_gltf_animated(const std::string &name,
+                                     const std::string &path,
+                                     const std::string &texture_dir = "",
+                                     std::vector<Animation *> *outAnimations = nullptr);
 
     Mesh *create_cube(const std::string &name, float size = 1.0f);
     Mesh *create_wire_cube(const std::string &name, float size = 1.0f);
@@ -231,4 +257,5 @@ public:
 
 private:
     MeshManager() = default;
+    std::unordered_map<std::string, AnimatedMesh *> animatedCache_;
 };

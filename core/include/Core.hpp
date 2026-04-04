@@ -14,6 +14,7 @@
 #include "Batch.hpp"
 #include "Camera.hpp"
 #include "Manager.hpp"
+#include "PipelinePresets.hpp"
 #include "RenderPipeline.hpp"
 #include "RenderState.hpp"
  

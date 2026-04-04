@@ -7,6 +7,7 @@
 #include <vector>
 
 class Node3D;
+class Mesh;
 
 struct VertexAnimClip
 {
@@ -47,6 +48,22 @@ struct VertexAnimSample
 
     bool hasPrevious = false;
     float clipBlend = 0.f; // 0=current only, 1=previous only
+};
+
+// Shared immutable animation asset for vertex-animated meshes.
+// Data is reusable across many nodes; each node keeps its own controller/state.
+struct VertexAnimAsset
+{
+    typedef void (*ApplySampleFn)(Mesh *mesh, const VertexAnimSample &sample, const void *userData);
+
+    Mesh *templateMesh = nullptr; // non-owning
+    std::vector<VertexAnimClip> clips;
+    std::vector<VertexTagTrack> tags;
+    ApplySampleFn applySample = nullptr;
+    const void *applyUserData = nullptr;
+
+    bool valid() const;
+    void apply(Mesh *mesh, const VertexAnimSample &sample) const;
 };
 
 class VertexAnimController

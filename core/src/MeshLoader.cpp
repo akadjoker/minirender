@@ -1,7 +1,52 @@
 #include "MeshLoader.hpp"
 #include "Manager.hpp"
+#include "Utils.hpp"
 #include <glm/gtc/type_ptr.hpp>
 #include <cstring>
+
+namespace
+{
+bool isBufferSubChunk(uint32_t id)
+{
+    return id == CHUNK_VRTS || id == CHUNK_IDXS || id == CHUNK_SKIN || id == CHUNK_SURF;
+}
+
+std::string serializedTextureRef(const Texture *tex)
+{
+    if (!tex)
+        return std::string();
+    if (!tex->sourcePath.empty())
+        return tex->sourcePath;
+    return tex->name;
+}
+
+std::string resolveSerializedTexturePath(const std::string &textureRef,
+                                        const std::string &textureDir)
+{
+    if (textureRef.empty())
+        return std::string();
+
+    if (PathIsAbsolute(textureRef) && FileExists(textureRef))
+        return textureRef;
+    if (FileExists(textureRef))
+        return textureRef;
+
+    if (!textureDir.empty())
+    {
+        std::string resolved = ResolveTexturePath(textureDir, textureRef);
+        if (!resolved.empty())
+            return resolved;
+
+        resolved = ResolveTexturePath(textureDir, PathFilename(textureRef));
+        if (!resolved.empty())
+            return resolved;
+
+        return PathJoin(textureDir, PathFilename(textureRef));
+    }
+
+    return textureRef;
+}
+}
 
 
 // ============================================================
@@ -37,7 +82,7 @@ void MeshWriter::writeMaterials(const std::vector<Material *> &mats)
         s_->writeF32(col.r); s_->writeF32(col.g); s_->writeF32(col.b);
 
         Texture *tex = mat ? mat->getTexture("u_albedo") : nullptr;
-        s_->writeStr(tex ? tex->name : "");
+        s_->writeStr(serializedTextureRef(tex));
     }
 
     endChunk(pos);
@@ -53,6 +98,8 @@ void MeshWriter::writeSkeleton(const std::vector<Bone> &bones)
     {
         s_->writeStr(b.name);
         s_->writeI32(b.parent);
+        const float *local = glm::value_ptr(b.localPose);
+        for (int i = 0; i < 16; i++) s_->writeF32(local[i]);
         const float *m = glm::value_ptr(b.offset);
         for (int i = 0; i < 16; i++) s_->writeF32(m[i]);
     }
@@ -238,6 +285,7 @@ void MeshReader::skipChunk(const ChunkHeader &h)
 void MeshReader::readMaterials(const ChunkHeader &h,
                                 std::vector<Material *> &mats)
 {
+    Sint64 end = s_->tell() + h.length;
     uint32_t count = s_->readU32();
     auto &matMgr = MaterialManager::instance();
     auto &texMgr = TextureManager::instance();
@@ -249,57 +297,104 @@ void MeshReader::readMaterials(const ChunkHeader &h,
         // diffuse
         glm::vec3 col;
         col.r = s_->readF32(); col.g = s_->readF32(); col.b = s_->readF32();
+        std::string textureRef;
 
-        // specular + shininess (original format — not used by current shaders)
-        s_->readF32(); s_->readF32(); s_->readF32(); // specular
-        s_->readF32();                               // shininess
+        if (version_ >= 101)
+        {
+            textureRef = s_->readStr();
+        }
+        else
+        {
+            // Legacy exporter layout:
+            // diffuse rgb, specular rgb, shininess, textureCount, texture paths...
+            s_->readF32(); s_->readF32(); s_->readF32();
+            s_->readF32();
 
-        uint8_t numLayers = s_->readU8();
+            const uint8_t textureCount = s_->readU8();
+            for (uint8_t texIdx = 0; texIdx < textureCount; ++texIdx)
+            {
+                std::string candidate = s_->readStr();
+                if (texIdx == 0)
+                    textureRef = candidate;
+            }
+        }
 
         std::string key = name.empty() ? ("__mat_" + std::to_string(i)) : name;
         Material *mat = matMgr.has(key) ? matMgr.get(key) : matMgr.create(key);
         mat->setVec3("u_color", col);
 
-        for (uint8_t j = 0; j < numLayers; j++)
+        if (!textureRef.empty())
         {
-            std::string texName = s_->readStr();
-            if (texName.empty()) continue;
+            const std::string resolvedPath = resolveSerializedTexturePath(textureRef, textureDir);
+            Texture *tex = nullptr;
 
-            // Only assign the first layer as u_albedo
-            if (j == 0)
+            if (!resolvedPath.empty() && FileExists(resolvedPath))
             {
-                std::string texPath = texName;
-                if (!textureDir.empty())
-                    texPath = textureDir + "/" + texName;
-                Texture *tex = texMgr.load(texName, texPath);
-                if (tex) mat->setTexture("u_albedo", tex);
+                tex = texMgr.load(resolvedPath, resolvedPath);
+            }
+            else
+            {
+                tex = texMgr.get(textureRef);
+            }
+
+            if (tex)
+            {
+                mat->setTexture("u_albedo", tex);
+            }
+            else
+            {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "[MeshReader] Texture not found for material '%s': %s",
+                            key.c_str(),
+                            textureRef.c_str());
             }
         }
 
         mats.push_back(mat);
     }
+
+    if (s_->tell() < end)
+        s_->seek(end);
 }
 
 void MeshReader::readSkeleton(const ChunkHeader &h, std::vector<Bone> &bones)
 {
+    Sint64 end = s_->tell() + h.length;
     uint32_t count = s_->readU32();
     bones.resize(count);
+
+    const Sint64 bytesRemaining = end - s_->tell();
+    const Sint64 legacyStride = 4 + 64;
+    const bool hasLocalPoseInChunk =
+        count > 0 &&
+        bytesRemaining >= count * legacyStride &&
+        (bytesRemaining - (count * legacyStride)) >= (count * 64);
 
     for (uint32_t i = 0; i < count; i++)
     {
         bones[i].name   = s_->readStr();
         bones[i].parent = s_->readI32();
 
-        // localPose — rest pose in parent-local space
-        float lm[16];
-        for (int j = 0; j < 16; j++) lm[j] = s_->readF32();
-        bones[i].localPose = glm::make_mat4(lm);
-
-        // inverseBindPose = what we store as offset
         float m[16];
-        for (int j = 0; j < 16; j++) m[j] = s_->readF32();
-        bones[i].offset = glm::make_mat4(m);
+        if (version_ >= 101 || hasLocalPoseInChunk)
+        {
+            float lm[16];
+            for (int j = 0; j < 16; j++) lm[j] = s_->readF32();
+            bones[i].localPose = glm::make_mat4(lm);
+
+            for (int j = 0; j < 16; j++) m[j] = s_->readF32();
+            bones[i].offset = glm::make_mat4(m);
+        }
+        else
+        {
+            for (int j = 0; j < 16; j++) m[j] = s_->readF32();
+            bones[i].offset = glm::make_mat4(m);
+            bones[i].localPose = glm::mat4(1.f);
+        }
     }
+
+    if (s_->tell() < end)
+        s_->seek(end);
 }
 
 void MeshReader::readSurfaces(const ChunkHeader &h, std::vector<Surface> &surfs)
@@ -318,9 +413,23 @@ void MeshReader::readSurfaces(const ChunkHeader &h, std::vector<Surface> &surfs)
 void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
 {
     Sint64   end            = s_->tell() + h.length;
-    uint32_t materialIndex  = s_->readU32();  // original: materialIndex before flags
-    uint32_t flags          = s_->readU32();
+    uint32_t firstWord      = s_->readU32();
+    uint32_t secondWord     = (s_->tell() + 4 <= end) ? s_->readU32() : 0;
+    uint32_t materialIndex  = 0;
+    uint32_t flags          = firstWord;
     bool     hasTangents    = (flags & BUFFER_FLAG_TANGENTS) != 0;
+    bool     hasSurfaceChunk = false;
+
+    if (isBufferSubChunk(secondWord))
+    {
+        s_->seek(s_->tell() - 4);
+    }
+    else
+    {
+        materialIndex = firstWord;
+        flags = secondWord;
+        hasTangents = (flags & BUFFER_FLAG_TANGENTS) != 0;
+    }
 
     uint32_t vertexBase  = (uint32_t)mesh->buffer.vertices.size();
     uint32_t indexStart  = (uint32_t)mesh->buffer.indices.size();
@@ -356,13 +465,22 @@ void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
             for (uint32_t i = 0; i < count; i++)
                 mesh->buffer.indices.push_back(s_->readU32() + vertexBase);
         }
+        else if (sub.id == CHUNK_SURF)
+        {
+            hasSurfaceChunk = true;
+            const size_t baseSurfaceCount = mesh->surfaces.size();
+            readSurfaces(sub, mesh->surfaces);
+            for (size_t i = baseSurfaceCount; i < mesh->surfaces.size(); ++i)
+            {
+                mesh->surfaces[i].index_start += indexStart;
+            }
+        }
         else skipChunk(sub);
 
         if (s_->tell() < subEnd) s_->seek(subEnd);
     }
 
-    // Each BUFF in the original format = one surface
-    if (indexCount > 0)
+    if (!hasSurfaceChunk && indexCount > 0)
         mesh->add_surface(indexStart, indexCount, (int)materialIndex);
 }
 
@@ -370,10 +488,25 @@ void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
 void MeshReader::readBuffer(const ChunkHeader &h, AnimatedMesh *mesh)
 {
     Sint64   end           = s_->tell() + h.length;
-    uint32_t materialIndex = s_->readU32();  // original: materialIndex before flags
-    uint32_t flags         = s_->readU32();
+    uint32_t firstWord     = s_->readU32();
+    uint32_t secondWord    = (s_->tell() + 4 <= end) ? s_->readU32() : 0;
+    uint32_t materialIndex = 0;
+    uint32_t flags         = firstWord;
     bool     skinned       = (flags & BUFFER_FLAG_SKINNED)  != 0;
     bool     hasTangents   = (flags & BUFFER_FLAG_TANGENTS) != 0;
+    bool     hasSurfaceChunk = false;
+
+    if (isBufferSubChunk(secondWord))
+    {
+        s_->seek(s_->tell() - 4);
+    }
+    else
+    {
+        materialIndex = firstWord;
+        flags = secondWord;
+        skinned = (flags & BUFFER_FLAG_SKINNED) != 0;
+        hasTangents = (flags & BUFFER_FLAG_TANGENTS) != 0;
+    }
 
     uint32_t vertexBase = (uint32_t)mesh->buffer.vertices.size();
     uint32_t indexStart = (uint32_t)mesh->buffer.indices.size();
@@ -397,7 +530,7 @@ void MeshReader::readBuffer(const ChunkHeader &h, AnimatedMesh *mesh)
                     v.tangent.x = s_->readF32(); v.tangent.y = s_->readF32();
                     v.tangent.z = s_->readF32(); v.tangent.w = s_->readF32();
                 }
-                v.uv.x = s_->readF32(); v.uv.y = 1.0f - s_->readF32();
+                v.uv.x = s_->readF32(); v.uv.y = s_->readF32();
                 mesh->buffer.vertices.push_back(v);
             }
         }
@@ -423,12 +556,22 @@ void MeshReader::readBuffer(const ChunkHeader &h, AnimatedMesh *mesh)
                 v.boneWeights.z = s_->readF32(); v.boneWeights.w = s_->readF32();
             }
         }
+        else if (sub.id == CHUNK_SURF)
+        {
+            hasSurfaceChunk = true;
+            const size_t baseSurfaceCount = mesh->surfaces.size();
+            readSurfaces(sub, mesh->surfaces);
+            for (size_t i = baseSurfaceCount; i < mesh->surfaces.size(); ++i)
+            {
+                mesh->surfaces[i].index_start += indexStart;
+            }
+        }
         else skipChunk(sub);
 
         if (s_->tell() < subEnd) s_->seek(subEnd);
     }
 
-    if (indexCount > 0)
+    if (!hasSurfaceChunk && indexCount > 0)
         mesh->add_surface(indexStart, indexCount, (int)materialIndex);
 }
 
@@ -447,10 +590,10 @@ bool MeshReader::load(const std::string &path, Mesh *mesh)
                      "[MeshReader] Invalid magic: %s", path.c_str());
         return false;
     }
-    uint32_t ver = s_->readU32();
-    if (ver > MESH_VERSION)
+    version_ = s_->readU32();
+    if (version_ > MESH_VERSION)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "[MeshReader] Newer version %u in: %s", ver, path.c_str());
+                    "[MeshReader] Newer version %u in: %s", version_, path.c_str());
 
     Sint64 fileSize = s_->size();
     while (s_->tell() + 8 <= fileSize)
@@ -488,7 +631,7 @@ bool MeshReader::load(const std::string &path, AnimatedMesh *mesh)
                      "[MeshReader] Invalid magic: %s", path.c_str());
         return false;
     }
-    s_->readU32(); // version
+    version_ = s_->readU32();
 
     Sint64 fileSize = s_->size();
     while (s_->tell() + 8 <= fileSize)

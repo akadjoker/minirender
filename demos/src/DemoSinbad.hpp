@@ -45,6 +45,8 @@ public:
         skinnedShader->setFloat("u_shadowBias", 0.005f);
         skinnedShader->setInt  ("u_shadowMap",  1);
 
+        textures().setFlipVertical(true); // .tga tem origem inferior, mas nosso shader espera superior
+
         materials().setDefaults(skinnedShader, textures().getWhite());
 
         // ── Carregar sinbad.h3d ───────────────────────────────

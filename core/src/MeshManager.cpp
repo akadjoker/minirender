@@ -83,6 +83,10 @@ Mesh *MeshManager::load(const std::string &name, const std::string &path,
         return load_gltf(name, path, texture_dir);
     if (ext == "h3d" || ext == "mesh")
         return load_h3d(name, path, texture_dir);
+    if (ext == "b3d")
+        return load_b3d(name, path, texture_dir);
+    if (ext == "bsp")
+        return load_bsp(name, path, texture_dir);
 
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[MeshManager] Unknown mesh format '%s': %s", ext.c_str(), path.c_str());

@@ -6,19 +6,6 @@
 
 namespace
 {
-bool HasExtension(const char *fileName, const char *extension)
-{
-    if (!fileName || !extension)
-        return false;
-
-    const std::string path(fileName);
-    const std::string suffix(extension);
-    if (path.length() < suffix.length())
-        return false;
-
-    return path.compare(path.length() - suffix.length(), suffix.length(), suffix) == 0;
-}
-
 int SelectPixmapComponents(int sourceComponents)
 {
     switch (sourceComponents)

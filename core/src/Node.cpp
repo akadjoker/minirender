@@ -1,6 +1,8 @@
 #include "Node.hpp"
 #include "Animator.hpp"
+#include "Camera.hpp"
 #include "Scene.hpp"
+#include <glm/gtx/matrix_decompose.hpp>
 #include <algorithm>
 
 
@@ -100,13 +102,56 @@ Material *MeshNode::getMaterial(int slot) const
     return nullptr;
 }
 
+namespace
+{
+void applyNodeMaterial(Material *material, Shader *shader)
+{
+    if (material)
+    {
+        material->applyStates();
+        material->applyUniformsTo(shader);
+        material->bindTexturesTo(shader);
+    }
+    else
+    {
+        Material::applyDefaultStates();
+    }
+}
+}
+
 RenderableNode::RenderableNode() : Node3D()
 {
+}
+
+void RenderableNode::render(Shader *shader, Camera *camera)
+{
+    (void)shader;
+    (void)camera;
 }
 
 MeshNode::MeshNode():RenderableNode(), mesh(nullptr)
 {
     type = NodeType::MeshNode;
+}
+
+void MeshNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !mesh)
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    const BoundingBox worldBounds = mesh->aabb.transformed(model);
+    if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
+        return;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    for (const Surface &surface : mesh->surfaces)
+    {
+        applyNodeMaterial(getMaterial(surface.material_index), shader);
+        mesh->drawRange(surface.index_start, surface.index_count);
+    }
 }
 
 
@@ -125,6 +170,27 @@ AnimatedMeshNode::AnimatedMeshNode() : RenderableNode()
 AnimatedMeshNode::~AnimatedMeshNode()
 {
     delete animator;
+}
+
+void AnimatedMeshNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !mesh)
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    const BoundingBox worldBounds = mesh->aabb.transformed(model);
+    if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
+        return;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+    mesh->applyBoneMatrices(shader);
+
+    for (const Surface &surface : mesh->surfaces)
+    {
+        applyNodeMaterial(getMaterial(surface.material_index), shader);
+        mesh->drawRange(surface.index_start, surface.index_count);
+    }
 }
 
  
@@ -171,10 +237,29 @@ VertexAnimatedMeshNode::~VertexAnimatedMeshNode()
    
 }
 
+void VertexAnimatedMeshNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !mesh)
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    const BoundingBox worldBounds = mesh->aabb.transformed(model);
+    if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
+        return;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    for (const Surface &surface : mesh->surfaces)
+    {
+        applyNodeMaterial(getMaterial(surface.material_index), shader);
+        mesh->drawRange(surface.index_start, surface.index_count);
+    }
+}
+
 void VertexAnimatedMeshNode::setFrame(float value)
 {
-    frame = value; 
-    if (mesh) mesh->setFrame(frame); 
+    frameAnimator.setFrame(value);
 }
 
 void VertexAnimatedMeshNode::setMaterial(const std::string &name)
@@ -209,16 +294,66 @@ Material *VertexAnimatedMeshNode::getMaterial(int slot) const
     return nullptr;
 }
 
-TagSocket *VertexAnimatedMeshNode::addSocket(const std::string &boneName, Node3D *node, const glm::mat4 &localOffset)
-{
-   return nullptr;
-}
+ 
 
 void VertexAnimatedMeshNode::setMesh(VertexAnimatedMesh *mesh)
 {
     this->mesh = mesh;
+    frameAnimator.setMesh(mesh);
+    frameAnimator.clearAnimations();
     if (!mesh)
         return;
+
+    if (mesh->tagsPerFrame == 0)
+    {
+        const int frames = mesh->frameCount();
+        struct Md2AnimDef
+        {
+            const char *name;
+            int start;
+            int end;
+            float fps;
+            bool loop;
+        };
+
+        const Md2AnimDef md2Anims[] = {
+            {"idle", 0, 38, 9.0f, true},
+            {"run", 40, 45, 10.0f, true},
+            {"attack", 46, 53, 10.0f, false},
+            {"pain_a", 54, 57, 7.0f, false},
+            {"pain_b", 58, 61, 7.0f, false},
+            {"pain_c", 62, 65, 7.0f, false},
+            {"jump", 66, 71, 7.0f, false},
+            {"flip", 72, 83, 7.0f, false},
+            {"salute", 84, 94, 7.0f, false},
+            {"taunt", 95, 111, 10.0f, false},
+            {"wave", 112, 122, 7.0f, false},
+            {"point", 123, 134, 6.0f, false},
+            {"crouch_idle", 135, 153, 10.0f, true},
+            {"crouch_walk", 154, 159, 7.0f, true},
+            {"crouch_attack", 160, 168, 10.0f, false},
+            {"crouch_pain", 169, 172, 7.0f, false},
+            {"crouch_death", 173, 177, 5.0f, false},
+            {"death_fallback", 178, 183, 7.0f, false},
+            {"death_fallback_forward", 184, 189, 7.0f, false},
+            {"death_fallback_slow", 190, 197, 7.0f, false},
+            {"boom", 198, 198, 5.0f, false},
+        };
+
+        for (const Md2AnimDef &anim : md2Anims)
+        {
+            if (anim.start >= frames)
+                continue;
+            frameAnimator.addAnimation(
+                anim.name,
+                anim.start,
+                std::min(anim.end, frames - 1),
+                anim.fps,
+                anim.loop);
+        }
+
+        frameAnimator.play("idle");
+    }
 
     for (size_t i = 0; i < mesh->tagsPerFrame; i++)
     {
@@ -235,17 +370,43 @@ Node3D *VertexAnimatedMeshNode::getTag(int index)
 
 void VertexAnimatedMeshNode::update(float dt)
 {
-    if (!mesh || children.empty())
+    if (!mesh)
+        return;
+
+    frameAnimator.update(dt);
+
+    if (children.empty())
         return;
 
     for (int i = 0; i < mesh->tagsPerFrame; ++i)
     {
         glm::mat4 tagLocal;
-        if (!mesh->sampleTag(i, frame, tagLocal))
-            continue;
+        if (frameAnimator.blending())
+        {
+            const FrameAnimation *previous = frameAnimator.previousAnimation();
+            const FrameAnimation *current = frameAnimator.currentAnimation();
+            if (!previous || !current)
+                continue;
+            if (!mesh->sampleTagBlended(i,
+                                        frameAnimator.previousFrame(), previous->startFrame, previous->endFrame,
+                                        frameAnimator.currentFrame(), current->startFrame, current->endFrame,
+                                        frameAnimator.blendAlpha(), tagLocal))
+                continue;
+        }
+        else if (const FrameAnimation *animation = frameAnimator.currentAnimation())
+        {
+            if (!mesh->sampleTag(i, frameAnimator.currentFrame(),
+                                 animation->startFrame, animation->endFrame, tagLocal))
+                continue;
+        }
+        else
+        {
+            if (!mesh->sampleTag(i, frameAnimator.currentFrame(), tagLocal))
+                continue;
+        }
 
         static_cast<Node3D *>(children[i])->setLocal(tagLocal);
-    //    static_cast<Node3D *>(children[i])->update(dt);
+ 
     }
 }
 

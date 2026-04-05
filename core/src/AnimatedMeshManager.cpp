@@ -41,12 +41,20 @@ AnimatedMesh *AnimatedMeshManager::load(const std::string &name,
     std::string ext = path.substr(dot + 1);
     if (ext == "h3d" || ext == "mesh")
         return load_h3d(name, path, texture_dir);
+    if (ext == "b3d")
+        return load_b3d(name, path, texture_dir);
+    if (ext == "gltf" || ext == "glb")
+        return load_gltf(name, path, texture_dir);
+    if (ext == "iqm")
+        return load_imq(name, path, texture_dir);
 
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[AnimatedMeshManager] Unknown animated mesh format '%s': %s",
                 ext.c_str(), path.c_str());
     return nullptr;
 }
+
+
 
 AnimatedMesh *AnimatedMeshManager::load_h3d(const std::string &name,
                                             const std::string &path,

@@ -184,6 +184,10 @@ public:
     Mesh *load_h3d (const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
 
+    Mesh *load_b3d(const std::string &name, const std::string &path,
+                           const std::string &texture_dir = "");
+    Mesh *load_bsp(const std::string &name, const std::string &path,
+                   const std::string &texture_dir = "");
  
 
     Mesh *create_cube(const std::string &name, float size = 1.0f);
@@ -214,6 +218,12 @@ public:
     AnimatedMesh *create(const std::string &name);
     AnimatedMesh *load(const std::string &name, const std::string &path,
                        const std::string &texture_dir = "");
+
+
+    AnimatedMesh *load_b3d(const std::string &name, const std::string &path,
+                           const std::string &texture_dir = "");
+
+
     AnimatedMesh *load_h3d(const std::string &name, const std::string &path,
                            const std::string &texture_dir = "");
 

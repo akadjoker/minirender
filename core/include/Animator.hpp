@@ -21,7 +21,7 @@ public:
 
     // ── Carregar / adicionar animações ───────────────────────
     Animation *loadAnimation(const std::string &name, const std::string &path);
-    void       addAnimation (const std::string &name, Animation *anim);
+    void       addAnimation (const std::string &name, Animation *anim, bool takeOwnership = true);
     Animation *getAnimation (const std::string &name) const;
 
     // ── Playback ─────────────────────────────────────────────
@@ -76,7 +76,8 @@ public:
     void clearTransitionBlends();
 
 private:
-    std::unordered_map<std::string, Animation *> anims_; // owned
+    std::unordered_map<std::string, Animation *> anims_;
+    std::unordered_set<std::string> ownedAnimations_;
 
     Animation  *current_  = nullptr;
     Animation  *previous_ = nullptr;

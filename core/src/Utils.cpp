@@ -1,7 +1,10 @@
 
 #include "pch.h"
+#include "BinaryStream.hpp"
 #include "Utils.hpp"
 #include <algorithm>
+#include <cctype>
+#include <fstream>
 
 #define MAX_TEXT_BUFFER_LENGTH 512
 
@@ -166,19 +169,79 @@ std::string ResolveTexturePath(const std::string &baseDir, const std::string &sh
     if (FileExists(rel))
         return rel;
 
-    const std::string p = PathJoin(baseDir, rel);
-    if (FileExists(p))
-        return p;
+    const std::string joined = PathJoin(baseDir, rel);
+    if (FileExists(joined))
+        return joined;
+
+    const std::string fileOnly = PathFilename(rel);
+    if (!fileOnly.empty())
+    {
+        const std::string joinedFile = PathJoin(baseDir, fileOnly);
+        if (FileExists(joinedFile))
+            return joinedFile;
+    }
 
     const char *exts[] = {
         ".png", ".jpg", ".jpeg", ".bmp", ".tga", ".webp"};
 
     for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); ++i)
     {
-        const std::string pe = PathJoin(baseDir, rel + exts[i]);
-        if (FileExists(pe))
-            return pe;
+        const std::string joinedExt = PathJoin(baseDir, rel + exts[i]);
+        if (FileExists(joinedExt))
+            return joinedExt;
+
+        if (!fileOnly.empty())
+        {
+            const std::string joinedFileExt = PathJoin(baseDir, fileOnly + exts[i]);
+            if (FileExists(joinedFileExt))
+                return joinedFileExt;
+        }
     }
 
     return std::string();
+}
+
+std::string TrimString(std::string value)
+{
+    const auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(),
+                                            [&](char c) { return !is_space((unsigned char)c); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(),
+                             [&](char c) { return !is_space((unsigned char)c); }).base(),
+                value.end());
+    return value;
+}
+
+std::string LowerString(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return value;
+}
+
+std::string ReadFixedString(BinaryStream &s, size_t size)
+{
+    std::string out(size, '\0');
+    s.readRaw(out.data(), size);
+    const size_t end = out.find('\0');
+    if (end != std::string::npos)
+        out.resize(end);
+    return out;
+}
+
+bool ReadFileBytes(const std::string &path, std::vector<uint8_t> &out)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+
+    in.seekg(0, std::ios::end);
+    const std::streamoff sz = in.tellg();
+    if (sz <= 0)
+        return false;
+
+    out.resize(static_cast<size_t>(sz));
+    in.seekg(0, std::ios::beg);
+    in.read(reinterpret_cast<char *>(out.data()), sz);
+    return in.good() || in.eof();
 }

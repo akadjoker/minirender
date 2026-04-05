@@ -35,6 +35,8 @@ const std::vector<RenderableNode *> &Scene::renderables(RenderType type) const
     {
     case RenderType::Solid:       return solidNodes_;
     case RenderType::Transparent: return transparentNodes_;
+    case RenderType::Lightmap:    return lightmapNodes_;
+    case RenderType::Skinning:    return skinningNodes_;
     case RenderType::Terrain:     return terrainNodes_;
     case RenderType::Skybox:      return skyboxNodes_;
     case RenderType::Special:     return specialNodes_;
@@ -99,7 +101,22 @@ AnimatedMeshNode *Scene::createAnimatedMeshNode(const std::string &name, Animate
     auto *node = new AnimatedMeshNode();
     node->name = name;
     node->mesh = mesh;
-    node->animator = new Animator(mesh) ;
+    node->animator = new Animator(mesh);
+    if (mesh && !mesh->animations.empty())
+    {
+        AnimationLayer *layer = node->animator->addLayer();
+        std::string startAnim = mesh->animations.front() ? mesh->animations.front()->name : std::string();
+        for (Animation *animation : mesh->animations)
+        {
+            if (!animation)
+                continue;
+            layer->addAnimation(animation->name, animation, false);
+            if (animation->name == "idle")
+                startAnim = animation->name;
+        }
+        if (!startAnim.empty())
+            layer->play(startAnim);
+    }
     add(node);
     return node;
 }
@@ -168,10 +185,13 @@ void Scene::clear()
     renderables_.clear();
     solidNodes_.clear();
     transparentNodes_.clear();
+    lightmapNodes_.clear();
+    skinningNodes_.clear();
     terrainNodes_.clear();
     skyboxNodes_.clear();
     specialNodes_.clear();
     overlayNodes_.clear();
+    skinningNodes_.clear();
     resetPassState();
 }
 
@@ -261,66 +281,7 @@ void Scene::render(RenderType type)
     currentShader_->setMat4("u_projection", currentCamera_->projection);
 
     for (RenderableNode *renderable : renderables(type))
-    {
-        auto *meshNode = renderable->asMeshNode();
-        if (meshNode && meshNode->mesh)
-        {
-            const glm::mat4 model = meshNode->worldMatrix();
-            const BoundingBox worldBounds = meshNode->mesh->aabb.transformed(model);
-            if (worldBounds.is_valid() && !currentCamera_->frustum.contains(worldBounds))
-                continue;
-
-            currentShader_->setMat4("u_model", model);
-            currentShader_->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
-
-            for (const Surface &surface : meshNode->mesh->surfaces)
-            {
-                Material *material = meshNode->getMaterial(surface.material_index);
-                if (material)
-                {
-                    material->applyStates();
-                    material->applyUniformsTo(currentShader_);
-                    material->bindTexturesTo(currentShader_);
-                }
-                else
-                {
-                    Material::applyDefaultStates();
-                }
-
-                meshNode->mesh->drawRange(surface.index_start, surface.index_count);
-            }
-            continue;
-        }
-
-        auto *vertexAnimNode = renderable->asVertexAnimatedMeshNode();
-        if (!vertexAnimNode || !vertexAnimNode->mesh)
-            continue;
-
-        const glm::mat4 model = vertexAnimNode->worldMatrix();
-        const BoundingBox worldBounds = vertexAnimNode->mesh->aabb.transformed(model);
-        if (worldBounds.is_valid() && !currentCamera_->frustum.contains(worldBounds))
-            continue;
-
-        currentShader_->setMat4("u_model", model);
-        currentShader_->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
-
-        for (const Surface &surface : vertexAnimNode->mesh->surfaces)
-        {
-            Material *material = vertexAnimNode->getMaterial(surface.material_index);
-            if (material)
-            {
-                material->applyStates();
-                material->applyUniformsTo(currentShader_);
-                material->bindTexturesTo(currentShader_);
-            }
-            else
-            {
-                Material::applyDefaultStates();
-            }
-
-            vertexAnimNode->mesh->drawRange(surface.index_start, surface.index_count);
-        }
-    }
+        renderable->render(currentShader_, currentCamera_);
 }
 
 void Scene::removeCamera(Camera *cam)
@@ -359,10 +320,13 @@ void Scene::update(float dt)
     renderables_.clear();
     solidNodes_.clear();
     transparentNodes_.clear();
+    lightmapNodes_.clear();
+    skinningNodes_.clear();
     terrainNodes_.clear();
     skyboxNodes_.clear();
     specialNodes_.clear();
     overlayNodes_.clear();
+    skinningNodes_.clear();
 
     for (auto *root : roots_)
         collectRenderables(root);
@@ -380,6 +344,8 @@ void Scene::collectRenderables(Node *node)
         {
         case RenderType::Solid:       solidNodes_.push_back(renderable); break;
         case RenderType::Transparent: transparentNodes_.push_back(renderable); break;
+        case RenderType::Lightmap:    lightmapNodes_.push_back(renderable); break;
+        case RenderType::Skinning:    skinningNodes_.push_back(renderable); break;
         case RenderType::Terrain:     terrainNodes_.push_back(renderable); break;
         case RenderType::Skybox:      skyboxNodes_.push_back(renderable); break;
         case RenderType::Special:     specialNodes_.push_back(renderable); break;
@@ -403,29 +369,6 @@ void Scene::debug(RenderBatch *batch)
 void Scene::updateNode(Node *node, float dt)
 {
     if (!node || !node->visible) return;
-
-    if (auto *van = node->asVertexAnimatedMeshNode())
-    {
-        if (van->mesh && van->playing)
-        {
-            const int frames = van->mesh->frameCount();
-            if (frames > 0)
-            {
-                van->frame += dt * van->fps;
-                if (van->loop)
-                {
-                    while (van->frame >= (float)frames)
-                        van->frame -= (float)frames;
-                }
-                else if (van->frame > (float)(frames - 1))
-                {
-                    van->frame = (float)(frames - 1);
-                    van->playing = false;
-                }
-                van->mesh->setFrame(van->frame);
-            }
-        }
-    }
 
     node->update(dt);
 

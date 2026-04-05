@@ -1,5 +1,6 @@
 #include "Mesh.hpp"
 #include "Material.hpp"
+#include "Animation.hpp"
 #include <cmath>
 #include <cstring>
 #include <glm/gtc/matrix_inverse.hpp>
@@ -601,6 +602,19 @@ void Mesh::upload()
 // ============================================================
 //  AnimatedMesh
 // ============================================================
+AnimatedMesh::~AnimatedMesh()
+{
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Destroying AnimatedMesh '%s'\n", name.c_str());
+    releaseAnimations();
+}
+
+void AnimatedMesh::releaseAnimations()
+{
+    for (Animation *animation : animations)
+        delete animation;
+    animations.clear();
+}
+
 void AnimatedMesh::compute_tangents()
 {
     auto &verts = buffer.vertices;
@@ -708,6 +722,32 @@ int VertexAnimatedMesh::findTag(const char *name) const
     return -1;
 }
 
+namespace
+{
+bool resolve_frame_pair(float frame, int totalFrames, int clipStart, int clipEnd,
+                        int &frame0, int &frame1, float &t)
+{
+    if (totalFrames <= 0)
+        return false;
+
+    const int start = glm::clamp(std::min(clipStart, clipEnd), 0, totalFrames - 1);
+    const int end = glm::clamp(std::max(clipStart, clipEnd), 0, totalFrames - 1);
+    const float span = (float)(end - start + 1);
+    if (span <= 0.0f)
+        return false;
+
+    float local = std::fmod(frame - (float)start, span);
+    if (local < 0.0f)
+        local += span;
+
+    const float wrapped = (float)start + local;
+    frame0 = (int)wrapped;
+    frame1 = (frame0 >= end) ? start : (frame0 + 1);
+    t = wrapped - (float)frame0;
+    return true;
+}
+}
+
 void VertexAnimatedMesh::setFrame(float frame)
 {
     const int frames = frameCount();
@@ -735,6 +775,85 @@ void VertexAnimatedMesh::setFrame(float frame)
         const glm::vec3 p0 = framePositions[base0 + i];
         const glm::vec3 p1 = framePositions[base1 + i];
         const glm::vec3 p = glm::mix(p0, p1, t);
+        buffer.vertices[i].position = p;
+        if (i < buffer.positions.size())
+            buffer.positions[i] = p;
+    }
+
+    compute_normals();
+    compute_aabb();
+    compute_surface_aabbs();
+    buffer.update();
+}
+
+void VertexAnimatedMesh::setFrame(float frame, int startFrame, int endFrame)
+{
+    const int frames = frameCount();
+    const std::size_t verts = buffer.vertices.size();
+    if (frames <= 0 || verts == 0 || framePositions.size() != std::size_t(frames) * verts)
+        return;
+
+    currentFrame = frame;
+
+    int frame0 = 0;
+    int frame1 = 0;
+    float t = 0.0f;
+    if (!resolve_frame_pair(frame, frames, startFrame, endFrame, frame0, frame1, t))
+        return;
+
+    const std::size_t base0 = std::size_t(frame0) * verts;
+    const std::size_t base1 = std::size_t(frame1) * verts;
+
+    for (std::size_t i = 0; i < verts; ++i)
+    {
+        const glm::vec3 p0 = framePositions[base0 + i];
+        const glm::vec3 p1 = framePositions[base1 + i];
+        const glm::vec3 p = glm::mix(p0, p1, t);
+        buffer.vertices[i].position = p;
+        if (i < buffer.positions.size())
+            buffer.positions[i] = p;
+    }
+
+    compute_normals();
+    compute_aabb();
+    compute_surface_aabbs();
+    buffer.update();
+}
+
+void VertexAnimatedMesh::setFrameBlended(float fromFrame, int fromStartFrame, int fromEndFrame,
+                                         float toFrame, int toStartFrame, int toEndFrame, float alpha)
+{
+    const int frames = frameCount();
+    const std::size_t verts = buffer.vertices.size();
+    if (frames <= 0 || verts == 0 || framePositions.size() != std::size_t(frames) * verts)
+        return;
+
+    currentFrame = toFrame;
+
+    int from0 = 0;
+    int from1 = 0;
+    float fromT = 0.0f;
+    if (!resolve_frame_pair(fromFrame, frames, fromStartFrame, fromEndFrame, from0, from1, fromT))
+        return;
+
+    int to0 = 0;
+    int to1 = 0;
+    float toT = 0.0f;
+    if (!resolve_frame_pair(toFrame, frames, toStartFrame, toEndFrame, to0, to1, toT))
+        return;
+
+    alpha = glm::clamp(alpha, 0.0f, 1.0f);
+
+    const std::size_t baseFrom0 = std::size_t(from0) * verts;
+    const std::size_t baseFrom1 = std::size_t(from1) * verts;
+    const std::size_t baseTo0 = std::size_t(to0) * verts;
+    const std::size_t baseTo1 = std::size_t(to1) * verts;
+
+    for (std::size_t i = 0; i < verts; ++i)
+    {
+        const glm::vec3 fromPose = glm::mix(framePositions[baseFrom0 + i], framePositions[baseFrom1 + i], fromT);
+        const glm::vec3 toPose = glm::mix(framePositions[baseTo0 + i], framePositions[baseTo1 + i], toT);
+        const glm::vec3 p = glm::mix(fromPose, toPose, alpha);
         buffer.vertices[i].position = p;
         if (i < buffer.positions.size())
             buffer.positions[i] = p;
@@ -792,6 +911,72 @@ bool VertexAnimatedMesh::sampleTag(int tagIndex, float frame, glm::mat4 &out) co
         glm::vec4(z,      0.0f),   // coluna 2 — eixo Z (up)
         glm::vec4(origin, 1.0f)    // coluna 3 — translação
     );
+    return true;
+}
+
+bool VertexAnimatedMesh::sampleTag(int tagIndex, float frame, int startFrame, int endFrame, glm::mat4 &out) const
+{
+    const int frames = frameCount();
+    if (tagIndex < 0 || tagsPerFrame <= 0 || frames <= 0)
+        return false;
+    if (tagIndex >= tagsPerFrame)
+        return false;
+    if ((int)tags.size() < tagsPerFrame * frames)
+        return false;
+
+    int frame0 = 0;
+    int frame1 = 0;
+    float t = 0.0f;
+    if (!resolve_frame_pair(frame, frames, startFrame, endFrame, frame0, frame1, t))
+        return false;
+
+    const MeshTag &a = tags[frame0 * tagsPerFrame + tagIndex];
+    const MeshTag &b = tags[frame1 * tagsPerFrame + tagIndex];
+
+    const glm::vec3 origin = glm::mix(a.origin, b.origin, t);
+    glm::vec3 axis0 = glm::mix(a.axis[0], b.axis[0], t);
+    glm::vec3 axis1 = glm::mix(a.axis[1], b.axis[1], t);
+
+    const glm::vec3 x = glm::normalize(axis0);
+    const glm::vec3 y = glm::normalize(axis1 - glm::dot(axis1, x) * x);
+    const glm::vec3 z = glm::cross(x, y);
+
+    out = glm::mat4(
+        glm::vec4(x, 0.0f),
+        glm::vec4(y, 0.0f),
+        glm::vec4(z, 0.0f),
+        glm::vec4(origin, 1.0f));
+    return true;
+}
+
+bool VertexAnimatedMesh::sampleTagBlended(int tagIndex,
+                                          float fromFrame, int fromStartFrame, int fromEndFrame,
+                                          float toFrame, int toStartFrame, int toEndFrame,
+                                          float alpha, glm::mat4 &out) const
+{
+    glm::mat4 fromTag;
+    if (!sampleTag(tagIndex, fromFrame, fromStartFrame, fromEndFrame, fromTag))
+        return false;
+
+    glm::mat4 toTag;
+    if (!sampleTag(tagIndex, toFrame, toStartFrame, toEndFrame, toTag))
+        return false;
+
+    alpha = glm::clamp(alpha, 0.0f, 1.0f);
+
+    const glm::vec3 origin = glm::mix(glm::vec3(fromTag[3]), glm::vec3(toTag[3]), alpha);
+    glm::vec3 axis0 = glm::mix(glm::vec3(fromTag[0]), glm::vec3(toTag[0]), alpha);
+    glm::vec3 axis1 = glm::mix(glm::vec3(fromTag[1]), glm::vec3(toTag[1]), alpha);
+
+    const glm::vec3 x = glm::normalize(axis0);
+    const glm::vec3 y = glm::normalize(axis1 - glm::dot(axis1, x) * x);
+    const glm::vec3 z = glm::cross(x, y);
+
+    out = glm::mat4(
+        glm::vec4(x, 0.0f),
+        glm::vec4(y, 0.0f),
+        glm::vec4(z, 0.0f),
+        glm::vec4(origin, 1.0f));
     return true;
 }
 

@@ -1,19 +1,19 @@
 #pragma once
+#include "FrameAnimator.hpp"
 #include "Mesh.hpp"
-#include "Material.hpp"
- 
-#include "Types.hpp"
 #include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/matrix_decompose.hpp>
+#include <cstdint>
 #include <string>
 #include <vector>
-#include <cstdint>
 
 
 class VertexAnimatedMeshManager;
-
+class Material;
+class Mesh;
+class AnimatedMesh;
+class VertexAnimatedMesh;
+class Animator;
 
 enum class NodeType
 {
@@ -40,6 +40,8 @@ enum class RenderType
 {
     Solid,
     Transparent,
+    Lightmap,
+    Skinning,
     Terrain,
     Skybox,
     Special,
@@ -216,6 +218,7 @@ public:
     RenderableNode();
     RenderableNode *asRenderableNode() override { return this; }
     virtual ~RenderableNode() = default;
+    virtual void render(Shader *shader, Camera *camera);
 };
 
 class MeshNode : public RenderableNode
@@ -224,6 +227,7 @@ public:
     Mesh *mesh    = nullptr;
 
     MeshNode *asMeshNode() override { return this; }
+    void render(Shader *shader, Camera *camera) override;
 
     void        setMaterial(const std::string &name);
     void        setMaterial(Material *material);
@@ -262,6 +266,7 @@ public:
     virtual ~AnimatedMeshNode();
 
     AnimatedMeshNode *asAnimatedMeshNode() override { return this; }
+    void render(Shader *shader, Camera *camera) override;
 
     void       setMaterial(const std::string &name);
     void       setMaterial(Material *material);
@@ -300,26 +305,24 @@ class VertexAnimatedMeshNode : public RenderableNode
 {
 public:
     VertexAnimatedMesh *mesh = nullptr;
-    float frame = 0.0f;
-    float fps = 8.0f;
-    bool playing = true;
-    bool loop = true;
+    FrameAnimator frameAnimator;
  
     virtual ~VertexAnimatedMeshNode();
     VertexAnimatedMeshNode();
     VertexAnimatedMeshNode *asVertexAnimatedMeshNode() override { return this; }
+    void render(Shader *shader, Camera *camera) override;
 
-    void       setFrame(float value);// { frame = value; if (mesh) mesh->setFrame(frame); }
+    void       setFrame(float value); 
+    float      currentFrame() const { return frameAnimator.currentFrame(); }
+
+
     void       setMaterial(const std::string &name);
     void       setMaterial(Material *material);
     void       setMaterial(int slot, Material *material);
     Material  *getMaterial() const { return getMaterial(0); }
     Material  *getMaterial(int slot) const;
     const std::string &getMaterialName() const { return materialName_; }
-
-     TagSocket *addSocket(const std::string &boneName, Node3D *node,
-                          const glm::mat4 &localOffset = glm::mat4(1.f));
-
+ 
     void setMesh(VertexAnimatedMesh *mesh);
 
     Node3D* getTag(int index);
@@ -329,7 +332,7 @@ public:
 private:
     std::string materialName_;
     std::vector<Material *> materialOverrides_;
-    std::vector<TagSocket> sockets_; // bone attachments
+ 
  
 
     

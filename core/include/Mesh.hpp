@@ -14,6 +14,7 @@
 #include <unordered_set>
 
 class Shader;
+class Animation;
 
 // ============================================================
 //  Vertex — static geometry  (48 bytes)
@@ -415,9 +416,12 @@ public:
     // skeleton
     std::vector<Bone> bones;              // indexed by boneIds in AnimatedVertex
     std::vector<glm::mat4> finalMatrices; // updated each frame, sent to shader
+    std::vector<Animation *> animations;  // owned by mesh
 
     // Compute tangents after loading (AnimatedVertex has same uv/normal/tangent layout)
     void compute_tangents();
+    void releaseAnimations();
+    ~AnimatedMesh();
 
     // upload buffer + compute_aabb
     void upload();
@@ -507,8 +511,16 @@ public:
 
     void upload();
     void setFrame(float frame);
+    void setFrame(float frame, int startFrame, int endFrame);
+    void setFrameBlended(float fromFrame, int fromStartFrame, int fromEndFrame,
+                         float toFrame, int toStartFrame, int toEndFrame, float alpha);
     int findTag(const char *name) const;
     bool sampleTag(int tagIndex, float frame, glm::mat4 &out) const;
+    bool sampleTag(int tagIndex, float frame, int startFrame, int endFrame, glm::mat4 &out) const;
+    bool sampleTagBlended(int tagIndex,
+                          float fromFrame, int fromStartFrame, int fromEndFrame,
+                          float toFrame, int toStartFrame, int toEndFrame,
+                          float alpha, glm::mat4 &out) const;
     bool sampleTag(const char *name, float frame, glm::mat4 &out) const;
 
 

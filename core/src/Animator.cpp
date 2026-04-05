@@ -28,8 +28,9 @@ AnimationLayer::AnimationLayer() = default;
 
 AnimationLayer::~AnimationLayer()
 {
-    for (auto &[_, anim] : anims_)
-        delete anim;
+    for (auto &[name, anim] : anims_)
+        if (ownedAnimations_.count(name))
+            delete anim;
 }
 
 Animation *AnimationLayer::loadAnimation(const std::string &name, const std::string &path)
@@ -45,12 +46,21 @@ Animation *AnimationLayer::loadAnimation(const std::string &name, const std::str
     }
     anim->name = name;
     anims_[name] = anim;
+    ownedAnimations_.insert(name);
     return anim;
 }
 
-void AnimationLayer::addAnimation(const std::string &name, Animation *anim)
+void AnimationLayer::addAnimation(const std::string &name, Animation *anim, bool takeOwnership)
 {
+    auto it = anims_.find(name);
+    if (it != anims_.end() && ownedAnimations_.count(name))
+        delete it->second;
+
     anims_[name] = anim;
+    if (takeOwnership)
+        ownedAnimations_.insert(name);
+    else
+        ownedAnimations_.erase(name);
 }
 
 Animation *AnimationLayer::getAnimation(const std::string &name) const

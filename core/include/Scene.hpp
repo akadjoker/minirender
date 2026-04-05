@@ -108,8 +108,10 @@ private:
     std::vector<RenderableNode *> renderables_;
     std::vector<RenderableNode *> solidNodes_;
     std::vector<RenderableNode *> transparentNodes_;
+    std::vector<RenderableNode *> lightmapNodes_;
     std::vector<RenderableNode *> terrainNodes_;
     std::vector<RenderableNode *> skyboxNodes_;
     std::vector<RenderableNode *> specialNodes_;
     std::vector<RenderableNode *> overlayNodes_;
+    std::vector<RenderableNode *> skinningNodes_;
 };

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
  
 // Detect platform
 #if defined( WIN32 ) || defined( _WINDOWS ) || defined( _WIN32 )

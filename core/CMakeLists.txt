@@ -39,10 +39,17 @@ set(SOURCES
     src/DebugDraw.cpp
     src/Device.cpp
     src/Font.cpp
+    src/FrameAnimator.cpp
     src/Input.cpp
     src/Material.cpp
     src/Math.cpp
     src/Mesh.cpp
+    src/MeshB3DLoader.cpp
+    src/MeshGLTFLoader.cpp
+    src/MeshMD2Loader.cpp
+    src/MeshMD3Loader.cpp
+    src/MeshBSPLoader.cpp
+    src/MeshIQMLoader.cpp
     src/MeshLoader.cpp
     src/MeshManager.cpp
     src/Node.cpp

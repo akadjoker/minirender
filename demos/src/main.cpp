@@ -1,24 +1,80 @@
 #include "Core.hpp"
 #include "Device.hpp"
+#include "Animation.hpp"
+#include "Animator.hpp"
 #include "imgui.h"
 #include <glm/gtc/type_ptr.hpp>
 
+
+extern "C" const char *__lsan_default_suppressions()
+{
+    return "leak:libSDL2\n"
+           "leak:SDL_DBus\n";
+}
+
+
 namespace
 {
+
+int findAnimationIndex(const AnimatedMesh *mesh, const std::string &name)
+{
+    if (!mesh)
+        return -1;
+    for (int i = 0; i < (int)mesh->animations.size(); ++i)
+    {
+        if (mesh->animations[i] && mesh->animations[i]->name == name)
+            return i;
+    }
+    return -1;
+}
+
+void addSargeAnimations(VertexAnimatedMeshNode *lower, VertexAnimatedMeshNode *torso)
+{
+    if (lower)
+    {
+       
+ 
+        lower->frameAnimator.addAnimation("idle", 165, 1, 15.0f, false);
+        lower->frameAnimator.addAnimation("jump", 131, 140, 15.0f, false);
+        
+        lower->frameAnimator.addAnimation("walk", 98, 108, 6, true);
+        lower->frameAnimator.addAnimation("run", 98, 108, 18, true);
+
+ 
+    
+ 
+        lower->frameAnimator.play("run");
+ 
+    }
+
+    if (torso)
+    {
+        torso->frameAnimator.addAnimation("stand", 152, 152, 15.0f, false);
+        torso->frameAnimator.addAnimation("stand2", 151, 151, 15.0f, false);
+        torso->frameAnimator.addAnimation("wepon", 90, 90, 18.0f, false);
+        torso->frameAnimator.addAnimation("gesture", 91, 127, 18.0f, true);
+        torso->frameAnimator.addAnimation("attack", 130, 135, 15.0f, false);
+        torso->frameAnimator.addAnimation("attack2", 136, 141, 15.0f, false);
+        torso->frameAnimator.addAnimation("drop", 142, 146, 20.0f, false);
+        torso->frameAnimator.addAnimation("raise", 147, 150, 20.0f, false);
+       
+
+        torso->frameAnimator.play("stand2");
+    }
+}
 
 void drawTagAxes(RenderBatch &batch, VertexAnimatedMeshNode *node, float axisLength)
 {
     if (!node || !node->mesh || node->mesh->tagsPerFrame <= 0)
         return;
 
-    const glm::mat4 model = node->worldMatrix();
     for (int i = 0; i < node->mesh->tagsPerFrame; ++i)
     {
-        glm::mat4 tagLocal;
-        if (!node->mesh->sampleTag(i, node->frame, tagLocal))
+        Node3D *tag = node->getTag(i);
+        if (!tag)
             continue;
 
-        const glm::mat4 tagWorld = model * tagLocal;
+        const glm::mat4 tagWorld = tag->worldMatrix();
         const glm::vec3 origin = glm::vec3(tagWorld[3]);
         const glm::vec3 axisX = glm::normalize(glm::vec3(tagWorld[0])) * axisLength;
         const glm::vec3 axisY = glm::normalize(glm::vec3(tagWorld[1])) * axisLength;
@@ -157,6 +213,105 @@ Shader *createVertexAnimShader()
     return ShaderManager::instance().loadFromSource("demo_vertex_anim_shader", vert, frag);
 }
 
+Shader *createSkinnedShader()
+{
+    const char *vert = GLSL(
+        layout(location = 0) in vec3 position;
+        layout(location = 1) in vec3 normal;
+        layout(location = 3) in vec2 uv;
+        layout(location = 4) in ivec4 boneIds;
+        layout(location = 5) in vec4 boneWeights;
+
+        uniform mat4 u_model;
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+        uniform mat3 u_normalMatrix;
+        uniform mat4 u_boneMatrices[100];
+
+        out vec3 v_normal;
+        out vec2 v_uv;
+
+        void main()
+        {
+            mat4 skin =
+                boneWeights.x * u_boneMatrices[boneIds.x] +
+                boneWeights.y * u_boneMatrices[boneIds.y] +
+                boneWeights.z * u_boneMatrices[boneIds.z] +
+                boneWeights.w * u_boneMatrices[boneIds.w];
+
+            vec3 skinnedPos = vec3(skin * vec4(position, 1.0));
+            vec3 skinnedNormal = mat3(skin) * normal;
+
+            v_normal = normalize(u_normalMatrix * skinnedNormal);
+            v_uv = uv;
+            gl_Position = u_projection * u_view * u_model * vec4(skinnedPos, 1.0);
+        });
+
+    const char *frag = GLSL(
+        in vec3 v_normal;
+        in vec2 v_uv;
+        out vec4 FragColor;
+
+        uniform vec4 u_color;
+        uniform sampler2D u_albedo;
+        uniform vec3 u_lightDir;
+        uniform vec3 u_ambient;
+
+        void main()
+        {
+            vec4 albedo = texture(u_albedo, v_uv) * u_color;
+            vec3 N = normalize(v_normal);
+            vec3 L = normalize(-u_lightDir);
+            float diff = max(dot(N, L), 0.0);
+            vec3 lit = albedo.rgb * (u_ambient + vec3(0.85 * diff));
+            FragColor = vec4(lit, albedo.a);
+        });
+
+    return ShaderManager::instance().loadFromSource("demo_skinned_shader", vert, frag);
+}
+
+Shader *createLightmapShader()
+{
+    const char *vert = GLSL(
+        layout(location = 0) in vec3 position;
+        layout(location = 1) in vec3 normal;
+        layout(location = 2) in vec4 tangent;
+        layout(location = 3) in vec2 uv;
+
+        uniform mat4 u_model;
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+
+        out vec2 v_uv;
+        out vec2 v_lmUv;
+
+        void main()
+        {
+            v_uv = uv;
+            v_lmUv = tangent.xy;
+            gl_Position = u_projection * u_view * u_model * vec4(position, 1.0);
+        });
+
+    const char *frag = GLSL(
+        in vec2 v_uv;
+        in vec2 v_lmUv;
+        out vec4 FragColor;
+
+        uniform vec4 u_color;
+        uniform sampler2D u_albedo;
+        uniform sampler2D u_lightmap;
+        uniform int u_useLightmap;
+
+        void main()
+        {
+            vec4 albedo = texture(u_albedo, v_uv) * u_color;
+            vec3 lm = (u_useLightmap != 0) ? texture(u_lightmap, v_lmUv).rgb : vec3(1.0);
+            FragColor = vec4(albedo.rgb * lm, albedo.a);
+        });
+
+    return ShaderManager::instance().loadFromSource("demo_lightmap_shader", vert, frag);
+}
+
 void setupLighting(Shader *shader)
 {
     if (!shader)
@@ -177,7 +332,9 @@ int main()
 
     Shader *staticShader = createStaticShader();
     Shader *vertexAnimShader = createVertexAnimShader();
-    if (!staticShader || !vertexAnimShader)
+    Shader *skinnedShader = createSkinnedShader();
+    Shader *lightmapShader = createLightmapShader();
+    if (!staticShader || !vertexAnimShader || !skinnedShader || !lightmapShader)
         return 1;
 
     Mesh *groundMesh = MeshManager::instance().create_plane("ground_demo", 14.0f, 14.0f, 8);
@@ -219,10 +376,54 @@ int main()
         "assets/md3/sarge/upper.md3",
         "assets/md3/sarge/upper_default.skin");
 
-        VertexAnimatedMesh *md3MeshHead = VertexAnimatedMeshManager::instance().load(
+    VertexAnimatedMesh *md3MeshHead = VertexAnimatedMeshManager::instance().load(
         "sarge_head",
         "assets/md3/sarge/head.md3",
         "assets/md3/sarge/head_default.skin");
+
+    AnimatedMesh *b3dAnimatedMesh = AnimatedMeshManager::instance().load(
+        "ninja_b3d_anim",
+        "assets/b3d/ninja.b3d",
+        "assets/b3d");
+
+    AnimatedMesh *iqmAnimatedMesh = AnimatedMeshManager::instance().load(
+        "erebus_iqm_anim",
+        "assets/iqm/erebus/erebus.iqm",
+        "assets/iqm/erebus");
+
+    if (iqmAnimatedMesh)
+    {
+        Texture *erebusTex = TextureManager::instance().load(
+            "erebus_iqm_manual_base",
+            "assets/iqm/erebus/erebus.png");
+        Texture *shadowTex = TextureManager::instance().load(
+            "erebus_iqm_manual_shadow",
+            "assets/iqm/erebus/shadowhead.png");
+
+        
+             iqmAnimatedMesh->materials[0]->setTexture("u_albedo", shadowTex);
+             iqmAnimatedMesh->materials[1]->setTexture("u_albedo", erebusTex);
+    }
+
+    // Mesh *b3dStaticMesh = MeshManager::instance().load(
+    //     "ninja_b3d_static",
+    //     "assets/b3d/ninja.b3d",
+    //     "assets/b3d");
+
+    Mesh *gltfMesh = MeshManager::instance().load(
+        "idle_glb_static",
+        "assets/gltf/idle.glb",
+        "assets/gltf");
+
+    AnimatedMesh *gltfAnimatedMesh = AnimatedMeshManager::instance().load(
+        "idle_glb_anim",
+        "assets/gltf/idle.glb",
+        "assets/gltf");
+
+    Mesh *bspMesh = MeshManager::instance().load(
+        "oa_rpg3dm2_bsp",
+        "assets/maps/oa_rpg3dm/maps/oa_rpg3dm2.bsp",
+        "assets/maps/oa_rpg3dm");
 
 
     Scene scene;
@@ -256,11 +457,51 @@ int main()
     glass->setPosition(0.0f, 0.2f, 1.8f);
     glass->yaw(20.0f);
 
+    MeshNode *gltfNode = nullptr;
+    MeshNode *bspNode = nullptr;
+    AnimatedMeshNode *gltfAnimatedNode = nullptr;
+    // if (b3dStaticMesh)
+    // {
+    //     b3dStaticNode = scene.createMeshNode("ninja_b3d_static", b3dStaticMesh);
+    //     b3dStaticNode->renderType = RenderType::Solid;
+    //     b3dStaticNode->setPosition(2.8f, 0.0f, 2.0f);
+    //     b3dStaticNode->setScale(glm::vec3(0.05f));
+    //     b3dStaticNode->yaw(180.0f);
+    // }
+
+    if (gltfMesh)
+    {
+        gltfNode = scene.createMeshNode("idle_glb_static", gltfMesh);
+        gltfNode->renderType = RenderType::Solid;
+        gltfNode->setPosition(5.5f, 0.0f, 1.5f);
+        gltfNode->setScale(glm::vec3(1.0f));
+        gltfNode->yaw(180.0f);
+    }
+
+    if (gltfAnimatedMesh)
+    {
+        gltfAnimatedNode = scene.createAnimatedMeshNode("idle_glb_anim", gltfAnimatedMesh);
+        gltfAnimatedNode->renderType = RenderType::Skinning;
+        gltfAnimatedNode->setPosition(8.0f, 0.0f, 1.5f);
+        gltfAnimatedNode->setScale(glm::vec3(0.01f));
+        //gltfAnimatedNode->yaw(180.0f);
+    }
+
+    // if (bspMesh)
+    // {
+    //     bspNode = scene.createMeshNode("oa_rpg3dm2_bsp", bspMesh);
+    //     bspNode->renderType = RenderType::Lightmap;
+    //     bspNode->setPosition(0.0f, -1.0f, 0.0f);
+    //     bspNode->setScale(glm::vec3(0.03f));
+    // }
+
     
     VertexAnimatedMeshNode *actor = nullptr;
     VertexAnimatedMeshNode *md3Actor = nullptr;
     VertexAnimatedMeshNode *md3ActorTorso = nullptr;
     VertexAnimatedMeshNode *md3ActorHead = nullptr;
+    AnimatedMeshNode *b3dAnimatedNode = nullptr;
+    AnimatedMeshNode *iqmAnimatedNode = nullptr;
 
     if (md2Mesh)
     {
@@ -269,7 +510,7 @@ int main()
         actor->setPosition(0.0f, 2.0f, 3.8f);
         actor->setScale(glm::vec3(0.10f));
         actor->yaw(180.0f);
-        actor->fps = 6.0f;
+ 
         actor->setFrame(0.0f);
         actor->visible = true;
     }
@@ -289,8 +530,7 @@ int main()
         md3Actor->pitch(pitch);
         md3Actor->roll(roll);
 
-        md3Actor->fps = 8.0f;
-        md3Actor->playing = false;
+ 
         md3Actor->setFrame(100.0f);
 
         cubeB->setParent(md3Actor->getTag(0));
@@ -303,12 +543,31 @@ int main()
         //md3ActorTorso->setPosition(-2.5f, 1.0f, 3.8f);
         //md3ActorTorso->setScale(glm::vec3(1.0f));
         //md3ActorTorso->yaw(180.0f);
-        md3ActorTorso->fps = 8.0f;
-        md3ActorTorso->playing = false;
+ 
         md3ActorTorso->setFrame(0.0f);
 
        md3ActorTorso->setParent(md3Actor->getTag(0));
      }
+
+    addSargeAnimations(md3Actor, md3ActorTorso);
+
+    if (b3dAnimatedMesh)
+    {
+        b3dAnimatedNode = scene.createAnimatedMeshNode("ninja_b3d_anim", b3dAnimatedMesh);
+        b3dAnimatedNode->renderType = RenderType::Skinning;
+        b3dAnimatedNode->setPosition(2.8f, 0.0f, -1.0f);
+        b3dAnimatedNode->setScale(glm::vec3(0.05f));
+        b3dAnimatedNode->yaw(180.0f);
+    }
+
+    if (iqmAnimatedMesh)
+    {
+        iqmAnimatedNode = scene.createAnimatedMeshNode("erebus_iqm_anim", iqmAnimatedMesh);
+        iqmAnimatedNode->renderType = RenderType::Skinning;
+        iqmAnimatedNode->setPosition(-5.0f, 0.0f, -1.0f);
+        iqmAnimatedNode->setScale(glm::vec3(0.04f));
+        iqmAnimatedNode->yaw(180.0f);
+    }
 
         if (md3MeshHead)
         {
@@ -317,8 +576,7 @@ int main()
             //md3ActorHead->setPosition(-2.5f, 1.0f, 3.8f);
             //md3ActorHead->setScale(glm::vec3(0.12f));
             //md3ActorHead->yaw(180.0f);
-            md3ActorHead->fps = 8.0f;
-            md3ActorHead->playing = false;
+ 
             md3ActorHead->setFrame(0.0f);
 
             md3ActorHead->setParent(md3ActorTorso->getTag(0));
@@ -351,8 +609,7 @@ int main()
 
         if (actor)
         {
-            actor->playing = play;
-            actor->fps = fps;
+ 
             actor->setScale(glm::vec3(modelScale));
         }
   
@@ -360,11 +617,11 @@ int main()
         scene.update(dt);
 
         if (actor)
-            frameSlider = actor->frame;
+            frameSlider = actor->currentFrame();
         if (md3Actor)
-            md3FrameSlider = md3Actor->frame;
+            md3FrameSlider = md3Actor->currentFrame();
         if (md3ActorTorso)
-            md3TorsoFrameSlider = md3ActorTorso->frame;
+            md3TorsoFrameSlider = md3ActorTorso->currentFrame();
 
         device.ImGuiBegin();
         ImGui::SetNextWindowPos(ImVec2(16, 16), ImGuiCond_Once);
@@ -408,12 +665,6 @@ int main()
                 ImGui::Text("Tags/frame: %d", md3Mesh->tagsPerFrame);
                 ImGui::Checkbox("Play MD3", &md3Play);
                 ImGui::Checkbox("Show Tags", &showMd3Tags);
-
-                           ImGui::SliderFloat("Yaw", &yaw, -180.0f, 180.0f);
-                ImGui::SliderFloat("Pitch", &pitch, -180.0f, 180.0f);
-                ImGui::SliderFloat("Roll", &roll, -180.0f, 180.0f);
-
-                md3Actor->setRotationEuler(glm::vec3(pitch, yaw, roll));
 
                 ImGui::SliderFloat("MD3 FPS", &md3Fps, 1.0f, 20.0f);
                 //ImGui::SliderFloat("MD3 Scale", &md3Scale, 0.02f, 0.25f);
@@ -461,11 +712,111 @@ int main()
                 if (frameIndex < (int)md3MeshTorso->frameNames.size())
                     ImGui::Text("Frame name: %s", md3MeshTorso->frameNames[frameIndex].c_str());
             }
+
+            if (b3dAnimatedNode && b3dAnimatedMesh)
+            {
+                ImGui::SeparatorText("B3D Animated");
+                ImGui::Text("Mesh: %s", b3dAnimatedMesh->name.c_str());
+                ImGui::Text("Bones: %d", (int)b3dAnimatedMesh->bones.size());
+                ImGui::Text("Animations: %d", (int)b3dAnimatedMesh->animations.size());
+            }
+            else
+            {
+                ImGui::SeparatorText("B3D Animated");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load animated assets/b3d/ninja.b3d");
+            }
+
+            if (gltfNode && gltfMesh)
+            {
+                ImGui::SeparatorText("GLTF / GLB");
+                ImGui::Text("Mesh: %s", gltfMesh->name.c_str());
+                ImGui::Text("Vertices: %d", gltfMesh->vertexCount());
+                ImGui::Text("Indices: %d", gltfMesh->indexCount());
+                ImGui::Text("Surfaces: %d", (int)gltfMesh->surfaces.size());
+                ImGui::Text("Materials: %d", (int)gltfMesh->materials.size());
+            }
+            else
+            {
+                ImGui::SeparatorText("GLTF / GLB");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/gltf/idle.glb");
+            }
+
+            if (gltfAnimatedNode && gltfAnimatedMesh)
+            {
+                ImGui::SeparatorText("GLTF Animated");
+                ImGui::Text("Mesh: %s", gltfAnimatedMesh->name.c_str());
+                ImGui::Text("Bones: %d", (int)gltfAnimatedMesh->bones.size());
+                ImGui::Text("Animations: %d", (int)gltfAnimatedMesh->animations.size());
+                ImGui::Text("Surfaces: %d", (int)gltfAnimatedMesh->surfaces.size());
+                if (gltfAnimatedNode->animator && gltfAnimatedNode->animator->layerCount() > 0)
+                {
+                    AnimationLayer *layer = gltfAnimatedNode->animator->getLayer(0);
+                    const std::string currentAnim = layer ? layer->currentName() : std::string();
+                    ImGui::Text("Current: %s", currentAnim.empty() ? "<none>" : currentAnim.c_str());
+                }
+            }
+            else
+            {
+                ImGui::SeparatorText("GLTF Animated");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load animated assets/gltf/idle.glb");
+            }
+
+            if (iqmAnimatedNode && iqmAnimatedMesh)
+            {
+                ImGui::SeparatorText("IQM Animated");
+                ImGui::Text("Mesh: %s", iqmAnimatedMesh->name.c_str());
+                ImGui::Text("Bones: %d", (int)iqmAnimatedMesh->bones.size());
+                ImGui::Text("Animations: %d", (int)iqmAnimatedMesh->animations.size());
+                ImGui::Text("Surfaces: %d", (int)iqmAnimatedMesh->surfaces.size());
+                if (iqmAnimatedNode->animator && iqmAnimatedNode->animator->layerCount() > 0)
+                {
+                    AnimationLayer *layer = iqmAnimatedNode->animator->getLayer(0);
+                    const std::string currentAnim = layer ? layer->currentName() : std::string();
+                    ImGui::Text("Current: %s", currentAnim.empty() ? "<none>" : currentAnim.c_str());
+                    if (ImGui::Button("Next IQM Animation") && layer && !iqmAnimatedMesh->animations.empty())
+                    {
+                        int nextIndex = findAnimationIndex(iqmAnimatedMesh, currentAnim);
+                        nextIndex = (nextIndex + 1) % (int)iqmAnimatedMesh->animations.size();
+                        Animation *nextAnim = iqmAnimatedMesh->animations[nextIndex];
+                        if (nextAnim)
+                            layer->play(nextAnim->name);
+                    }
+                }
+
+
+                ImGui::SliderFloat("Yaw", &yaw, -180.0f, 180.0f);
+                ImGui::SliderFloat("Pitch", &pitch, -180.0f, 180.0f);
+                ImGui::SliderFloat("Roll", &roll, -180.0f, 180.0f);
+
+                iqmAnimatedNode->setRotationEuler(glm::vec3(pitch, yaw, roll));
+
+            }
+            else
+            {
+                ImGui::SeparatorText("IQM Animated");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/iqm/erebus/erebus.iqm");
+            }
+
+            if (bspNode && bspMesh)
+            {
+                ImGui::SeparatorText("BSP");
+                ImGui::Text("Mesh: %s", bspMesh->name.c_str());
+                ImGui::Text("Vertices: %d", bspMesh->vertexCount());
+                ImGui::Text("Indices: %d", bspMesh->indexCount());
+                ImGui::Text("Surfaces: %d", (int)bspMesh->surfaces.size());
+                ImGui::Text("Materials: %d", (int)bspMesh->materials.size());
+            }
+            else
+            {
+                ImGui::SeparatorText("BSP");
+                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/maps/oa_rpg3dm/maps/oa_rpg3dm2.bsp");
+            }
         }
         ImGui::End();
         device.ImGuiEnd();
         
         scene.setCamera(camera);
+        
         scene.beginPass();
         
         scene.setShader(staticShader);
@@ -476,9 +827,17 @@ int main()
         setupLighting(vertexAnimShader);
         scene.render(RenderType::Special);
 
-        // scene.setShader(staticShader);
-        // setupLighting(staticShader);
-        // scene.render(RenderType::Transparent);
+        scene.setShader(skinnedShader);
+        setupLighting(skinnedShader);
+        scene.render(RenderType::Skinning);
+
+        scene.setShader(lightmapShader);
+        scene.render(RenderType::Lightmap);
+
+        scene.setShader(staticShader);
+        setupLighting(staticShader);
+        scene.render(RenderType::Transparent);
+
         scene.endPass();
 
         if (md3Actor && md3Mesh && showMd3Tags)
@@ -493,6 +852,12 @@ int main()
 
     }
 
+    scene.clear();
+    AnimatedMeshManager::instance().unloadAll();
+    VertexAnimatedMeshManager::instance().unloadAll();
+    MeshManager::instance().unloadAll();
+    TextureManager::instance().unloadAll();
+    ShaderManager::instance().unloadAll();
     device.Close();
     return 0;
 }

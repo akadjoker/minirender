@@ -17,8 +17,12 @@ public:
     void writeF32(float v);              // IEEE 754, little-endian
     void writeStr(const std::string &s); // null-terminated UTF-8
     void writeRaw(const void *data, size_t bytes);
+    void writeU16(uint16_t v);
+    void writeI16(int16_t v);
 
     // ── Read ─────────────────────────────────────────────────
+    uint16_t readU16();
+    int16_t readI16();
     uint8_t readU8();
     uint32_t readU32();
     int32_t readI32();

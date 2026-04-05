@@ -11,6 +11,7 @@ TerrainLodNode::TerrainLodNode(const std::string &name, int maxLOD,
     , m_detailScale(detailScale)
 {
     this->name = name;
+    renderType = RenderType::Terrain;
 }
 
 TerrainLodNode::~TerrainLodNode()

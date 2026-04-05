@@ -69,9 +69,6 @@ AnimatedMesh *AnimatedMeshManager::load_h3d(const std::string &name,
         delete mesh;
         return nullptr;
     }
-
-    MaterialManager::instance().applyDefaults();
-
     cache[name] = mesh;
     return mesh;
 }

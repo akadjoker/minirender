@@ -51,6 +51,7 @@ void Camera::updateMatrices()
     view = getView();
     projection = getProjection();
     viewProjection = projection * view;
+    frustum = Frustum::from_matrix(viewProjection);
 }
 
 glm::vec3 Camera::project(const glm::vec3& worldCoords) const

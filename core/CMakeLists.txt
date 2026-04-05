@@ -9,7 +9,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -mtune=native")
 
 find_package(OpenGL REQUIRED)
 find_package(SDL2 REQUIRED)
-find_package(SDL2_image REQUIRED)
 find_package(glm REQUIRED)
 
 
@@ -42,7 +41,6 @@ set(SOURCES
     src/Font.cpp
     src/Input.cpp
     src/Material.cpp
-    src/MaterialManager.cpp
     src/Math.cpp
     src/Mesh.cpp
     src/MeshLoader.cpp
@@ -52,7 +50,6 @@ set(SOURCES
     src/Pixmap.cpp
     src/RenderState.cpp
     src/RenderTarget.cpp
-    src/Renderer.cpp
     src/Scene.cpp
     src/Shader.cpp
     src/ShaderManager.cpp
@@ -62,7 +59,6 @@ set(SOURCES
     src/Utils.cpp
     src/Vertex.cpp
     src/VertexAnimation.cpp
-    src/WaterNode.cpp
     src/glad.cpp
     src/pch.cpp
 )
@@ -79,18 +75,21 @@ endif()
 
 target_include_directories(core PRIVATE 
     src
+    ${CMAKE_SOURCE_DIR}/vendor/stb
     ${SDL2_INCLUDE_DIRS}
-    ${SDL2_IMAGE_INCLUDE_DIRS}
 )
 
 target_link_libraries(core 
     imgui
     OpenGL::GL
     ${SDL2_LIBRARIES}
-    SDL2_image
     glm::glm
 )
 target_include_directories(core PUBLIC include src)
+
+target_sources(core PRIVATE
+    ${CMAKE_SOURCE_DIR}/vendor/stb/stb_impl.cpp
+)
 
 target_precompile_headers(core PUBLIC src/pch.h)
 

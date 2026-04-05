@@ -1,6 +1,31 @@
 #include "Mesh.hpp"
 #include "Material.hpp"
+#include <cmath>
+#include <cstring>
 #include <glm/gtc/matrix_inverse.hpp>
+
+namespace
+{
+glm::mat3 orthonormalizeBasis(const glm::vec3 &axis0, const glm::vec3 &axis1, const glm::vec3 &axis2)
+{
+    glm::vec3 x = glm::length2(axis0) > 1e-8f ? glm::normalize(axis0) : glm::vec3(1.0f, 0.0f, 0.0f);
+
+    glm::vec3 y = axis1 - x * glm::dot(x, axis1);
+    if (glm::length2(y) <= 1e-8f)
+        y = axis2 - x * glm::dot(x, axis2);
+    if (glm::length2(y) <= 1e-8f)
+        y = glm::vec3(0.0f, 1.0f, 0.0f) - x * glm::dot(x, glm::vec3(0.0f, 1.0f, 0.0f));
+    y = glm::length2(y) > 1e-8f ? glm::normalize(y) : glm::vec3(0.0f, 1.0f, 0.0f);
+
+    glm::vec3 z = glm::cross(x, y);
+    if (glm::dot(z, axis2) < 0.0f)
+        z = -z;
+    z = glm::length2(z) > 1e-8f ? glm::normalize(z) : glm::vec3(0.0f, 0.0f, 1.0f);
+
+    y = glm::normalize(glm::cross(z, x));
+    return glm::mat3(x, y, z);
+}
+}
 
 // ============================================================
 //  InstanceBuffer
@@ -194,6 +219,76 @@ void AnimatedMeshBuffer::drawRange(uint32_t start, uint32_t count) const
 }
 
 void AnimatedMeshBuffer::free()
+{
+    if (vbo)
+    {
+        glDeleteBuffers(1, &vbo);
+        vbo = 0;
+    }
+    if (ibo)
+    {
+        glDeleteBuffers(1, &ibo);
+        ibo = 0;
+    }
+    if (vao)
+    {
+        glDeleteVertexArrays(1, &vao);
+        vao = 0;
+    }
+}
+
+// ============================================================
+//  AnimatedVertexMeshBuffer
+// ============================================================
+void AnimatedVertexMeshBuffer::upload()
+{
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(VertexAnimVertex), vertices.data(), GL_DYNAMIC_DRAW);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VertexAnimVertex), (void *)offsetof(VertexAnimVertex, position));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(VertexAnimVertex), (void *)offsetof(VertexAnimVertex, uv));
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(VertexAnimVertex), (void *)offsetof(VertexAnimVertex, normal));
+
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint16_t), indices.data(), GL_STATIC_DRAW);
+
+    glBindVertexArray(0);
+}
+
+void AnimatedVertexMeshBuffer::update()
+{
+    if (!vbo || vertices.empty())
+        return;
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(VertexAnimVertex), vertices.data());
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void AnimatedVertexMeshBuffer::draw() const
+{
+    glBindVertexArray(vao);
+    glDrawElements(mode, (GLsizei)indices.size(), GL_UNSIGNED_SHORT, nullptr);
+    glBindVertexArray(0);
+}
+
+void AnimatedVertexMeshBuffer::drawRange(uint32_t start, uint32_t count) const
+{
+    glBindVertexArray(vao);
+    const void *offset = reinterpret_cast<const void *>(static_cast<uintptr_t>(start * sizeof(uint16_t)));
+    glDrawElements(mode, (GLsizei)count, GL_UNSIGNED_SHORT, offset);
+    glBindVertexArray(0);
+}
+
+void AnimatedVertexMeshBuffer::free()
 {
     if (vbo)
     {
@@ -562,6 +657,149 @@ void AnimatedMesh::upload()
     buffer.upload();
 }
 
+ 
+
+void VertexAnimatedMesh::compute_normals()
+{
+    for (auto &v : buffer.vertices)
+        v.normal = glm::vec3(0.0f);
+
+    const auto &idx = buffer.indices;
+    auto &verts = buffer.vertices;
+
+    for (size_t i = 0; i + 2 < idx.size(); i += 3)
+    {
+        auto &v0 = verts[idx[i]];
+        auto &v1 = verts[idx[i + 1]];
+        auto &v2 = verts[idx[i + 2]];
+
+        glm::vec3 e1 = v1.position - v0.position;
+        glm::vec3 e2 = v2.position - v0.position;
+        glm::vec3 n = glm::cross(e1, e2);
+
+        v0.normal += n;
+        v1.normal += n;
+        v2.normal += n;
+    }
+
+    for (auto &v : verts)
+        if (glm::length(v.normal) > 1e-6f)
+            v.normal = glm::normalize(v.normal);
+}
+
+void VertexAnimatedMesh::upload()
+{
+    compute_aabb();
+    compute_surface_aabbs();
+    buffer.upload();
+}
+
+int VertexAnimatedMesh::findTag(const char *name) const
+{
+    if (!name || tagsPerFrame <= 0 || tags.empty())
+        return -1;
+
+    const int count = std::min(tagsPerFrame, (int)tags.size());
+    for (int i = 0; i < count; ++i)
+    {
+        if (std::strncmp(tags[i].tag, name, sizeof(tags[i].tag)) == 0)
+            return i;
+    }
+    return -1;
+}
+
+void VertexAnimatedMesh::setFrame(float frame)
+{
+    const int frames = frameCount();
+    const std::size_t verts = buffer.vertices.size();
+    if (frames <= 0 || verts == 0 || framePositions.size() != std::size_t(frames) * verts)
+        return;
+
+    currentFrame = frame;
+
+    float wrapped = frame;
+    while (wrapped < 0.0f)
+        wrapped += (float)frames;
+    if (frames > 0)
+        wrapped = std::fmod(wrapped, (float)frames);
+
+    const int frame0 = (int)wrapped;
+    const int frame1 = (frame0 + 1) % frames;
+    const float t = wrapped - (float)frame0;
+
+    const std::size_t base0 = std::size_t(frame0) * verts;
+    const std::size_t base1 = std::size_t(frame1) * verts;
+
+    for (std::size_t i = 0; i < verts; ++i)
+    {
+        const glm::vec3 p0 = framePositions[base0 + i];
+        const glm::vec3 p1 = framePositions[base1 + i];
+        const glm::vec3 p = glm::mix(p0, p1, t);
+        buffer.vertices[i].position = p;
+        if (i < buffer.positions.size())
+            buffer.positions[i] = p;
+    }
+
+    compute_normals();
+    compute_aabb();
+    compute_surface_aabbs();
+    buffer.update();
+}
+
+bool VertexAnimatedMesh::sampleTag(int tagIndex, float frame, glm::mat4 &out) const
+{
+    const int frames = frameCount();
+    if (tagIndex < 0 || tagsPerFrame <= 0 || frames <= 0)
+        return false;
+    if (tagIndex >= tagsPerFrame)
+        return false;
+    if ((int)tags.size() < tagsPerFrame * frames)
+        return false;
+
+    // Wrap do frame para [0, frames)
+    float wrapped = std::fmod(frame, (float)frames);
+    if (wrapped < 0.0f)
+        wrapped += (float)frames;
+
+    const int   frame0 = (int)wrapped;
+    const int   frame1 = (frame0 + 1) % frames;
+    const float t      = wrapped - (float)frame0;
+
+    const MeshTag &a = tags[frame0 * tagsPerFrame + tagIndex];
+    const MeshTag &b = tags[frame1 * tagsPerFrame + tagIndex];
+
+    // Interpola origin
+    const glm::vec3 origin = glm::mix(a.origin, b.origin, t);
+
+    // Interpola os 3 eixos
+    glm::vec3 axis0 = glm::mix(a.axis[0], b.axis[0], t);
+    glm::vec3 axis1 = glm::mix(a.axis[1], b.axis[1], t);
+
+    // Gram-Schmidt — garante base ortonormal sem depender de orthonormalizeBasis
+    // X fica como referência principal (axis0 do MD3 = right)
+    const glm::vec3 x = glm::normalize(axis0);
+
+    // Y ortogonal a X (axis1 do MD3 = forward)
+    const glm::vec3 y = glm::normalize(axis1 - glm::dot(axis1, x) * x);
+
+    // Z = cross(X, Y) — completamente derivado, sempre ortogonal
+    const glm::vec3 z = glm::cross(x, y);
+
+ 
+    out = glm::mat4(
+        glm::vec4(x,      0.0f),   // coluna 0 — eixo X (right)
+        glm::vec4(y,      0.0f),   // coluna 1 — eixo Y (forward)
+        glm::vec4(z,      0.0f),   // coluna 2 — eixo Z (up)
+        glm::vec4(origin, 1.0f)    // coluna 3 — translação
+    );
+    return true;
+}
+
+bool VertexAnimatedMesh::sampleTag(const char *name, float frame, glm::mat4 &out) const
+{
+    return sampleTag(findTag(name), frame, out);
+}
+
 void AnimatedMesh::applyBoneMatrices(Shader *sh) const
 {
     if (!sh) return;
@@ -699,3 +937,46 @@ PickResult AnimatedMesh::pick(const Ray &worldRay, const glm::mat4 &model) const
     localHitToWorld(best, lo, ld, model, worldRay.origin);
     return best;
 }
+
+PickResult VertexAnimatedMesh::pick(const Ray &worldRay, const glm::mat4 &model) const
+{
+    glm::vec3 lo, ld;
+    worldRayToLocal(worldRay, model, lo, ld);
+
+    if (!aabb.is_valid() || aabb.intersects_ray(lo, ld) < 0.f)
+        return {};
+
+    const auto &verts = buffer.vertices;
+    const auto &idx   = buffer.indices;
+
+    PickResult best;
+    best.distance = std::numeric_limits<float>::max();
+    Triangle tri;
+
+    for (int s = 0; s < (int)surfaces.size(); ++s)
+    {
+        const auto &surf = surfaces[s];
+        const uint32_t end = surf.index_start + surf.index_count;
+        for (uint32_t i = surf.index_start; i + 2 < end; i += 3)
+        {
+            tri.v0 = verts[idx[i    ]].position;
+            tri.v1 = verts[idx[i + 1]].position;
+            tri.v2 = verts[idx[i + 2]].position;
+            float t = tri.intersect_ray(lo, ld);
+            if (t > 0.f && t < best.distance)
+            {
+                best.hit           = true;
+                best.distance      = t;
+                best.surfaceIndex  = s;
+                best.triangleIndex = (int)((i - surf.index_start) / 3);
+                best.normal        = tri.normal();
+            }
+        }
+    }
+
+    if (!best.hit) return {};
+    localHitToWorld(best, lo, ld, model, worldRay.origin);
+    return best;
+}
+
+//**************************************************************************** */

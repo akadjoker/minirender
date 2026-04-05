@@ -392,7 +392,7 @@ void RenderBatch::Render()
                  (GLsizeiptr)(vertices.size() * sizeof(Vertex)),
                  vertices.data(), GL_DYNAMIC_DRAW);
 
-    glActiveTexture(GL_TEXTURE0);
+    //glActiveTexture(GL_TEXTURE0);
     unsigned int activeTex = 0xFFFFFFFFu;
 
     for (std::size_t i = 0; i < draws.size(); ++i)
@@ -403,7 +403,8 @@ void RenderBatch::Render()
         const unsigned int tex = (draw.textureId != 0) ? draw.textureId : whiteTextureId;
         if (tex != activeTex)
         {
-            glBindTexture(GL_TEXTURE_2D, tex);
+//            glBindTexture(GL_TEXTURE_2D, tex);
+            RenderState::instance().bindTexture(0, GL_TEXTURE_2D,   tex);
             activeTex = tex;
         }
 
@@ -422,8 +423,9 @@ void RenderBatch::Render()
     }
 
     glBindVertexArray(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    //glBindTexture(GL_TEXTURE_2D, 0);
     RenderState::instance().useProgram(0);
+    RenderState::instance().bindTexture(0, GL_TEXTURE_2D,   0);
 
     vertices.clear();
     draws.clear();

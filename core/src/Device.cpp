@@ -160,8 +160,9 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
     TextureManager::instance();
     ShaderManager::instance();
     MeshManager::instance();
+    AnimatedMeshManager::instance();
+    VertexAnimatedMeshManager::instance();
     RenderState::instance();
-    MaterialManager::instance();
     ShaderManager::instance();
 
 
@@ -368,7 +369,8 @@ void Device::Close()
     TextureManager::instance().unloadAll();
     ShaderManager::instance().unloadAll();
     MeshManager::instance().unloadAll();
-    MaterialManager::instance().unloadAll();
+    AnimatedMeshManager::instance().unloadAll();
+    VertexAnimatedMeshManager::instance().unloadAll();
     RenderState::instance().shutdown();
 
     SDL_GL_DeleteContext(m_context);

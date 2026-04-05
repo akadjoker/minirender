@@ -62,6 +62,17 @@ void Material::applyStates() const
     rs.setCull(cullFace);
     rs.setDepthTest(depthTest);
     rs.setDepthWrite(depthWrite);
+    // printf("Material '%s' states: blend=%d, cullFace=%d, depthTest=%d, depthWrite=%d\n",
+    //        name.c_str(), blend, cullFace, depthTest, depthWrite);
+}
+
+void Material::applyDefaultStates()
+{
+    auto &rs = RenderState::instance();
+    rs.setBlend(false);
+    rs.setCull(true);
+    rs.setDepthTest(true);
+    rs.setDepthWrite(true);
 }
 
 void Material::bindTextures() const

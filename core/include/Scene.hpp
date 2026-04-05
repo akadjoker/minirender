@@ -1,12 +1,11 @@
 #pragma once
 #include "Node.hpp"
-#include "RenderScene.hpp"
 #include "Math.hpp"
 #include <vector>
 
 class RenderBatch;
 class TerrainLodNode;
-class WaterNode3D;
+class Shader;
 
 // Result of a scene-level pick: closest hit across all pickable nodes.
 struct ScenePickResult
@@ -25,17 +24,33 @@ public:
 
     // --- Camera management (scene owns cameras) ---
     Camera *createCamera(const std::string &name = "");
+    Camera *createFreeCamera(const std::string &name,
+                             int viewportWidth, int viewportHeight,
+                             const glm::vec3 &position,
+                             const glm::vec3 &target,
+                             float moveSpeed = 8.0f,
+                             float mouseSensitivity = 0.15f,
+                             float sprintMultiplier = 2.5f);
     void    removeCamera(Camera *cam);
     const std::vector<Camera *> &cameras() const { return cameras_; }
     Camera *currentCamera() const { return currentCamera_; }
     void    setCurrentCamera(Camera *cam);
+    void    setCamera(Camera *cam);
+
+    // --- Pass state (prepared for script/manual pass control) ---
+    void    beginPass();
+    void    endPass();
+    bool    passActive() const { return passActive_; }
+    void    setShader(Shader *shader);
+    Shader *currentShader() const { return currentShader_; }
+    void    render(RenderType type);
 
     // --- Node management ---
     MeshNode             *createMeshNode        (const std::string &name = "", Mesh *mesh = nullptr);
     AnimatedMeshNode     *createAnimatedMeshNode(const std::string &name = "", AnimatedMesh *mesh = nullptr);
-    VertexAnimMeshNode   *createVertexAnimMeshNode(const std::string &name = "", Mesh *mesh = nullptr);
+    VertexAnimatedMeshNode *createVertexAnimatedMeshNode(const std::string &name = "", VertexAnimatedMesh *mesh = nullptr);
+ 
     TerrainLodNode       *createTerrainLodNode  (const std::string &name = "");
-    WaterNode3D          *createWaterNode       (const std::string &name = "");
 
     // Creates a light node, adds it to the root of the scene tree.
     // Example: auto *sun = scene.createLight<DirectionalLight>("sun");
@@ -58,15 +73,8 @@ public:
 
     // --- Per-frame API ---
     void update(float dt);
-    void buildRenderScene(Camera *camera, RenderScene &outScene, const Node *ignoredNode = nullptr);
-    void setSkyEnabled(bool enabled) { sky_.enabled = enabled; }
-    void setSkyColors(const glm::vec3 &top, const glm::vec3 &horizon, const glm::vec3 &ground)
-    {
-        sky_.top = top;
-        sky_.horizon = horizon;
-        sky_.ground = ground;
-    }
-    const SkySettings &sky() const { return sky_; }
+    const std::vector<RenderableNode *> &renderables() const { return renderables_; }
+    const std::vector<RenderableNode *> &renderables(RenderType type) const;
 
     void debug(RenderBatch *batch);
 
@@ -79,13 +87,29 @@ public:
     void release();
 
 private:
+    friend class Node;
     void debugNode(Node *node, RenderBatch *batch);
     // Animator update traverse
     void updateNode(Node *node, float dt);
+    void collectRenderables(Node *node);
+    void attachRecursive(Node *node);
+    void detachRecursive(Node *node);
+    void onChildAttached(Node *node);
+    void onChildDetached(Node *node);
+ 
+    void resetPassState();
 
     std::vector<Camera *>    cameras_;    // owned
     Camera                  *currentCamera_ = nullptr;
     std::vector<Node *>      roots_;
     std::vector<Node *>      pendingRemoval_; // flushed at the start of update()
-    SkySettings              sky_;
+    bool                     passActive_ = false;
+    Shader                  *currentShader_ = nullptr;
+    std::vector<RenderableNode *> renderables_;
+    std::vector<RenderableNode *> solidNodes_;
+    std::vector<RenderableNode *> transparentNodes_;
+    std::vector<RenderableNode *> terrainNodes_;
+    std::vector<RenderableNode *> skyboxNodes_;
+    std::vector<RenderableNode *> specialNodes_;
+    std::vector<RenderableNode *> overlayNodes_;
 };

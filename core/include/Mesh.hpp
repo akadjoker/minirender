@@ -1,6 +1,9 @@
 #pragma once
+#include "Config.hpp"
 #include "Opengl.hpp"
 #include "Math.hpp"
+#include "Material.hpp"
+ 
 #define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <vector>
@@ -8,8 +11,8 @@
 #include <cstring>
 #include <cassert>
 #include <string>
+#include <unordered_set>
 
-class Material;
 class Shader;
 
 // ============================================================
@@ -297,7 +300,7 @@ public:
     TBuffer buffer;
     BoundingBox aabb = {};
     std::vector<Surface> surfaces;
-    std::vector<Material *> materials; // not owned — manager owns materials
+    std::vector<Material *> materials; // owned by mesh
 
     // ── Surfaces ──────────────────────────────────────────
     Surface &add_surface(uint32_t start, uint32_t count, int material_index = 0)
@@ -318,6 +321,17 @@ public:
         if (slot >= (int)materials.size())
             materials.resize(slot + 1, nullptr);
         materials[slot] = mat;
+    }
+
+    void release_materials()
+    {
+        std::unordered_set<Material *> uniqueMaterials;
+        for (Material *mat : materials)
+            if (mat)
+                uniqueMaterials.insert(mat);
+        for (Material *mat : uniqueMaterials)
+            delete mat;
+        materials.clear();
     }
 
     // ── AABB ──────────────────────────────────────────────
@@ -347,8 +361,13 @@ public:
         }
     }
 
+    void free()
+    {
+        buffer.free();
+        release_materials();
+    }
 
-    void free() { buffer.free(); }
+    ~MeshBase() { free(); }
 };
 
 // ============================================================
@@ -414,3 +433,98 @@ public:
     // Same two-phase pick as Mesh::pick — uses rest-pose vertex positions.
     PickResult pick(const Ray &worldRay, const glm::mat4 &model = glm::mat4(1.f)) const;
 };
+
+
+
+ 
+struct VertexAnimVertex
+{
+    glm::vec3 position; 
+    glm::vec2 uv;       
+    glm::vec3 normal;   
+};
+
+
+struct MeshTag
+{
+    char tag[32];
+    glm::vec3 origin = glm::vec3(0.0f);
+    glm::vec3 axis[3] = 
+    {
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 1.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f)
+    };
+};
+
+
+// ============================================================
+//  AnimatedMeshBuffer — skinned
+// ============================================================
+struct AnimatedVertexMeshBuffer : public IDrawable
+{
+    std::vector<VertexAnimVertex> vertices;
+    std::vector<glm::vec3> positions;
+    std::vector<uint16_t> indices;
+    GLuint vao = 0, vbo = 0, ibo = 0;
+    GLenum mode = GL_TRIANGLES;
+
+    void upload();
+    void update();
+    void draw() const override;
+    void drawRange(uint32_t start, uint32_t count) const override;
+    void free();
+
+    // IDrawable
+    BoundingBox getAABB() const override { return BoundingBox{}; }
+    int vertexCount() const override { return (int)vertices.size(); }
+    int indexCount() const override { return (int)indices.size(); }
+
+    VertexAnimVertex &operator[](int i) { return vertices[i]; }
+    int count() const { return (int)vertices.size(); }
+
+    AnimatedVertexMeshBuffer() = default;
+    AnimatedVertexMeshBuffer(const AnimatedVertexMeshBuffer &) = delete;
+    AnimatedVertexMeshBuffer &operator=(const AnimatedVertexMeshBuffer &) = delete;
+    ~AnimatedVertexMeshBuffer() { free(); }
+};
+
+
+class VertexAnimatedMesh : public MeshBase<AnimatedVertexMeshBuffer>, public IDrawable
+{
+public:
+
+   
+
+    std::vector<glm::vec3>   framePositions;
+    std::vector<std::string> frameNames;
+    std::vector<MeshTag>     tags;
+    int tagsPerFrame = 0;
+
+    float currentFrame = 0.0f;
+
+    void compute_normals();
+
+    void upload();
+    void setFrame(float frame);
+    int findTag(const char *name) const;
+    bool sampleTag(int tagIndex, float frame, glm::mat4 &out) const;
+    bool sampleTag(const char *name, float frame, glm::mat4 &out) const;
+
+
+
+
+    void draw() const override { buffer.draw(); }
+    void drawRange(uint32_t s, uint32_t c) const override { buffer.drawRange(s, c); }
+    BoundingBox getAABB() const override { return aabb; }
+    int vertexCount() const override { return (int)buffer.vertices.size(); }
+    int indexCount() const override { return (int)buffer.indices.size(); }
+    int frameCount() const
+    {
+        return buffer.vertices.empty() ? 0 : (int)(framePositions.size() / buffer.vertices.size());
+    }
+
+    PickResult pick(const Ray &worldRay, const glm::mat4 &model = glm::mat4(1.f)) const;
+};
+
+ 

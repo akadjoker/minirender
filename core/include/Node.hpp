@@ -1,7 +1,7 @@
 #pragma once
 #include "Mesh.hpp"
 #include "Material.hpp"
-#include "VertexAnimation.hpp"
+ 
 #include "Types.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -10,6 +10,10 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+
+
+class VertexAnimatedMeshManager;
+
 
 enum class NodeType
 {
@@ -32,11 +36,23 @@ enum class TransformSpace
     World
 };
 
+enum class RenderType
+{
+    Solid,
+    Transparent,
+    Terrain,
+    Skybox,
+    Special,
+    Overlay
+};
+
 class Camera;
+class Scene;
 struct RenderList;
 
 class Node
 {
+    friend class Scene;
 
     protected:
 
@@ -57,7 +73,8 @@ class Node
     virtual class RenderableNode *asRenderableNode() { return nullptr; }
     virtual class MeshNode *asMeshNode()          { return nullptr; }
     virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
-    virtual class VertexAnimMeshNode *asVertexAnimMeshNode() { return nullptr; }
+    virtual class VertexAnimatedMeshNode *asVertexAnimatedMeshNode() { return nullptr; }
+ 
     virtual class Light    *asLight()             { return nullptr; }
 
     // Override to update simulation logic each frame (particles, etc.)
@@ -70,6 +87,7 @@ class Node
     int childCount() const { return (int)children.size(); }
 
 protected:
+    Scene *scene_ = nullptr;
     std::vector<Node *> children;
 };
 
@@ -77,7 +95,7 @@ class Node3D : public Node
 {
 public:
     Node3D();
-    virtual ~Node3D() = default;
+    virtual ~Node3D();
 
      Node3D *asNode3D() override { return this; }
 
@@ -103,10 +121,16 @@ public:
     glm::vec3 up()      const;  // +Y
     glm::vec3 down()    const;  // -Y
 
+
+    void setLocal(glm::mat4 mat);
+    void setWorld(glm::mat4 mat);
+
+
     // ── Setters (mark dirty) ─────────────────────────────────
     void setPosition(const glm::vec3 &p);
     void setPosition(float x, float y, float z);
     void setRotation(const glm::quat &q);
+    void setRotationEuler(const glm::vec3 &degreesPitchYawRoll);
     void setScale(const glm::vec3 &s);
     void setScale(float s);
 
@@ -167,18 +191,17 @@ public:
 
     // Transform a local-space point into world space
     glm::vec3 localToWorldPoint(const glm::vec3 &localPoint) const;
-
-    // ── Re-parent ────────────────────────────────────────────
-    // Attach to newParent. If keepWorldTransform=true the node stays
-    // visually in place (position/rotation/scale are recalculated in
-    // the new parent's space).
-    void setParent(Node3D *newParent, bool keepWorldTransform = true);
+ 
+    void setParent(Node3D *newParent);
 
     // ── Dirty flag ───────────────────────────────────────────
     void markDirty();
     bool isDirty() const { return dirty_; }
 
 private:
+    friend class Node;
+    Node3D *effectiveTransformParent() const;
+    Node3D *transformParent_ = nullptr;
     mutable glm::mat4 worldCache_ = glm::mat4(1.f);
     mutable bool      dirty_      = true;
 };
@@ -186,6 +209,7 @@ private:
 class RenderableNode : public Node3D
 {
 public:
+    RenderType renderType = RenderType::Solid;
     bool castShadow = true;
     bool receiveShadow = true;
 
@@ -201,10 +225,11 @@ public:
 
     MeshNode *asMeshNode() override { return this; }
 
-    // Set by name → resolves + caches the pointer once.
-    // Leave empty to use mesh->materials[] (loader materials).
     void        setMaterial(const std::string &name);
-    Material   *getMaterial() const { return material_; }
+    void        setMaterial(Material *material);
+    void        setMaterial(int slot, Material *material);
+    Material   *getMaterial() const { return getMaterial(0); }
+    Material   *getMaterial(int slot) const;
     const std::string &getMaterialName() const { return materialName_; }
 
     MeshNode() ;
@@ -212,7 +237,7 @@ public:
 
 private:
     std::string  materialName_;
-    Material    *material_ = nullptr;
+    std::vector<Material *> materialOverrides_;
 };
 
 // ─── BoneSocket ──────────────────────────────────────────────────────────────
@@ -222,7 +247,7 @@ struct BoneSocket
 {
     std::string  boneName;
     int          boneIndex   = -1;           // resolvido na primeira atualização
-    Node3D      *node        = nullptr;      // nó filho — não owned
+    Node3D      *node        = nullptr;      // nó filho — owned via addChild()
     glm::mat4    localOffset = glm::mat4(1.f); // offset em bone-local space
 };
 
@@ -239,7 +264,10 @@ public:
     AnimatedMeshNode *asAnimatedMeshNode() override { return this; }
 
     void       setMaterial(const std::string &name);
-    Material  *getMaterial() const { return material_; }
+    void       setMaterial(Material *material);
+    void       setMaterial(int slot, Material *material);
+    Material  *getMaterial() const { return getMaterial(0); }
+    Material  *getMaterial(int slot) const;
     const std::string &getMaterialName() const { return materialName_; }
 
     // ── Bone Sockets (attachments) ──────────────────────────
@@ -256,40 +284,60 @@ public:
 
 private:
     std::string  materialName_;
-    Material    *material_ = nullptr;
+    std::vector<Material *> materialOverrides_;
     std::vector<BoneSocket> sockets_; // bone attachments
 };
 
-// ─── VertexAnimMeshNode ────────────────────────────────────────────────────
-// Reuses MeshNode render path, but updates frame/clip state through
-// VertexAnimController and drives attach nodes from MD3-like tags.
-class VertexAnimMeshNode : public MeshNode
+
+struct TagSocket
+{
+    std::string  boneName;
+    Node3D      *node        = nullptr;      // nó filho — owned via addChild()
+    glm::mat4    localOffset = glm::mat4(1.f); // offset em bone-local space
+};
+
+class VertexAnimatedMeshNode : public RenderableNode
 {
 public:
-    VertexAnimMeshNode();
-    ~VertexAnimMeshNode() override = default;
+    VertexAnimatedMesh *mesh = nullptr;
+    float frame = 0.0f;
+    float fps = 8.0f;
+    bool playing = true;
+    bool loop = true;
+ 
+    virtual ~VertexAnimatedMeshNode();
+    VertexAnimatedMeshNode();
+    VertexAnimatedMeshNode *asVertexAnimatedMeshNode() override { return this; }
 
-    VertexAnimMeshNode *asVertexAnimMeshNode() override { return this; }
+    void       setFrame(float value);// { frame = value; if (mesh) mesh->setFrame(frame); }
+    void       setMaterial(const std::string &name);
+    void       setMaterial(Material *material);
+    void       setMaterial(int slot, Material *material);
+    Material  *getMaterial() const { return getMaterial(0); }
+    Material  *getMaterial(int slot) const;
+    const std::string &getMaterialName() const { return materialName_; }
 
-    VertexAnimController controller;
+     TagSocket *addSocket(const std::string &boneName, Node3D *node,
+                          const glm::mat4 &localOffset = glm::mat4(1.f));
 
-    void setTagTracks(const std::vector<VertexTagTrack> &tracks) { tagTracks_ = tracks; }
-    std::vector<VertexTagTrack> &tagTracks() { return tagTracks_; }
-    const std::vector<VertexTagTrack> &tagTracks() const { return tagTracks_; }
+    void setMesh(VertexAnimatedMesh *mesh);
 
-    VertexTagSocket *addTagSocket(const std::string &tagName, Node3D *node,
-                                  const glm::mat4 &localOffset = glm::mat4(1.f));
-    VertexTagSocket *getTagSocket(const std::string &tagName);
-    void             removeTagSocket(const std::string &tagName);
-    void             clearTagSockets();
+    Node3D* getTag(int index);
 
-    void updateTagSockets();
+   void update(float dt) override;
 
 private:
-    VertexTagBinder              tagBinder_;
-    std::vector<VertexTagSocket> tagSockets_;
-    std::vector<VertexTagTrack>  tagTracks_;
+    std::string materialName_;
+    std::vector<Material *> materialOverrides_;
+    std::vector<TagSocket> sockets_; // bone attachments
+ 
+
+    
+
+ 
 };
+
+
 
 // ─── Lights ──────────────────────────────────────────────────────────────────
 

@@ -28,7 +28,11 @@ void finalize_procedural_mesh(Mesh *mesh)
     mesh->add_surface(0, (uint32_t)mesh->buffer.indices.size());
     // Ensure at least one material slot exists — gatherNode skips items with mat==nullptr
     if (mesh->materials.empty())
-        mesh->add_material(MaterialManager::instance().create(mesh->name));
+    {
+        auto *mat = new Material();
+        mat->name = mesh->name;
+        mesh->add_material(mat);
+    }
 }
 }
 
@@ -325,12 +329,12 @@ Mesh *MeshManager::load_obj(const std::string &name, const std::string &path,
     }
 
     // ── Build surfaces + register materials ───────────────────────────────
-    auto &matMgr = MaterialManager::instance();
     auto &texMgr = TextureManager::instance();
 
     // Default material (used when no MTL or matIdx == -1)
     std::string defMatName = name + "/__default";
-    Material *defMat = matMgr.has(defMatName) ? matMgr.get(defMatName) : matMgr.create(defMatName);
+    Material *defMat = new Material();
+    defMat->name = defMatName;
     defMat->setVec3("u_color", {0.8f, 0.8f, 0.8f});
 
     // Build MaterialManager entries for each objMat — index matches objMats[]
@@ -338,7 +342,8 @@ Mesh *MeshManager::load_obj(const std::string &name, const std::string &path,
     for (auto &om : objMats)
     {
         std::string mn = name + "/" + om.name;
-        Material *mat = matMgr.has(mn) ? matMgr.get(mn) : matMgr.create(mn);
+        Material *mat = new Material();
+        mat->name = mn;
         mat->setVec3("u_color", {om.diffuse.r, om.diffuse.g, om.diffuse.b});
         if (!om.tex.empty())
         {
@@ -381,9 +386,6 @@ Mesh *MeshManager::load_obj(const std::string &name, const std::string &path,
                 "[MeshManager] OBJ loaded: %s  verts=%zu  idx=%zu  surfaces=%zu  materials=%zu",
                 name.c_str(), mesh->buffer.vertices.size(), mesh->buffer.indices.size(),
                 mesh->surfaces.size(), mesh->materials.size());
-
-    // Fill in default shader + fallback texture for any material that lacks them
-    matMgr.applyDefaults();
 
     cache[name] = mesh;
     return mesh;
@@ -1107,7 +1109,11 @@ Mesh *MeshManager::create_cube(const std::string &name, float s)
     mesh->buffer.upload();
     mesh->compute_aabb();
     mesh->add_surface(0, 36);
-    mesh->add_material(MaterialManager::instance().create(name));
+    {
+        auto *mat = new Material();
+        mat->name = name;
+        mesh->add_material(mat);
+    }
 
     cache[name] = mesh;
     return mesh;
@@ -1208,7 +1214,11 @@ Mesh *MeshManager::create_plane(const std::string &name, float width, float dept
     mesh->buffer.upload();
     mesh->compute_aabb();
     mesh->add_surface(0, (uint32_t)idx_count);
-    mesh->add_material(MaterialManager::instance().create(name));
+    {
+        auto *mat = new Material();
+        mat->name = name;
+        mesh->add_material(mat);
+    }
 
     cache[name] = mesh;
     return mesh;
@@ -1237,10 +1247,6 @@ Mesh *MeshManager::load_h3d(const std::string &name, const std::string &path,
         delete mesh;
         return nullptr;
     }
-
-    MaterialManager::instance().applyDefaults();
-
     cache[name] = mesh;
     return mesh;
 }
- 

@@ -11,9 +11,6 @@
 #include "Manager.hpp"
 #include "Node.hpp"
 #include "Scene.hpp"
-#include "RenderScene.hpp"
-#include "Renderer.hpp"
 #include "Camera.hpp"
 #include "RenderState.hpp"
-#include "WaterNode.hpp"
  

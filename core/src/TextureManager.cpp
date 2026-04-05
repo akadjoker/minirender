@@ -391,8 +391,6 @@ Texture *TextureManager::load(const std::string &name,
     Texture *t = uploadMemory(name, width, height, pixelType, pixels, sizeBytes, opts);
     stbi_image_free(pixels);
     if (t)
-        t->sourcePath = path;
-    if (t)
         SDL_Log("[TextureManager] Loaded '%s' (%dx%d)", name.c_str(), t->width, t->height);
 
     return t;

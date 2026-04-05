@@ -272,7 +272,6 @@ void MeshReader::readMaterials(const ChunkHeader &h,
 {
     Sint64 end = s_->tell() + h.length;
     uint32_t count = s_->readU32();
-    auto &matMgr = MaterialManager::instance();
     auto &texMgr = TextureManager::instance();
 
     for (uint32_t i = 0; i < count; i++)
@@ -305,7 +304,8 @@ void MeshReader::readMaterials(const ChunkHeader &h,
         }
 
         std::string key = name.empty() ? ("__mat_" + std::to_string(i)) : name;
-        Material *mat = matMgr.has(key) ? matMgr.get(key) : matMgr.create(key);
+        Material *mat = new Material();
+        mat->name = key;
         mat->setVec3("u_color", col);
 
         if (!textureRef.empty())

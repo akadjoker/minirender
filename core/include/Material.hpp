@@ -181,6 +181,7 @@ public:
             return it->second.v3;
         return defaultVal;
     }
+    static void applyDefaultStates();
     void applyStates() const;
     void bindTextures() const;              // uses material's own shader
     int  bindTexturesTo(Shader *sh) const;  // uses given shader — returns # of binds

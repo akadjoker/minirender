@@ -1,5 +1,6 @@
 #pragma once
 #include <glm/glm.hpp>
+#include "Math.hpp"
 #include "Node.hpp"
 
 class CameraController;
@@ -37,6 +38,7 @@ public:
     glm::mat4 view = glm::mat4(1.0f);
     glm::mat4 projection = glm::mat4(1.0f);
     glm::mat4 viewProjection = glm::mat4(1.0f);
+    Frustum frustum = Frustum::infinite();
 
     void update(float dt);
 

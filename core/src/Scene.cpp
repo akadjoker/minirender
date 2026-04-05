@@ -3,169 +3,22 @@
 #include "Batch.hpp"
 #include "Camera.hpp"
 #include "Manager.hpp"
+#include "RenderState.hpp"
 #include "TerrainNode.hpp"
-#include "WaterNode.hpp"
 #include <algorithm>
-#include <limits>
+
+namespace
+{
+void erase_node_ptr(std::vector<Node *> &nodes, Node *target)
+{
+    auto it = std::remove(nodes.begin(), nodes.end(), target);
+    nodes.erase(it, nodes.end());
+}
+}
 
 Scene::Scene()
 {
-}
-
-static Material *resolveMeshMaterial(MeshNode *node, Mesh *mesh, const Surface &surface)
-{
-    if (!node || !mesh) return nullptr;
-
-    Material *mat = node->getMaterial();
-    if (mat) return mat;
-
-    const auto &mats = mesh->materials;
-    if (surface.material_index >= 0 && surface.material_index < static_cast<int>(mats.size()))
-        return mats[surface.material_index];
-    return nullptr;
-}
-
-static Material *resolveAnimatedMaterial(AnimatedMeshNode *node, AnimatedMesh *mesh, const Surface &surface)
-{
-    if (!node || !mesh) return nullptr;
-
-    Material *mat = node->getMaterial();
-    if (mat) return mat;
-
-    const auto &mats = mesh->materials;
-    if (surface.material_index >= 0 && surface.material_index < static_cast<int>(mats.size()))
-        return mats[surface.material_index];
-    return nullptr;
-}
-
-static void addRenderObject(RenderScene &outScene, const RenderObject &object)
-{
-    if (!object.material) return;
-
-    if (object.material->getType() == MaterialType::Water)
-        outScene.water.push_back(object);
-    else if (object.material->isTransparent())
-        outScene.transparent.push_back(object);
-    else
-        outScene.opaque.push_back(object);
-}
-
-static void gatherRenderNode(Node *node, const Frustum &frustum, RenderScene &outScene, const Node *ignoredNode)
-{
-    if (!node || !node->visible || node == ignoredNode)
-        return;
-
-    if (auto *light = node->asLight())
-        outScene.lights.push_back(light);
-
-    if (auto *meshNode = node->asMeshNode())
-    {
-        if (meshNode->mesh)
-        {
-            const glm::mat4 world = meshNode->worldMatrix();
-            const BoundingBox worldBounds = meshNode->mesh->aabb.transformed(world);
-
-            if (!worldBounds.is_valid() || frustum.contains(worldBounds))
-            {
-                for (const auto &surface : meshNode->mesh->surfaces)
-                {
-                    BoundingBox surfaceBounds = surface.aabb.is_valid()
-                        ? surface.aabb.transformed(world)
-                        : worldBounds;
-                    if (surfaceBounds.is_valid() && !frustum.contains(surfaceBounds))
-                        continue;
-
-                    Material *mat = resolveMeshMaterial(meshNode, meshNode->mesh, surface);
-                    if (!mat) continue;
-
-                    RenderObject object;
-                    object.owner = meshNode;
-                    object.drawable = meshNode->mesh;
-                    object.material = mat;
-                    object.model = world;
-                    object.worldBounds = surfaceBounds;
-                    object.indexStart = surface.index_start;
-                    object.indexCount = surface.index_count;
-                    object.castShadow = meshNode->castShadow;
-                    object.receiveShadow = meshNode->receiveShadow;
-                    addRenderObject(outScene, object);
-                }
-            }
-        }
-    }
-
-    if (auto *animatedNode = node->asAnimatedMeshNode())
-    {
-        if (animatedNode->mesh)
-        {
-            const glm::mat4 world = animatedNode->worldMatrix();
-            const BoundingBox worldBounds = animatedNode->mesh->aabb.transformed(world);
-
-            if (!worldBounds.is_valid() || frustum.contains(worldBounds))
-            {
-                for (const auto &surface : animatedNode->mesh->surfaces)
-                {
-                    BoundingBox surfaceBounds = surface.aabb.is_valid()
-                        ? surface.aabb.transformed(world)
-                        : worldBounds;
-                    if (surfaceBounds.is_valid() && !frustum.contains(surfaceBounds))
-                        continue;
-
-                    Material *mat = resolveAnimatedMaterial(animatedNode, animatedNode->mesh, surface);
-                    if (!mat) continue;
-
-                    RenderObject object;
-                    object.owner = animatedNode;
-                    object.drawable = animatedNode->mesh;
-                    object.material = mat;
-                    object.model = world;
-                    object.worldBounds = surfaceBounds;
-                    object.indexStart = surface.index_start;
-                    object.indexCount = surface.index_count;
-                    object.castShadow = animatedNode->castShadow;
-                    object.receiveShadow = animatedNode->receiveShadow;
-                    addRenderObject(outScene, object);
-                }
-            }
-        }
-    }
-
-    if (auto *terrain = dynamic_cast<TerrainLodNode *>(node))
-    {
-        if (terrain->prepareForRender(outScene.camera, frustum))
-        {
-            RenderObject object;
-            object.owner = terrain;
-            object.drawable = terrain->getRenderBuffer();
-            object.material = terrain->getMaterial();
-            object.model = glm::mat4(1.0f);
-            object.worldBounds = terrain->getAABB();
-            object.indexStart = 0;
-            object.indexCount = terrain->getVisibleIndexCount();
-            object.castShadow = terrain->castShadow;
-            object.receiveShadow = terrain->receiveShadow;
-            addRenderObject(outScene, object);
-        }
-    }
-
-    if (auto *water = dynamic_cast<WaterNode3D *>(node))
-    {
-        if (water->getMaterial())
-        {
-            RenderObject object;
-            object.owner = water;
-            object.drawable = water->getRenderBuffer();
-            object.material = water->getMaterial();
-            object.model = water->worldMatrix();
-            object.worldBounds = water->getAABB();
-            object.castShadow = water->castShadow;
-            object.receiveShadow = water->receiveShadow;
-            addRenderObject(outScene, object);
-        }
-    }
-
-    for (auto *child : node->getChildren())
-        gatherRenderNode(child, frustum, outScene, ignoredNode);
+    resetPassState();
 }
 
 Scene::~Scene()
@@ -176,6 +29,62 @@ Scene::~Scene()
     clear();
 }
 
+const std::vector<RenderableNode *> &Scene::renderables(RenderType type) const
+{
+    switch (type)
+    {
+    case RenderType::Solid:       return solidNodes_;
+    case RenderType::Transparent: return transparentNodes_;
+    case RenderType::Terrain:     return terrainNodes_;
+    case RenderType::Skybox:      return skyboxNodes_;
+    case RenderType::Special:     return specialNodes_;
+    case RenderType::Overlay:     return overlayNodes_;
+    }
+    return renderables_;
+}
+
+void Scene::resetPassState()
+{
+    passActive_ = false;
+    currentShader_ = nullptr;
+}
+
+void Scene::attachRecursive(Node *node)
+{
+    if (!node)
+        return;
+    node->scene_ = this;
+    for (Node *child : node->getChildren())
+        attachRecursive(child);
+}
+
+void Scene::detachRecursive(Node *node)
+{
+    if (!node)
+        return;
+    node->scene_ = nullptr;
+    for (Node *child : node->getChildren())
+        detachRecursive(child);
+}
+
+void Scene::onChildAttached(Node *node)
+{
+    if (!node)
+        return;
+    erase_node_ptr(roots_, node);
+    attachRecursive(node);
+}
+
+void Scene::onChildDetached(Node *node)
+{
+    if (!node)
+        return;
+    attachRecursive(node);
+    if (std::find(roots_.begin(), roots_.end(), node) == roots_.end())
+        roots_.push_back(node);
+}
+
+ 
 MeshNode *Scene::createMeshNode(const std::string &name, Mesh *mesh)
 {
     auto *node = new MeshNode();
@@ -190,30 +99,24 @@ AnimatedMeshNode *Scene::createAnimatedMeshNode(const std::string &name, Animate
     auto *node = new AnimatedMeshNode();
     node->name = name;
     node->mesh = mesh;
-    node->animator = mesh ? new Animator(mesh) : nullptr;
+    node->animator = new Animator(mesh) ;
     add(node);
     return node;
 }
 
-VertexAnimMeshNode *Scene::createVertexAnimMeshNode(const std::string &name, Mesh *mesh)
+VertexAnimatedMeshNode *Scene::createVertexAnimatedMeshNode(const std::string &name, VertexAnimatedMesh *mesh)
 {
-    auto *node = new VertexAnimMeshNode();
+    auto *node = new VertexAnimatedMeshNode();
     node->name = name;
-    node->mesh = mesh;
+    node->setMesh(mesh);
     add(node);
     return node;
 }
 
+ 
 TerrainLodNode *Scene::createTerrainLodNode(const std::string &name)
 {
     auto *node = new TerrainLodNode(name);
-    add(node);
-    return node;
-}
-
-WaterNode3D *Scene::createWaterNode(const std::string &name)
-{
-    auto *node = new WaterNode3D(name);
     add(node);
     return node;
 }
@@ -222,19 +125,29 @@ void Scene::add(Node *node)
 {
     if (!node)
         return;
+
+    if (node->scene_ && node->scene_ != this)
+        node->scene_->remove(node);
+
     if (node->parent)
         node->parent->removeChild(node);
-    roots_.push_back(node);
+
+    attachRecursive(node);
+    if (std::find(roots_.begin(), roots_.end(), node) == roots_.end())
+        roots_.push_back(node);
 }
 
 void Scene::remove(Node *node)
 {
-    auto it = std::find(roots_.begin(), roots_.end(), node);
-    if (it != roots_.end())
-    {
-        *it = roots_.back();
-        roots_.pop_back();
-    }
+    if (!node)
+        return;
+
+    if (node->parent)
+        node->parent->removeChild(node);
+
+    erase_node_ptr(roots_, node);
+    erase_node_ptr(pendingRemoval_, node);
+    detachRecursive(node);
 }
 
 void Scene::markForRemoval(Node *node)
@@ -246,9 +159,20 @@ void Scene::markForRemoval(Node *node)
 
 void Scene::clear()
 {
-    for (auto *node : roots_)
-        delete node;
+    std::vector<Node *> roots = roots_;
     roots_.clear();
+    pendingRemoval_.clear();
+    for (Node *root : roots)
+        delete root;
+
+    renderables_.clear();
+    solidNodes_.clear();
+    transparentNodes_.clear();
+    terrainNodes_.clear();
+    skyboxNodes_.clear();
+    specialNodes_.clear();
+    overlayNodes_.clear();
+    resetPassState();
 }
 
 Camera *Scene::createCamera(const std::string &name)
@@ -261,17 +185,142 @@ Camera *Scene::createCamera(const std::string &name)
     return cam;
 }
 
+Camera *Scene::createFreeCamera(const std::string &name,
+                                int viewportWidth, int viewportHeight,
+                                const glm::vec3 &position,
+                                const glm::vec3 &target,
+                                float moveSpeed,
+                                float mouseSensitivity,
+                                float sprintMultiplier)
+{
+    Camera *cam = createCamera(name);
+    cam->setViewport(0, 0, viewportWidth, viewportHeight);
+    cam->setPosition(position);
+    cam->lookAt(target);
+
+    auto *controller = new FreeCameraController();
+    controller->moveSpeed = moveSpeed;
+    controller->mouseSensitivity = mouseSensitivity;
+    controller->sprintMultiplier = sprintMultiplier;
+    cam->setController(controller);
+    return cam;
+}
+
 void Scene::setCurrentCamera(Camera *cam)
 {
-    if (!cam)
-    {
-        currentCamera_ = nullptr;
-        return;
-    }
+    currentCamera_ = cam;
+}
 
-    auto it = std::find(cameras_.begin(), cameras_.end(), cam);
-    if (it != cameras_.end())
-        currentCamera_ = cam;
+void Scene::setCamera(Camera *cam)
+{
+    setCurrentCamera(cam);
+}
+
+void Scene::beginPass()
+{
+    passActive_ = true;
+ 
+    auto &rs = RenderState::instance();
+    Material::applyDefaultStates();
+
+    if (currentCamera_)
+    {
+        rs.setViewport(currentCamera_->viewport.x,
+                           currentCamera_->viewport.y,
+                           currentCamera_->viewport.z,
+                           currentCamera_->viewport.w);
+        rs.setClearColor(currentCamera_->clearColorVal.r,
+                         currentCamera_->clearColorVal.g,
+                         currentCamera_->clearColorVal.b,
+                         currentCamera_->clearColorVal.a);
+        rs.clear(currentCamera_->clearColor, currentCamera_->clearDepth);
+    }
+}
+
+void Scene::endPass()
+{
+   
+    passActive_ = false;
+}
+
+void Scene::setShader(Shader *shader)
+{
+    currentShader_ = shader;
+    RenderState::instance().useProgram(shader ? shader->getId() : 0);
+}
+
+void Scene::render(RenderType type)
+{
+    if (!currentCamera_ || !currentShader_)
+        return;
+
+    auto &rs = RenderState::instance();
+
+    rs.useProgram(currentShader_->getId());
+    currentShader_->setMat4("u_view", currentCamera_->view);
+    currentShader_->setMat4("u_projection", currentCamera_->projection);
+
+    for (RenderableNode *renderable : renderables(type))
+    {
+        auto *meshNode = renderable->asMeshNode();
+        if (meshNode && meshNode->mesh)
+        {
+            const glm::mat4 model = meshNode->worldMatrix();
+            const BoundingBox worldBounds = meshNode->mesh->aabb.transformed(model);
+            if (worldBounds.is_valid() && !currentCamera_->frustum.contains(worldBounds))
+                continue;
+
+            currentShader_->setMat4("u_model", model);
+            currentShader_->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+            for (const Surface &surface : meshNode->mesh->surfaces)
+            {
+                Material *material = meshNode->getMaterial(surface.material_index);
+                if (material)
+                {
+                    material->applyStates();
+                    material->applyUniformsTo(currentShader_);
+                    material->bindTexturesTo(currentShader_);
+                }
+                else
+                {
+                    Material::applyDefaultStates();
+                }
+
+                meshNode->mesh->drawRange(surface.index_start, surface.index_count);
+            }
+            continue;
+        }
+
+        auto *vertexAnimNode = renderable->asVertexAnimatedMeshNode();
+        if (!vertexAnimNode || !vertexAnimNode->mesh)
+            continue;
+
+        const glm::mat4 model = vertexAnimNode->worldMatrix();
+        const BoundingBox worldBounds = vertexAnimNode->mesh->aabb.transformed(model);
+        if (worldBounds.is_valid() && !currentCamera_->frustum.contains(worldBounds))
+            continue;
+
+        currentShader_->setMat4("u_model", model);
+        currentShader_->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+        for (const Surface &surface : vertexAnimNode->mesh->surfaces)
+        {
+            Material *material = vertexAnimNode->getMaterial(surface.material_index);
+            if (material)
+            {
+                material->applyStates();
+                material->applyUniformsTo(currentShader_);
+                material->bindTexturesTo(currentShader_);
+            }
+            else
+            {
+                Material::applyDefaultStates();
+            }
+
+            vertexAnimNode->mesh->drawRange(surface.index_start, surface.index_count);
+        }
+    }
 }
 
 void Scene::removeCamera(Camera *cam)
@@ -292,34 +341,54 @@ void Scene::update(float dt)
     for (auto *node : pendingRemoval_)
     {
         remove(node);
-        if (node->parent)
-            node->parent->removeChild(node);
         delete node;
     }
     pendingRemoval_.clear();
 
+    for (auto *camera : cameras_)
+    {
+        if (!camera)
+            continue;
+        camera->update(dt);
+        camera->updateMatrices();
+    }
+
     for (auto *root : roots_)
         updateNode(root, dt);
+
+    renderables_.clear();
+    solidNodes_.clear();
+    transparentNodes_.clear();
+    terrainNodes_.clear();
+    skyboxNodes_.clear();
+    specialNodes_.clear();
+    overlayNodes_.clear();
+
+    for (auto *root : roots_)
+        collectRenderables(root);
 }
 
-void Scene::buildRenderScene(Camera *camera, RenderScene &outScene, const Node *ignoredNode)
+void Scene::collectRenderables(Node *node)
 {
-    outScene.clear();
-    if (!camera)
+    if (!node || !node->visible)
         return;
 
-    camera->updateMatrices();
+    if (auto *renderable = node->asRenderableNode())
+    {
+        renderables_.push_back(renderable);
+        switch (renderable->renderType)
+        {
+        case RenderType::Solid:       solidNodes_.push_back(renderable); break;
+        case RenderType::Transparent: transparentNodes_.push_back(renderable); break;
+        case RenderType::Terrain:     terrainNodes_.push_back(renderable); break;
+        case RenderType::Skybox:      skyboxNodes_.push_back(renderable); break;
+        case RenderType::Special:     specialNodes_.push_back(renderable); break;
+        case RenderType::Overlay:     overlayNodes_.push_back(renderable); break;
+        }
+    }
 
-    outScene.camera = camera;
-    outScene.viewport = camera->viewport;
-    outScene.clearColor = camera->clearColor;
-    outScene.clearColorValue = camera->clearColorVal;
-    outScene.clearDepth = camera->clearDepth;
-    outScene.sky = sky_;
-
-    const Frustum frustum = Frustum::from_matrix(camera->viewProjection);
-    for (auto *root : roots_)
-        gatherRenderNode(root, frustum, outScene, ignoredNode);
+    for (auto *child : node->getChildren())
+        collectRenderables(child);
 }
 
 void Scene::debug(RenderBatch *batch)
@@ -335,13 +404,33 @@ void Scene::updateNode(Node *node, float dt)
 {
     if (!node || !node->visible) return;
 
+    if (auto *van = node->asVertexAnimatedMeshNode())
+    {
+        if (van->mesh && van->playing)
+        {
+            const int frames = van->mesh->frameCount();
+            if (frames > 0)
+            {
+                van->frame += dt * van->fps;
+                if (van->loop)
+                {
+                    while (van->frame >= (float)frames)
+                        van->frame -= (float)frames;
+                }
+                else if (van->frame > (float)(frames - 1))
+                {
+                    van->frame = (float)(frames - 1);
+                    van->playing = false;
+                }
+                van->mesh->setFrame(van->frame);
+            }
+        }
+    }
+
     node->update(dt);
 
-    if (auto *vn = node->asVertexAnimMeshNode())
-    {
-        vn->controller.update(dt);
-        vn->updateTagSockets();
-    }
+    if (auto *node3d = node->asNode3D())
+        node3d->worldMatrix();
 
     if (auto *an = node->asAnimatedMeshNode())
         if (an->animator && an->animator->active)
@@ -360,6 +449,7 @@ void Scene::release()
         delete cam;
     cameras_.clear();
     currentCamera_ = nullptr;
+    resetPassState();
     clear();
 }
 
@@ -416,6 +506,30 @@ void Scene::debugNode(Node *node, RenderBatch *batch)
             }
         }
     }
+    else if (auto *vertexAnimNode = node->asVertexAnimatedMeshNode())
+    {
+        if (vertexAnimNode->mesh && vertexAnimNode->mesh->aabb.is_valid())
+        {
+            const glm::mat4 world = vertexAnimNode->worldMatrix();
+            bool drewSurfaceBoxes = false;
+
+            for (const auto &surface : vertexAnimNode->mesh->surfaces)
+            {
+                if (!surface.aabb.is_valid())
+                    continue;
+
+                batch->SetColor(255, 180, 64, 255);
+                batch->Box(surface.aabb.transformed(world));
+                drewSurfaceBoxes = true;
+            }
+
+            if (!drewSurfaceBoxes)
+            {
+                batch->SetColor(255, 140, 0, 255);
+                batch->Box(vertexAnimNode->mesh->aabb.transformed(world));
+            }
+        }
+    }
 
     for (auto *child : node->getChildren())
         debugNode(child, batch);
@@ -464,6 +578,27 @@ static void pickNode(Node *node, const Ray &ray, ScenePickResult &best)
             {
                 best.result = r;
                 best.node = amn;
+            }
+        }
+    }
+    else if (auto *van = node->asVertexAnimatedMeshNode())
+    {
+        if (van->mesh)
+        {
+            const glm::mat4 world = van->worldMatrix();
+            const BoundingBox worldAABB = van->mesh->aabb.transformed(world);
+            if (worldAABB.is_valid())
+            {
+                float aabbHit = worldAABB.intersects_ray(ray.origin, ray.direction);
+                if (aabbHit < 0.f || aabbHit >= best.result.distance)
+                    goto pickChildren;
+            }
+
+            PickResult r = van->mesh->pick(ray, world);
+            if (r.hit && r.distance < best.result.distance)
+            {
+                best.result = r;
+                best.node = van;
             }
         }
     }

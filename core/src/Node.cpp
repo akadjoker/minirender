@@ -1,6 +1,6 @@
 #include "Node.hpp"
 #include "Animator.hpp"
-#include "Manager.hpp"
+#include "Scene.hpp"
 #include <algorithm>
 
 
@@ -14,21 +14,29 @@ Node::Node()
 Node::~Node()
 {
     for (Node *c : children)
-    {
-        c->parent = nullptr;
         delete c;
-    }
     children.clear();
 }
 
 void Node::addChild(Node *child)
 {
-    if (!child || child->parent == this)
+    if (!child || child == this || child->parent == this)
         return;
+
     if (child->parent)
         child->parent->removeChild(child);
+
+    if (child->scene_ && child->scene_ != scene_)
+        child->scene_->remove(child);
+
     child->parent = this;
     children.push_back(child);
+
+    if (auto *child3D = child->asNode3D())
+        child3D->transformParent_ = asNode3D();
+
+    if (scene_)
+        scene_->onChildAttached(child);
 }
 
 void Node::removeChild(Node *child)
@@ -36,8 +44,19 @@ void Node::removeChild(Node *child)
     auto it = std::find(children.begin(), children.end(), child);
     if (it != children.end())
     {
-        (*it)->parent = nullptr;
+        Node *detached = *it;
+        detached->parent = nullptr;
         children.erase(it);
+
+        if (auto *child3D = detached->asNode3D())
+        {
+            if (child3D->transformParent_ == asNode3D())
+                child3D->transformParent_ = nullptr;
+            child3D->markDirty();
+        }
+
+        if (scene_)
+            scene_->onChildDetached(detached);
     }
 }
 
@@ -52,7 +71,33 @@ Node *Node::getChild(const std::string &name) const
 void MeshNode::setMaterial(const std::string &name)
 {
     materialName_ = name;
-    material_     = MaterialManager::instance().get(name); // resolved once
+    materialOverrides_.clear();
+}
+
+void MeshNode::setMaterial(Material *material)
+{
+    setMaterial(0, material);
+    materialName_.clear();
+}
+
+void MeshNode::setMaterial(int slot, Material *material)
+{
+    if (slot < 0)
+        return;
+    if (slot >= (int)materialOverrides_.size())
+        materialOverrides_.resize(slot + 1, nullptr);
+    materialOverrides_[slot] = material;
+}
+
+Material *MeshNode::getMaterial(int slot) const
+{
+    if (slot < 0)
+        return nullptr;
+    if (slot < (int)materialOverrides_.size() && materialOverrides_[slot])
+        return materialOverrides_[slot];
+    if (mesh && slot < (int)mesh->materials.size())
+        return mesh->materials[slot];
+    return nullptr;
 }
 
 RenderableNode::RenderableNode() : Node3D()
@@ -82,15 +127,126 @@ AnimatedMeshNode::~AnimatedMeshNode()
     delete animator;
 }
 
-VertexAnimMeshNode::VertexAnimMeshNode() : MeshNode()
-{
-    type = NodeType::MeshNode;
-}
+ 
 
 void AnimatedMeshNode::setMaterial(const std::string &name)
 {
     materialName_ = name;
-    material_     = MaterialManager::instance().get(name);
+    materialOverrides_.clear();
+}
+
+void AnimatedMeshNode::setMaterial(Material *material)
+{
+    setMaterial(0, material);
+    materialName_.clear();
+}
+
+void AnimatedMeshNode::setMaterial(int slot, Material *material)
+{
+    if (slot < 0)
+        return;
+    if (slot >= (int)materialOverrides_.size())
+        materialOverrides_.resize(slot + 1, nullptr);
+    materialOverrides_[slot] = material;
+}
+
+Material *AnimatedMeshNode::getMaterial(int slot) const
+{
+    if (slot < 0)
+        return nullptr;
+    if (slot < (int)materialOverrides_.size() && materialOverrides_[slot])
+        return materialOverrides_[slot];
+    if (mesh && slot < (int)mesh->materials.size())
+        return mesh->materials[slot];
+    return nullptr;
+}
+
+VertexAnimatedMeshNode::VertexAnimatedMeshNode() : RenderableNode()
+{
+    type = NodeType::MeshNode;
+}
+
+VertexAnimatedMeshNode::~VertexAnimatedMeshNode()
+{
+   
+}
+
+void VertexAnimatedMeshNode::setFrame(float value)
+{
+    frame = value; 
+    if (mesh) mesh->setFrame(frame); 
+}
+
+void VertexAnimatedMeshNode::setMaterial(const std::string &name)
+{
+    materialName_ = name;
+    materialOverrides_.clear();
+}
+
+void VertexAnimatedMeshNode::setMaterial(Material *material)
+{
+    setMaterial(0, material);
+    materialName_.clear();
+}
+
+void VertexAnimatedMeshNode::setMaterial(int slot, Material *material)
+{
+    if (slot < 0)
+        return;
+    if (slot >= (int)materialOverrides_.size())
+        materialOverrides_.resize(slot + 1, nullptr);
+    materialOverrides_[slot] = material;
+}
+
+Material *VertexAnimatedMeshNode::getMaterial(int slot) const
+{
+    if (slot < 0)
+        return nullptr;
+    if (slot < (int)materialOverrides_.size() && materialOverrides_[slot])
+        return materialOverrides_[slot];
+    if (mesh && slot < (int)mesh->materials.size())
+        return mesh->materials[slot];
+    return nullptr;
+}
+
+TagSocket *VertexAnimatedMeshNode::addSocket(const std::string &boneName, Node3D *node, const glm::mat4 &localOffset)
+{
+   return nullptr;
+}
+
+void VertexAnimatedMeshNode::setMesh(VertexAnimatedMesh *mesh)
+{
+    this->mesh = mesh;
+    if (!mesh)
+        return;
+
+    for (size_t i = 0; i < mesh->tagsPerFrame; i++)
+    {
+        Node3D *back = new Node3D();
+        back->name = mesh->tags[i].tag;
+        addChild(back);
+    }
+}
+
+Node3D *VertexAnimatedMeshNode::getTag(int index)
+{
+     return static_cast<Node3D *>(children[index]);
+}
+
+void VertexAnimatedMeshNode::update(float dt)
+{
+    if (!mesh || children.empty())
+        return;
+
+    for (int i = 0; i < mesh->tagsPerFrame; ++i)
+    {
+        glm::mat4 tagLocal;
+        if (!mesh->sampleTag(i, frame, tagLocal))
+            continue;
+
+        static_cast<Node3D *>(children[i])->setLocal(tagLocal);
+    //    static_cast<Node3D *>(children[i])->update(dt);
+    }
 }
 
 // ── BoneSocket ───────────────────────────────────────────────
@@ -163,70 +319,4 @@ void AnimatedMeshNode::updateSockets()
             s.node->scale    = scl;
         }
     }
-}
-
-VertexTagSocket *VertexAnimMeshNode::addTagSocket(const std::string &tagName, Node3D *node,
-                                                   const glm::mat4 &localOffset)
-{
-    if (!node) return nullptr;
-
-    for (auto &s : tagSockets_)
-    {
-        if (s.tagName == tagName)
-        {
-            if (s.node != node)
-            {
-                if (s.node) removeChild(s.node);
-                addChild(node);
-            }
-            s.node = node;
-            s.localOffset = localOffset;
-            tagBinder_.addSocket(tagName, node, localOffset);
-            return &s;
-        }
-    }
-
-    VertexTagSocket s;
-    s.tagName = tagName;
-    s.node = node;
-    s.localOffset = localOffset;
-    tagSockets_.push_back(s);
-
-    addChild(node);
-    tagBinder_.addSocket(tagName, node, localOffset);
-    return &tagSockets_.back();
-}
-
-VertexTagSocket *VertexAnimMeshNode::getTagSocket(const std::string &tagName)
-{
-    for (auto &s : tagSockets_)
-        if (s.tagName == tagName) return &s;
-    return nullptr;
-}
-
-void VertexAnimMeshNode::removeTagSocket(const std::string &tagName)
-{
-    for (auto it = tagSockets_.begin(); it != tagSockets_.end(); ++it)
-    {
-        if (it->tagName == tagName)
-        {
-            if (it->node) removeChild(it->node);
-            tagBinder_.removeSocket(tagName);
-            tagSockets_.erase(it);
-            return;
-        }
-    }
-}
-
-void VertexAnimMeshNode::clearTagSockets()
-{
-    for (auto &s : tagSockets_)
-        if (s.node) removeChild(s.node);
-    tagSockets_.clear();
-    tagBinder_.clear();
-}
-
-void VertexAnimMeshNode::updateTagSockets()
-{
-    tagBinder_.updateSockets(controller, tagTracks_);
-}
+} 

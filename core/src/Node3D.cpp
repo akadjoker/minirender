@@ -8,13 +8,25 @@ Node3D::Node3D() : Node()
     type = NodeType::Node3D;
 }
 
+Node3D::~Node3D()
+{
+   
+}
+
+Node3D *Node3D::effectiveTransformParent() const
+{
+    if (transformParent_)
+        return transformParent_;
+    return parent ? parent->asNode3D() : nullptr;
+}
+
 // ============================================================
 //  Dirty propagation
 // ============================================================
 void Node3D::markDirty()
 {
     dirty_ = true;
-    // propagate to children
+
     for (auto *child : children)
         if (auto *c = child->asNode3D())
             c->markDirty();
@@ -33,19 +45,8 @@ glm::mat4 Node3D::localMatrix() const
 
 glm::mat4 Node3D::worldMatrix() const
 {
-    if (!dirty_)
-        return worldCache_;
-
-    if (parent)
-    {
-        Node3D *p3d = parent->asNode3D();
-        worldCache_ = p3d ? p3d->worldMatrix() * localMatrix() : localMatrix();
-    }
-    else
-    {
-        worldCache_ = localMatrix();
-    }
-
+    Node3D *p3d = effectiveTransformParent();
+    worldCache_ = p3d ? p3d->worldMatrix() * localMatrix() : localMatrix();
     dirty_ = false;
     return worldCache_;
 }
@@ -60,12 +61,8 @@ glm::vec3 Node3D::worldPosition() const
 
 glm::quat Node3D::worldRotation() const
 {
-    if (parent)
-    {
-        Node3D *p3d = parent->asNode3D();
-        if (p3d)
-            return p3d->worldRotation() * rotation;
-    }
+    if (Node3D *p3d = effectiveTransformParent())
+        return p3d->worldRotation() * rotation;
     return rotation;
 }
 
@@ -88,6 +85,25 @@ glm::vec3 Node3D::left() const { return worldRotation() * glm::vec3(-1, 0, 0); }
 glm::vec3 Node3D::up() const { return worldRotation() * glm::vec3(0, 1, 0); }
 glm::vec3 Node3D::down() const { return worldRotation() * glm::vec3(0, -1, 0); }
 
+void Node3D::setLocal(glm::mat4 mat)
+{
+    position = glm::vec3(mat[3]);
+    rotation = glm::normalize(glm::quat_cast(glm::mat3(mat)));
+    scale = glm::vec3(
+        glm::length(glm::vec3(mat[0])),
+        glm::length(glm::vec3(mat[1])),
+        glm::length(glm::vec3(mat[2])));
+    markDirty();
+}
+
+void Node3D::setWorld(glm::mat4 mat)
+{
+    if (Node3D *p3d = effectiveTransformParent())
+        setLocal(glm::inverse(p3d->worldMatrix()) * mat);
+    else
+        setLocal(mat);
+}
+
 // ============================================================
 //  Setters
 // ============================================================
@@ -104,6 +120,28 @@ void Node3D::setPosition(float x, float y, float z)
 void Node3D::setRotation(const glm::quat &q)
 {
     rotation = glm::normalize(q);
+    markDirty();
+}
+
+void Node3D::setRotationEuler(const glm::vec3 &degreesPitchYawRoll)
+{
+    glm::vec3 radians = glm::radians(degreesPitchYawRoll);
+    float pitch = radians.x;
+    float yaw   = radians.y;
+    float roll  = radians.z;
+
+    float cy = std::cos(yaw   * 0.5f);
+    float sy = std::sin(yaw   * 0.5f);
+    float cp = std::cos(pitch * 0.5f);
+    float sp = std::sin(pitch * 0.5f);
+    float cr = std::cos(roll  * 0.5f);
+    float sr = std::sin(roll  * 0.5f);
+
+    rotation.w = cr * cp * cy + sr * sp * sy;
+    rotation.x = cr * sp * cy + sr * cp * sy;
+    rotation.y = cr * cp * sy - sr * sp * cy;
+    rotation.z = sr * cp * cy - cr * sp * sy;
+    rotation = glm::normalize(rotation);
     markDirty();
 }
 
@@ -181,11 +219,8 @@ void Node3D::translate(const glm::vec3 &delta, TransformSpace space)
         position += rotation * delta;
     else if (space == TransformSpace::World)
     {
-        if (parent)
-        {
-            Node3D *p3d = parent->asNode3D();
-            position += p3d ? glm::inverse(p3d->worldRotation()) * delta : delta;
-        }
+        if (Node3D *p3d = effectiveTransformParent())
+            position += glm::inverse(p3d->worldRotation()) * delta;
         else
             position += delta;
     }
@@ -213,12 +248,8 @@ void Node3D::rotate(const glm::quat &rot, TransformSpace space)
     else // World
     {
         glm::quat parentRot = glm::quat(1.f, 0.f, 0.f, 0.f);
-        if (parent)
-        {
-            Node3D *p3d = parent->asNode3D();
-            if (p3d)
-                parentRot = p3d->worldRotation();
-        }
+        if (Node3D *p3d = effectiveTransformParent())
+            parentRot = p3d->worldRotation();
         rotation = (glm::inverse(parentRot) * rot * parentRot) * rotation;
     }
     rotation = glm::normalize(rotation);
@@ -260,6 +291,7 @@ void Node3D::lookDirection(const glm::vec3 &dir, const glm::vec3 &up)
 {
     if (glm::length(dir) < 1e-6f)
         return;
+    
     rotation = glm::quatLookAt(glm::normalize(dir), up);
     markDirty();
 }
@@ -269,6 +301,7 @@ void Node3D::lookAtSmooth(const glm::vec3 &target, float t, const glm::vec3 &up)
     glm::vec3 dir = target - worldPosition();
     if (glm::length(dir) < 1e-6f)
         return;
+    
     glm::quat targetRot = glm::quatLookAt(glm::normalize(dir), up);
     rotation = glm::slerp(rotation, targetRot, glm::clamp(t, 0.f, 1.f));
     rotation = glm::normalize(rotation);
@@ -313,6 +346,7 @@ glm::vec3 Node3D::directionTo(const glm::vec3 &worldPos) const
 // ============================================================
 bool Node3D::rotateTo(const glm::quat &targetRot, float maxDegrees)
 {
+    
     float angleDeg = glm::degrees(glm::angle(glm::inverse(rotation) * targetRot));
     if (angleDeg <= maxDegrees)
     {
@@ -355,51 +389,11 @@ glm::vec3 Node3D::localToWorldPoint(const glm::vec3 &localPoint) const
 // ============================================================
 //  Re-parent
 // ============================================================
-void Node3D::setParent(Node3D *newParent, bool keepWorldTransform)
+void Node3D::setParent(Node3D *newParent)
 {
-    if (parent == newParent)
+    if (transformParent_ == newParent)
         return;
 
-    glm::vec3 wPos;
-    glm::quat wRot;
-    glm::vec3 wScl;
-    if (keepWorldTransform)
-    {
-        wPos = worldPosition();
-        wRot = worldRotation();
-        wScl = worldScale();
-    }
-
-    // Detach from old parent
-    if (parent)
-        parent->removeChild(this);
-
-    // Attach to new parent
-    if (newParent)
-        newParent->addChild(this);
-    else
-        parent = nullptr;
-
-    if (keepWorldTransform)
-    {
-        if (newParent)
-        {
-            glm::mat4 invParent = glm::inverse(newParent->worldMatrix());
-            position = glm::vec3(invParent * glm::vec4(wPos, 1.f));
-            rotation = glm::normalize(glm::inverse(newParent->worldRotation()) * wRot);
-            glm::vec3 ps = newParent->worldScale();
-            scale = glm::vec3(
-                ps.x > 1e-6f ? wScl.x / ps.x : wScl.x,
-                ps.y > 1e-6f ? wScl.y / ps.y : wScl.y,
-                ps.z > 1e-6f ? wScl.z / ps.z : wScl.z);
-        }
-        else
-        {
-            position = wPos;
-            rotation = wRot;
-            scale    = wScl;
-        }
-    }
-
+    transformParent_ = newParent;
     markDirty();
 }

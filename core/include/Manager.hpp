@@ -159,51 +159,7 @@ private:
                        uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 };
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  MaterialManager
-// ═════════════════════════════════════════════════════════════════════════════
-class MaterialManager : public ResourceManager<Material>
-{
-public:
-    static MaterialManager &instance();
 
-    Material *create(const std::string &name, MaterialType type = MaterialType::Textured);
-    Material *clone(const std::string &srcName, const std::string &newName);
-    Material *createSolid(const std::string &name, const glm::vec4 &color);
-    Material *createTextured(const std::string &name, Texture *albedo,
-                             const glm::vec4 &color = glm::vec4(1.0f));
-    Material *createDetail(const std::string &name, Texture *base, Texture *detail,
-                           float detailScale = 4.0f,
-                           const glm::vec4 &color = glm::vec4(1.0f));
-    Material *createTerrain(const std::string &name, Texture *base, Texture *detail,
-                            float detailBlend = 0.35f,
-                            const glm::vec4 &color = glm::vec4(1.0f));
-    Material *createWater(const std::string &name);
-    Material *createSkinned(const std::string &name, Texture *albedo,
-                            const glm::vec4 &color = glm::vec4(1.0f));
-
-    // Set once before any mesh load; create() auto-assigns the shader,
-    // applyDefaults() fills in the fallback texture for untextured materials.
-    void setDefaults(Shader *shader, Texture *fallback)
-    {
-        defaultShader_  = shader;
-        fallbackTex_    = fallback;
-    }
-
-    // Iterate all materials: assign shader if missing, assign fallback texture
-    // if no "u_albedo" slot is present.  Called automatically by MeshManager
-    // after loading, but can also be called manually.
-    void applyDefaults();
-
-    const Material *activeMaterial() const { return active; }
-
-private:
-    MaterialManager() = default;
-
-    Shader  *defaultShader_ = nullptr;
-    Texture *fallbackTex_   = nullptr;
-    const Material *active  = nullptr;
-};
 
 // ============================================================
 //  MeshManager
@@ -227,6 +183,8 @@ public:
                     const std::string &texture_dir = "");
     Mesh *load_h3d (const std::string &name, const std::string &path,
                     const std::string &texture_dir = "");
+
+ 
 
     Mesh *create_cube(const std::string &name, float size = 1.0f);
     Mesh *create_wire_cube(const std::string &name, float size = 1.0f);
@@ -259,6 +217,25 @@ public:
     AnimatedMesh *load_h3d(const std::string &name, const std::string &path,
                            const std::string &texture_dir = "");
 
+    AnimatedMesh *load_gltf(const std::string &name, const std::string &path,
+                           const std::string &texture_dir = "");                           
+    AnimatedMesh *load_imq(const std::string &name, const std::string &path,
+                           const std::string &texture_dir = "");
 private:
     AnimatedMeshManager() = default;
+};
+
+class VertexAnimatedMeshManager : public ResourceManager<VertexAnimatedMesh>
+{
+public:
+    static VertexAnimatedMeshManager &instance();
+
+    VertexAnimatedMesh *create(const std::string &name);
+    VertexAnimatedMesh *load(const std::string &name, const std::string &path, const std::string &texture_dir = "");
+    VertexAnimatedMesh *load_md2(const std::string &name, const std::string &path,                                 const std::string &texture_dir = "");
+
+    VertexAnimatedMesh *load_md3(const std::string &name, const std::string &path,                                 const std::string &texture_dir = "");
+
+private:
+    VertexAnimatedMeshManager() = default;
 };

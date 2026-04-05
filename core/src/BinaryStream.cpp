@@ -8,7 +8,7 @@ BinaryStream::BinaryStream(const std::string &path, const char *mode)
     rw_ = SDL_RWFromFile(path.c_str(), mode);
     if (!rw_)
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "[BinaryStream] SDL_RWFromFile failed: %s — %s",
+                     "[BinaryStream]  failed: %s — %s",
                      path.c_str(), SDL_GetError());
 }
 
@@ -53,6 +53,32 @@ void BinaryStream::writeRaw(const void *data, size_t bytes)
     SDL_RWwrite(rw_, data, 1, bytes);
 }
 
+void BinaryStream::writeU16(uint16_t v)
+{
+    uint16_t le = SDL_SwapLE16(v);
+    SDL_RWwrite(rw_, &le, 2, 1);
+}
+
+void BinaryStream::writeI16(int16_t v)
+{
+    int16_t le = SDL_SwapLE16((uint16_t)v);
+    SDL_RWwrite(rw_, &le, 2, 1);
+}
+
+uint16_t BinaryStream::readU16()
+{
+    uint16_t v = 0;
+    SDL_RWread(rw_, &v, 2, 1);
+    return SDL_SwapLE16(v);
+}
+
+int16_t BinaryStream::readI16()
+{
+    int16_t v = 0;
+    SDL_RWread(rw_, &v, 2, 1);
+    return SDL_SwapLE16(v);
+}
+
 // ── Read ─────────────────────────────────────────────────────
 uint8_t BinaryStream::readU8()
 {
@@ -60,6 +86,8 @@ uint8_t BinaryStream::readU8()
     SDL_RWread(rw_, &v, 1, 1);
     return v;
 }
+
+
 
 uint32_t BinaryStream::readU32()
 {

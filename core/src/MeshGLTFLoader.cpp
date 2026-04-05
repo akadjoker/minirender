@@ -132,6 +132,11 @@ bool loadGLTFAnimated(const std::string &name,
     std::unordered_map<const cgltf_node *, int> boneIndexByNode;
     boneIndexByNode.reserve(skinUsed->joints_count);
 
+    float meshWorldM[16];
+    cgltf_node_transform_world(meshNodeUsed, meshWorldM);
+    const glm::mat4 meshWorld = makeMat4(meshWorldM);
+    const glm::mat4 invMeshWorld = glm::inverse(meshWorld);
+
     outMesh->bones.resize(skinUsed->joints_count);
     for (cgltf_size i = 0; i < skinUsed->joints_count; ++i)
     {
@@ -160,8 +165,11 @@ bool loadGLTFAnimated(const std::string &name,
         cgltf_node_transform_local(joint, localM);
         cgltf_node_transform_world(joint, worldM);
 
-        bone.localPose = (bone.parent >= 0) ? makeMat4(localM) : makeMat4(worldM);
-        bone.offset = glm::inverse(makeMat4(worldM));
+        const glm::mat4 local = makeMat4(localM);
+        const glm::mat4 jointMeshSpace = invMeshWorld * makeMat4(worldM);
+
+        bone.localPose = (bone.parent >= 0) ? local : jointMeshSpace;
+        bone.offset = glm::inverse(jointMeshSpace);
     }
 
     if (skinUsed->inverse_bind_matrices)

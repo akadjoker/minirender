@@ -591,6 +591,7 @@ int main()
     bool md3Play = true;
     float md3Fps = 8.0f;
     bool showMd3Tags = true;
+    bool showSceneBounds = false;
     float tagAxisSize = 1.0f;
 
     RenderBatch tagBatch;
@@ -665,6 +666,7 @@ int main()
                 ImGui::Text("Tags/frame: %d", md3Mesh->tagsPerFrame);
                 ImGui::Checkbox("Play MD3", &md3Play);
                 ImGui::Checkbox("Show Tags", &showMd3Tags);
+                ImGui::Checkbox("Show Bounds", &showSceneBounds);
 
                 ImGui::SliderFloat("MD3 FPS", &md3Fps, 1.0f, 20.0f);
                 //ImGui::SliderFloat("MD3 Scale", &md3Scale, 0.02f, 0.25f);
@@ -846,6 +848,13 @@ int main()
             Material::applyDefaultStates();
             drawTagAxes(tagBatch, md3Actor, tagAxisSize);
             drawTagAxes(tagBatch, md3ActorTorso, tagAxisSize);
+            tagBatch.Render();
+        }
+        if (showSceneBounds)
+        {
+            tagBatch.SetMatrix(camera->viewProjection);
+            Material::applyDefaultStates();
+            scene.debug(&tagBatch);
             tagBatch.Render();
         }
         device.Flip();

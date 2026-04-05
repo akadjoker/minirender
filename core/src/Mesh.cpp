@@ -671,6 +671,39 @@ void AnimatedMesh::upload()
     buffer.upload();
 }
 
+BoundingBox AnimatedMesh::computeSkinnedAABB() const
+{
+    if (buffer.vertices.empty())
+        return BoundingBox{};
+
+    if (finalMatrices.empty())
+        return aabb;
+
+    BoundingBox posed;
+    for (const AnimatedVertex &v : buffer.vertices)
+    {
+        glm::vec4 skinned(0.0f);
+        const int ids[4] = {v.boneIds.x, v.boneIds.y, v.boneIds.z, v.boneIds.w};
+        const float weights[4] = {v.boneWeights.x, v.boneWeights.y, v.boneWeights.z, v.boneWeights.w};
+
+        for (int i = 0; i < 4; ++i)
+        {
+            if (weights[i] <= 0.0f)
+                continue;
+            if (ids[i] < 0 || ids[i] >= (int)finalMatrices.size())
+                continue;
+            skinned += weights[i] * (finalMatrices[ids[i]] * glm::vec4(v.position, 1.0f));
+        }
+
+        if (skinned.w == 0.0f)
+            skinned = glm::vec4(v.position, 1.0f);
+
+        posed.expand(glm::vec3(skinned));
+    }
+
+    return posed;
+}
+
  
 
 void VertexAnimatedMesh::compute_normals()

@@ -178,7 +178,7 @@ void AnimatedMeshNode::render(Shader *shader, Camera *camera)
         return;
 
     const glm::mat4 model = worldMatrix();
-    const BoundingBox worldBounds = mesh->aabb.transformed(model);
+    const BoundingBox worldBounds = mesh->computeSkinnedAABB().transformed(model);
     if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
         return;
 

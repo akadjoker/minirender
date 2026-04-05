@@ -421,6 +421,7 @@ public:
     // Compute tangents after loading (AnimatedVertex has same uv/normal/tangent layout)
     void compute_tangents();
     void releaseAnimations();
+    BoundingBox computeSkinnedAABB() const;
     ~AnimatedMesh();
 
     // upload buffer + compute_aabb

@@ -1,4 +1,5 @@
 #include "TerrainNode.hpp"
+#include "Camera.hpp"
 #include "Pixmap.hpp"
 #include "Batch.hpp"
 #include "Math.hpp"
@@ -19,6 +20,7 @@ static inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
 TerrainNode::TerrainNode(const std::string &name)
 {
     this->name = name;
+    renderType = RenderType::Terrain;
 }
 
 TerrainNode::~TerrainNode()
@@ -26,6 +28,29 @@ TerrainNode::~TerrainNode()
     for (auto *b : m_blocks)
         delete b;
     delete[] m_heightData;
+}
+
+void TerrainNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !visible || !m_material || m_blocks.empty())
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    m_material->applyStates();
+    m_material->applyUniformsTo(shader);
+    m_material->bindTexturesTo(shader);
+
+    for (size_t i = 0; i < m_blocks.size(); ++i)
+    {
+        TerrainBuffer *buf = m_blocks[i];
+        BoundingBox worldAABB = m_blockAABBs[i].transformed(model);
+        if (worldAABB.is_valid() && !camera->frustum.contains(worldAABB))
+            continue;
+        buf->draw();
+    }
 }
 
 // ── Load ─────────────────────────────────────────────────────────────────────
@@ -289,12 +314,42 @@ TerrainLodNode::TerrainLodNode(const std::string &name, int maxLOD,
     , m_detailScale (detailScale)
 {
     this->name = name;
+    renderType = RenderType::Terrain;
 }
 
 TerrainLodNode::~TerrainLodNode()
 {
     delete m_renderBuffer;
     delete[] m_heightData;
+}
+
+void TerrainLodNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !visible || !m_material || !m_renderBuffer || m_patches.empty())
+        return;
+
+    const glm::vec3 camPos = camera->worldPosition();
+    const glm::mat4 &view  = camera->view;
+    const glm::vec3 camFwd = glm::normalize(glm::vec3(-view[0][2], -view[1][2], -view[2][2]));
+
+    bool changed = preRenderLODCalculations(camPos, camFwd, camera->frustum);
+    if (changed)
+        preRenderIndicesCalculations();
+
+    if (m_indicesToRender == 0)
+        return;
+
+    if (m_aabb.is_valid() && !camera->frustum.contains(m_aabb))
+        return;
+
+    shader->setMat4("u_model", glm::mat4(1.0f));
+    shader->setMat3("u_normalMatrix", glm::mat3(1.0f));
+
+    m_material->applyStates();
+    m_material->applyUniformsTo(shader);
+    m_material->bindTexturesTo(shader);
+
+    m_renderBuffer->drawRange(0, m_indicesToRender);
 }
 
 // ── Load ─────────────────────────────────────────────────────────────────────
@@ -967,6 +1022,7 @@ TiledTerrainNode::TiledTerrainNode(int tilesInTextureSide, float patchLength,
     , m_defaultTile(defaultTile)
 {
     this->name = name;
+    renderType = RenderType::Terrain;
 }
 
 TiledTerrainNode::~TiledTerrainNode()
@@ -974,6 +1030,28 @@ TiledTerrainNode::~TiledTerrainNode()
     for (auto &pb : m_patches)
         delete pb.mesh;
     delete[] m_tileMap;
+}
+
+void TiledTerrainNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !visible || !m_material || m_patches.empty())
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    m_material->applyStates();
+    m_material->applyUniformsTo(shader);
+    m_material->bindTexturesTo(shader);
+
+    for (auto &pb : m_patches)
+    {
+        BoundingBox worldAABB = pb.aabb.transformed(model);
+        if (worldAABB.is_valid() && !camera->frustum.contains(worldAABB))
+            continue;
+        pb.mesh->draw();
+    }
 }
 
 void TiledTerrainNode::loadTilemap(Pixmap *img)
@@ -1136,6 +1214,7 @@ void TiledTerrainNode::buildPatch(PatchBuf &pb)
 InfiniteTerrainNode::InfiniteTerrainNode(const std::string &name)
 {
     this->name = name;
+    renderType = RenderType::Terrain;
 }
 
 InfiniteTerrainNode::~InfiniteTerrainNode()
@@ -1143,6 +1222,56 @@ InfiniteTerrainNode::~InfiniteTerrainNode()
     for (auto &kv : m_cache)
         delete kv.second;
     delete[] m_base.heights;
+}
+
+void InfiniteTerrainNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !visible || !m_material || !m_base.heights)
+        return;
+
+    ++m_frame;
+
+    const glm::vec3 camPos = camera->worldPosition();
+    const Frustum &frustum = camera->frustum;
+    const glm::mat4 model = worldMatrix();
+
+    int centerPX = (int)std::floor(camPos.x / m_patchWorld);
+    int centerPZ = (int)std::floor(camPos.z / m_patchWorld);
+    int half = m_visibleHalf;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    m_material->applyStates();
+    m_material->applyUniformsTo(shader);
+    m_material->bindTexturesTo(shader);
+
+    for (int pz = centerPZ - half; pz <= centerPZ + half; ++pz)
+    for (int px = centerPX - half; px <= centerPX + half; ++px)
+    {
+        float wpx = (float)px * m_patchWorld + m_patchWorld * 0.5f;
+        float wpz = (float)pz * m_patchWorld + m_patchWorld * 0.5f;
+        float dx = wpx - camPos.x;
+        float dz = wpz - camPos.z;
+        float distSq = dx * dx + dz * dz;
+
+        int lod = calcLOD(distSq);
+        PatchMesh *patch = getOrCreate(px, pz, lod);
+        if (!patch)
+            continue;
+
+        TerrainBuffer *buf = patch->meshes[lod];
+        if (!buf || buf->indices.empty())
+            continue;
+
+        BoundingBox worldAABB = patch->aabb.transformed(model);
+        if (worldAABB.is_valid() && !frustum.contains(worldAABB))
+            continue;
+
+        buf->draw();
+    }
+
+    evictOld();
 }
 
 bool InfiniteTerrainNode::loadBaseHeightmap(const std::string &path, float heightScale)

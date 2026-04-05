@@ -427,25 +427,14 @@ void Scene::debugNode(Node *node, RenderBatch *batch)
     }
     else if (auto *animatedNode = node->asAnimatedMeshNode())
     {
-        if (animatedNode->mesh && animatedNode->mesh->aabb.is_valid())
+        if (animatedNode->mesh)
         {
             const glm::mat4 world = animatedNode->worldMatrix();
-            bool drewSurfaceBoxes = false;
-
-            for (const auto &surface : animatedNode->mesh->surfaces)
-            {
-                if (!surface.aabb.is_valid())
-                    continue;
-
-                batch->SetColor(64, 200, 255, 255);
-                batch->Box(surface.aabb.transformed(world));
-                drewSurfaceBoxes = true;
-            }
-
-            if (!drewSurfaceBoxes)
+            const BoundingBox posedAABB = animatedNode->mesh->computeSkinnedAABB();
+            if (posedAABB.is_valid())
             {
                 batch->SetColor(0, 200, 255, 255);
-                batch->Box(animatedNode->mesh->aabb.transformed(world));
+                batch->Box(posedAABB.transformed(world));
             }
         }
     }
@@ -508,7 +497,7 @@ static void pickNode(Node *node, const Ray &ray, ScenePickResult &best)
         if (amn->mesh)
         {
             const glm::mat4 world = amn->worldMatrix();
-            const BoundingBox worldAABB = amn->mesh->aabb.transformed(world);
+            const BoundingBox worldAABB = amn->mesh->computeSkinnedAABB().transformed(world);
             if (worldAABB.is_valid())
             {
                 float aabbHit = worldAABB.intersects_ray(ray.origin, ray.direction);

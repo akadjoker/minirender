@@ -40,15 +40,15 @@ add_compile_options(
 
 
 
-file(GLOB SOURCES "src/*.cpp")
-add_executable(demos   ${SOURCES})
-
+add_executable(demos src/main.cpp)
+ 
 if (WIN32)
     target_include_directories(demos PUBLIC "${LIBS_DIR}/include" include src)
 else() 
     target_include_directories(demos PUBLIC  include src
         ${CMAKE_SOURCE_DIR}/vendor/imgui
     )
+ 
 endif()
 
 
@@ -58,12 +58,14 @@ if(CMAKE_BUILD_TYPE MATCHES Debug)
     if (UNIX)
         target_compile_options(demos PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g  -D_DEBUG )
         target_link_options(demos PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g  -D_DEBUG) 
-    endif()
+          endif()
 
 
 elseif(CMAKE_BUILD_TYPE MATCHES Release)
     target_compile_options(demos PRIVATE -O3   -DNDEBUG )
     target_link_options(demos PRIVATE -O3   -DNDEBUG )
+ 
+ 
 endif()
 
 
@@ -75,6 +77,7 @@ endif()
 
 if (UNIX)
     target_link_libraries(demos core imgui m SDL2 GL)
+ 
 endif()
 
 #message(STATUS "SDL2 Library Dir: ${LIB_DIR}/")

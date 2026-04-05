@@ -1,5 +1,6 @@
 #version 300 es
 precision highp float;
+precision highp int;
 
 in vec3 v_worldPos;
 in vec3 v_normal;

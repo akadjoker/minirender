@@ -55,7 +55,11 @@ void MeshNode::setMaterial(const std::string &name)
     material_     = MaterialManager::instance().get(name); // resolved once
 }
 
-MeshNode::MeshNode():Node3D(), mesh(nullptr), castShadow(true), receiveShadow(true), passMask(RenderPassMask::Opaque)
+RenderableNode::RenderableNode() : Node3D()
+{
+}
+
+MeshNode::MeshNode():RenderableNode(), mesh(nullptr)
 {
     type = NodeType::MeshNode;
 }
@@ -68,7 +72,7 @@ Light::Light():Node3D(), lightType(LightType::Point), color(1.f, 1.f, 1.f), inte
 
 // ─── AnimatedMeshNode ────────────────────────────────────────────────────────
 
-AnimatedMeshNode::AnimatedMeshNode() : Node3D()
+AnimatedMeshNode::AnimatedMeshNode() : RenderableNode()
 {
     type = NodeType::MeshNode; // reuse MeshNode type
 }

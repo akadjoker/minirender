@@ -1,5 +1,7 @@
 #version 300 es
 precision highp float;
+precision highp int;
+precision highp int;
 
 // MeshBuffer layout: loc0=position, loc1=normal, loc2=tangent(vec4), loc3=uv
 layout(location = 0) in vec3 aPos;
@@ -12,16 +14,26 @@ out vec3 ToCameraVector;
 out vec3 WorldPos;
 out vec2 v_bumpMapTexCoord;
 out vec3 v_normal;
+out float v_clipDists[4];
 
 uniform mat4 u_viewProj;
 uniform vec4 u_cameraPos;
 
 uniform mat4  u_model;
+uniform sampler2D u_heightMap;
+uniform vec2 u_terrainOrigin;
+uniform vec2 u_terrainSize;
+uniform float u_terrainBaseY;
+uniform float u_terrainMaxHeight;
+uniform float u_waterLevel;
+uniform float u_shoreFadeRange;
 uniform float u_time;
 uniform float u_waveLength;
 uniform float u_windForce;
 uniform vec2  u_windDirection;
 uniform float u_waveHeight;
+uniform vec4 u_clipPlanes[4];
+uniform int u_clipPlaneCount;
 
 uniform vec4 u_wave1;
 uniform vec4 u_wave2;
@@ -60,6 +72,12 @@ void main()
     vec3 pos = aPos;
     vec3 normal = aNormal;
 
+    vec4 baseWorldPos = u_model * vec4(pos, 1.0);
+    vec2 heightUV = (baseWorldPos.xz - u_terrainOrigin) / u_terrainSize;
+    heightUV = clamp(heightUV, vec2(0.0), vec2(1.0));
+    float terrainHeight = u_terrainBaseY + texture(u_heightMap, heightUV).r * u_terrainMaxHeight;
+    float shoreWaveFade = smoothstep(0.0, u_shoreFadeRange, max(u_waterLevel - terrainHeight, 0.0));
+
     vec3 waveOffset = vec3(0.0);
     vec3 waveNormal = vec3(0.0, 1.0, 0.0);
 
@@ -75,12 +93,14 @@ void main()
     waveOffset += GerstnerWave      (pos.xz, u_wave4.xy, u_wave4.z, u_wave4.w, u_time);
     waveNormal += GerstnerWaveNormal(pos.xz, u_wave4.xy, u_wave4.z, u_wave4.w, u_time);
 
-    pos   += waveOffset * u_waveHeight;
-    normal = normalize(waveNormal);
+    pos   += waveOffset * u_waveHeight * shoreWaveFade;
+    normal = normalize(mix(aNormal, waveNormal, shoreWaveFade));
 
     vec4 worldPos = u_model * vec4(pos, 1.0);
     WorldPos      = worldPos.xyz;
     ClipSpace     = u_viewProj * worldPos;
+    for (int i = 0; i < u_clipPlaneCount; ++i)
+        v_clipDists[i] = dot(worldPos, u_clipPlanes[i]);
     gl_Position   = ClipSpace;
     
     TexCoord      = aTexCoord;

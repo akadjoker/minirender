@@ -11,10 +11,6 @@
 #include <vector>
 #include <cstdint>
 
-// Forward declarations for render integration
-class RenderQueue;
-struct FrameContext;
-
 enum class NodeType
 {
     Node,
@@ -58,21 +54,14 @@ class Node
 
     // Fast type access — no dynamic_cast needed
     virtual class Node3D   *asNode3D()            { return nullptr; }
+    virtual class RenderableNode *asRenderableNode() { return nullptr; }
     virtual class MeshNode *asMeshNode()          { return nullptr; }
     virtual class AnimatedMeshNode *asAnimatedMeshNode() { return nullptr; }
     virtual class VertexAnimMeshNode *asVertexAnimMeshNode() { return nullptr; }
     virtual class Light    *asLight()             { return nullptr; }
 
-    // Override to submit custom draw calls (terrains, particles, etc.)
-    virtual void gatherRenderItems(RenderQueue& /*queue*/, const FrameContext& /*ctx*/) {}
-
     // Override to update simulation logic each frame (particles, etc.)
     virtual void update(float /*dt*/) {}
-
-    // Called once per frame BEFORE the main render, allowing the node to
-    // render into off-screen targets (e.g. WaterNode3D reflection/refraction).
-    // scene is non-const to allow renderToTarget calls.
-    virtual void preRender(class Scene * /*scene*/, const Camera * /*mainCam*/) {}
 
     void addChild(Node *child);
     void removeChild(Node *child);
@@ -194,7 +183,18 @@ private:
     mutable bool      dirty_      = true;
 };
 
-class MeshNode : public Node3D
+class RenderableNode : public Node3D
+{
+public:
+    bool castShadow = true;
+    bool receiveShadow = true;
+
+    RenderableNode();
+    RenderableNode *asRenderableNode() override { return this; }
+    virtual ~RenderableNode() = default;
+};
+
+class MeshNode : public RenderableNode
 {
 public:
     Mesh *mesh    = nullptr;
@@ -206,10 +206,6 @@ public:
     void        setMaterial(const std::string &name);
     Material   *getMaterial() const { return material_; }
     const std::string &getMaterialName() const { return materialName_; }
-
-    bool castShadow    = true;
-    bool receiveShadow = true;
-    uint32_t passMask  = RenderPassMask::Opaque;
 
     MeshNode() ;
     virtual ~MeshNode() = default;
@@ -231,12 +227,11 @@ struct BoneSocket
 };
 
 // ─── AnimatedMeshNode ────────────────────────────────────────────────────────
-class AnimatedMeshNode : public Node3D
+class AnimatedMeshNode : public RenderableNode
 {
 public:
     AnimatedMesh *mesh     = nullptr;
     class Animator *animator = nullptr; // owned
-    uint32_t passMask      = RenderPassMask::Opaque;
 
     AnimatedMeshNode();
     virtual ~AnimatedMeshNode();

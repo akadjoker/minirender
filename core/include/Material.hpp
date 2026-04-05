@@ -38,6 +38,17 @@ struct TextureSlot
     std::string uniform; // "u_albedo", "u_normal"
 };
 
+enum class MaterialType
+{
+    Solid,
+    Textured,
+    Detail,
+    Terrain,
+    Water,
+    Skinned,
+    Custom
+};
+
 class Shader
 {
 public:
@@ -87,6 +98,7 @@ private:
 
 public:
     std::string name;
+    MaterialType type = MaterialType::Textured;
     bool cullFace = true;
     bool blend = false;
     GLenum blendSrc = GL_SRC_ALPHA;
@@ -97,6 +109,11 @@ public:
     Material *setShader(Shader *s)
     {
         shader = s;
+        return this;
+    }
+    Material *setType(MaterialType t)
+    {
+        type = t;
         return this;
     }
     bool hasTexture(const std::string &uniform) const
@@ -142,6 +159,8 @@ public:
     Material *setMat4(const std::string &u, glm::mat4 v);
 
     Shader *getShader() const { return shader; }
+    MaterialType getType() const { return type; }
+    bool isTransparent() const { return blend; }
     const std::vector<TextureSlot> &getTextures() const { return textures; }
 
     // Get first texture bound to the given uniform slot (nullptr if absent)

@@ -27,7 +27,45 @@ add_compile_options(
     -funsigned-char
 )
 
-file(GLOB SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+set(SOURCES
+    src/Animation.cpp
+    src/AnimationStateMachine.cpp
+    src/AnimatedMeshManager.cpp
+    src/Animator.cpp
+    src/Batch.cpp
+    src/BinaryStream.cpp
+    src/Camera.cpp
+    src/Collision.cpp
+    src/Color.cpp
+    src/DebugDraw.cpp
+    src/Device.cpp
+    src/Font.cpp
+    src/Input.cpp
+    src/Material.cpp
+    src/MaterialManager.cpp
+    src/Math.cpp
+    src/Mesh.cpp
+    src/MeshLoader.cpp
+    src/MeshManager.cpp
+    src/Node.cpp
+    src/Node3D.cpp
+    src/Pixmap.cpp
+    src/RenderState.cpp
+    src/RenderTarget.cpp
+    src/Renderer.cpp
+    src/Scene.cpp
+    src/Shader.cpp
+    src/ShaderManager.cpp
+    src/TerrainNode.cpp
+    src/TextureManager.cpp
+    src/Tree.cpp
+    src/Utils.cpp
+    src/Vertex.cpp
+    src/VertexAnimation.cpp
+    src/WaterNode.cpp
+    src/glad.cpp
+    src/pch.cpp
+)
 
 add_library(core SHARED  ${SOURCES})
 

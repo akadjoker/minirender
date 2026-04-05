@@ -22,6 +22,10 @@ uniform vec4 u_waterColor;
 uniform float u_colorBlendFactor;
 uniform float u_time;
 uniform float mult;
+uniform float u_nearPlane;
+uniform float u_farPlane;
+uniform float u_depthDiscardCutoff;
+uniform bool u_foamEnabled;
 
  
 uniform float u_foamRange;      // Distância da borda (substitui foamEdgeDistance)
@@ -45,34 +49,38 @@ void main()
     
     // NDC coordinates
     vec2 ndc = (ClipSpace.xy / ClipSpace.w) * 0.5 + 0.5;
-    vec2 reflectTexCoords = vec2(ndc.x, 1.0 - ndc.y);
-    vec2 refractTexCoords = vec2(ndc.x, ndc.y);
+    vec2 baseReflectTexCoords = vec2(ndc.x, 1.0 - ndc.y);
+    vec2 baseRefractTexCoords = vec2(ndc.x, ndc.y);
+    vec2 reflectTexCoords = baseReflectTexCoords;
+    vec2 refractTexCoords = baseRefractTexCoords;
     
     // Depth calculation
-    float near = 0.1;
-    float far = 1000.0;
+    float near = u_nearPlane;
+    float far = u_farPlane;
     
-    float depth = texture(refractionDepth, refractTexCoords).r;
+    float depth = texture(refractionDepth, baseRefractTexCoords).r;
     float floorDistance = 2.0 * near * far / (far + near - (2.0 * depth - 1.0) * (far - near));
     
     depth = gl_FragCoord.z;
     float waterDistance = 2.0 * near * far / (far + near - (2.0 * depth - 1.0) * (far - near));
     float waterDepth = floorDistance - waterDistance;
-    if (waterDepth < 0.0) 
+    if (waterDepth <= u_depthDiscardCutoff) 
     {
          discard;
          return;
     }
     float normalizedDepth = clamp(waterDepth / mult, 0.0, 1.0);
 
-
-
-
- 
-    
     // Apply distortion
+    perturbation *= clamp(normalizedDepth, 0.0, 1.0);
     reflectTexCoords = clamp(reflectTexCoords + perturbation, 0.001, 0.999);
     refractTexCoords = clamp(refractTexCoords + perturbation, 0.001, 0.999);
+
+    float distortedDepth = texture(refractionDepth, refractTexCoords).r;
+    if (distortedDepth >= 0.9999)
+    {
+        refractTexCoords = baseRefractTexCoords;
+    }
     
     vec4 reflectColor = texture(reflectionTexture, reflectTexCoords);
     vec4 refractColor = texture(refractionTexture, refractTexCoords);
@@ -92,35 +100,38 @@ void main()
     // === FOAM SYSTEM ===
     
     // 1. Edge foam (shore/shallow water)
-    float edgeFoam = smoothstep(u_foamRange, 0.0, waterDepth);
-    edgeFoam = pow(edgeFoam, 2.0);
-    
-    // 2. Foam texture com animação (2 camadas para mais detalhe)
-    vec2 foamUV1 = WorldPos.xz * u_foamScale + vec2(u_time * u_foamSpeed, u_time * u_foamSpeed * 0.6);
-    vec2 foamUV2 = WorldPos.xz * u_foamScale * 0.7 - vec2(u_time * u_foamSpeed * 0.8, u_time * u_foamSpeed);
-    
-    float foamPattern1 = texture(foamTexture, foamUV1).r;
-    float foamPattern2 = texture(foamTexture, foamUV2).r;
-    float foamPattern = (foamPattern1 + foamPattern2) * 0.5;
-    
-    // 3. Wave crest foam (baseado na normal)
-    float waveHeight = 1.0 - v_normal.y;
-    float crestFoam = smoothstep(0.4, 0.8, waveHeight) * 0.5;
-    
-    // 4. Combinar todos os tipos de foam
-    float foamFactor = max(edgeFoam, crestFoam);
-    foamFactor = foamFactor * smoothstep(foamCutoff - 0.1, foamCutoff + 0.1, foamPattern);
-    foamFactor *= u_foamIntensity;   
+    if (u_foamEnabled)
+    {
+        float edgeFoam = smoothstep(u_foamRange, 0.0, waterDepth);
+        edgeFoam = pow(edgeFoam, 2.0);
+        
+        // 2. Foam texture com animação (2 camadas para mais detalhe)
+        vec2 foamUV1 = WorldPos.xz * u_foamScale + vec2(u_time * u_foamSpeed, u_time * u_foamSpeed * 0.6);
+        vec2 foamUV2 = WorldPos.xz * u_foamScale * 0.7 - vec2(u_time * u_foamSpeed * 0.8, u_time * u_foamSpeed);
+        
+        float foamPattern1 = texture(foamTexture, foamUV1).r;
+        float foamPattern2 = texture(foamTexture, foamUV2).r;
+        float foamPattern = (foamPattern1 + foamPattern2) * 0.5;
+        
+        // 3. Wave crest foam (baseado na normal)
+        float waveHeight = 1.0 - v_normal.y;
+        float crestFoam = smoothstep(0.4, 0.8, waveHeight) * 0.5;
+        
+        // 4. Combinar todos os tipos de foam
+        float foamFactor = max(edgeFoam, crestFoam);
+        foamFactor = foamFactor * smoothstep(foamCutoff - 0.1, foamCutoff + 0.1, foamPattern);
+        foamFactor *= u_foamIntensity;   
 
-    foamFactor *= (1.0 - lodFactor * 0.7);
+        foamFactor *= (1.0 - lodFactor * 0.7);
 
-    float foamDistanceFade = 1.0 - smoothstep(2.0, 50.0, distToCamera);
-    foamFactor *= foamDistanceFade;
-    
-    // Cor do foam
-    vec3 foamColor = vec3(0.95, 0.98, 1.0);
-    
-   finalColor.rgb = mix(finalColor.rgb, foamColor, foamFactor);
+        float foamDistanceFade = 1.0 - smoothstep(2.0, 50.0, distToCamera);
+        foamFactor *= foamDistanceFade;
+        
+        // Cor do foam
+        vec3 foamColor = vec3(0.95, 0.98, 1.0);
+        
+        finalColor.rgb = mix(finalColor.rgb, foamColor, foamFactor);
+    }
     
     
     FragColor = finalColor;

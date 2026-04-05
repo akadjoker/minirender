@@ -10,7 +10,7 @@
 //  Constantes do formato
 // ============================================================
 constexpr uint32_t MESH_MAGIC           = 0x4D455348; // "MESH"
-constexpr uint32_t MESH_VERSION         = 100;
+constexpr uint32_t MESH_VERSION         = 101;
 
 constexpr uint32_t BUFFER_FLAG_SKINNED  = 1 << 0;
 constexpr uint32_t BUFFER_FLAG_TANGENTS = 1 << 1;
@@ -70,6 +70,7 @@ public:
 
 private:
     BinaryStream *s_ = nullptr;
+    uint32_t version_ = 0;
 
     ChunkHeader readHeader();
     void        skipChunk(const ChunkHeader &h);

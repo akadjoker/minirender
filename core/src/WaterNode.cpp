@@ -1,154 +1,165 @@
 #include "WaterNode.hpp"
-#include "Scene.hpp"
 #include "Camera.hpp"
 #include "Manager.hpp"
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <glm/gtx/quaternion.hpp>
-#include <SDL2/SDL.h>
-#include <string>
 
-// ─── init / release ─────────────────────────────────────────────────────────
-
-bool WaterNode3D::init(float width, float depth, Shader *waterShader)
+WaterNode3D::WaterNode3D(const std::string &nodeName)
 {
-    if (!waterShader)
-    {
-        SDL_Log("[WaterNode3D] waterShader is null");
+    name = nodeName;
+    type = NodeType::ManualMesh;
+    castShadow = false;
+    receiveShadow = true;
+}
+
+WaterNode3D::~WaterNode3D()
+{
+    release();
+}
+
+bool WaterNode3D::init(float width, float depth)
+{
+    release();
+
+    reflectionRT_ = new RenderTarget();
+    reflectionRT_->create(rtWidth, rtHeight);
+    reflectionRT_->addColorAttachment();
+    reflectionRT_->addDepthAttachment();
+    if (!reflectionRT_->finalize())
         return false;
-    }
 
-    // Create reflection + refraction render targets
-    const std::string baseName = name.empty() ? "water" : name;
-
-    auto &tex = TextureManager::instance();
-
-    reflRT_ = new RenderTarget();
-    reflRT_->create(rtWidth, rtHeight);
-    reflRT_->addColorAttachment();
-    reflRT_->addDepthAttachment();
-    if (!reflRT_->finalize())
-    {
-        SDL_Log("[WaterNode3D] Failed to create reflection render target");
+    refractionRT_ = new RenderTarget();
+    refractionRT_->create(rtWidth, rtHeight);
+    refractionRT_->addColorAttachment();
+    refractionRT_->addDepthTexture();
+    if (!refractionRT_->finalize())
         return false;
-    }
 
-    refrRT_ = new RenderTarget();
-    refrRT_->create(rtWidth, rtHeight);
-    refrRT_->addColorAttachment();
-    refrRT_->addDepthTexture();
-    if (!refrRT_->finalize())
-    {
-        SDL_Log("[WaterNode3D] Failed to create refraction render target");
-        return false;
-    }
+    auto &textures = TextureManager::instance();
+    auto &materials = MaterialManager::instance();
 
-    // ── Optional textures (waterbump + foam) ──────────────────
     Texture *waterBumpTex = !waterBumpPath.empty()
-                            ? tex.load(baseName + "_bump", waterBumpPath)
-                            : tex.getWhite();
-    Texture *foamTex      = !foamPath.empty()
-                            ? tex.load(baseName + "_foam", foamPath)
-                            : tex.getWhite();
+        ? textures.load(name + "_water_bump", waterBumpPath)
+        : textures.getWhite();
+    Texture *foamTex = !foamPath.empty()
+        ? textures.load(name + "_water_foam", foamPath)
+        : textures.getWhite();
 
-    // ── Material ────────────────────────────────────────────
-    auto &mats = MaterialManager::instance();
-    material_ = mats.create(baseName + "_mat");
-    material_->setShader(waterShader)
-             ->setBlend(false)
-             ->setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-             ->setDepthTest(true)
-             ->setDepthWrite(true)
-             ->setCullFace(false)
-             ->setTexture("u_reflection",      reflRT_->colorTex())
-             ->setTexture("u_refraction",      refrRT_->colorTex())
-             ->setTexture("u_refrDepth",       refrRT_->depthTex() ? refrRT_->depthTex() : tex.getWhite())
-             ->setTexture("u_waterBump",       waterBumpTex)
-             ->setTexture("u_foamTexture",     foamTex)
-             ->setFloat("u_time",              0.f)
+    material_ = materials.createWater(name + "_water_mat");
+    if (!material_)
+        return false;
+
+    material_->setTexture("u_reflection", reflectionRT_->colorTex())
+             ->setTexture("u_refraction", refractionRT_->colorTex())
+             ->setTexture("u_refrDepth", refractionRT_->depthTex() ? refractionRT_->depthTex() : textures.getWhite())
+             ->setTexture("u_waterBump", waterBumpTex ? waterBumpTex : textures.getWhite())
+             ->setTexture("u_foamTexture", foamTex ? foamTex : textures.getWhite())
+             ->setFloat("u_time", time_)
              ->setFloat("u_distortStrength", distortStrength)
-             ->setFloat("u_reflectivity",      reflectivity)
-             ->setFloat("u_waveHeight",        waveHeight)
-             ->setFloat("u_waveLength",        waveLength)
-             ->setFloat("u_windForce",         windForce)
-             ->setVec2 ("u_windDirection",     windDirection)
-             ->setVec4 ("u_wave1",             wave1)
-             ->setVec4 ("u_wave2",             wave2)
-             ->setVec4 ("u_wave3",             wave3)
-             ->setVec4 ("u_wave4",             wave4)
-             ->setFloat("u_foamScale",         foamScale)
-             ->setFloat("u_foamSpeed",         foamSpeed)
-             ->setFloat("u_foamIntensity",     foamIntensity)
-             ->setFloat("u_foamRange",         foamRange)
-             ->setFloat("u_depthMult",         depthMult)
-             ->setVec4 ("u_waterColor",        waterColor)
-             ->setFloat("u_colorBlendFactor",  colorBlendFactor)
-             ->setFloat("u_near",              0.1f)
-             ->setFloat("u_far",               1000.f);
+             ->setFloat("u_reflectivity", reflectivity)
+             ->setFloat("u_waveHeight", waveHeight)
+             ->setFloat("u_waveLength", waveLength)
+             ->setFloat("u_windForce", windForce)
+             ->setVec2("u_windDirection", windDirection)
+             ->setVec4("u_wave1", wave1)
+             ->setVec4("u_wave2", wave2)
+             ->setVec4("u_wave3", wave3)
+             ->setVec4("u_wave4", wave4)
+             ->setFloat("u_foamScale", foamScale)
+             ->setFloat("u_foamSpeed", foamSpeed)
+             ->setFloat("u_foamIntensity", foamIntensity)
+             ->setFloat("u_foamRange", foamRange)
+             ->setFloat("u_depthMult", depthMult)
+             ->setVec4("u_waterColor", waterColor)
+             ->setFloat("u_colorBlendFactor", colorBlendFactor)
+             ->setFloat("u_waterLevel", waterHeight())
+             ->setFloat("u_shoreFadeRange", shoreFadeRange)
+             ->setFloat("u_depthDiscardCutoff", depthDiscardCutoff)
+             ->setInt("u_foamEnabled", foamEnabled ? 1 : 0);
 
- 
-
-    // ── Geometry ─────────────────────────────────────────────
-    buildQuad(width, depth);
-    type = NodeType::ManualMesh; // so gatherNode traverses children
+    buildGrid(width, depth,256);
     return true;
 }
 
 void WaterNode3D::release()
 {
     buffer_.free();
-    delete reflRT_;  reflRT_ = nullptr;
-    delete refrRT_;  refrRT_ = nullptr;
+    delete reflectionRT_;
+    reflectionRT_ = nullptr;
+    delete refractionRT_;
+    refractionRT_ = nullptr;
+    material_ = nullptr;
 }
 
-// ─── geometry ───────────────────────────────────────────────────────────────
-
-void WaterNode3D::buildQuad(float width, float depth)
+void WaterNode3D::update(float dt)
 {
-    
+    time_ += dt;
+    if (material_)
+        material_->setFloat("u_time", time_);
+}
 
+void WaterNode3D::updateCameraUniforms(const Camera *camera)
+{
+    if (!camera || !material_)
+        return;
+
+    material_->setFloat("u_near", camera->nearPlane);
+    material_->setFloat("u_far", camera->farPlane);
+    material_->setFloat("u_waterLevel", waterHeight());
+}
+
+Texture *WaterNode3D::debugReflTex() const
+{
+    return reflectionRT_ ? reflectionRT_->colorTex() : nullptr;
+}
+
+Texture *WaterNode3D::debugRefrTex() const
+{
+    return refractionRT_ ? refractionRT_->colorTex() : nullptr;
+}
+
+Texture *WaterNode3D::debugRefrDepthTex() const
+{
+    return refractionRT_ ? refractionRT_->depthTex() : nullptr;
+}
+
+void WaterNode3D::buildGrid(float width, float depth, int subdivs)
+{
     buffer_.vertices.clear();
     buffer_.indices.clear();
     buffer_.mode = GL_TRIANGLES;
 
+    int vertsX = subdivs + 1;
+    int vertsZ = subdivs + 1;
+    float stepX = width / static_cast<float>(subdivs);
+    float stepZ = depth / static_cast<float>(subdivs);
+    float halfX = width * 0.5f;
+    float halfZ = depth * 0.5f;
 
-    int subdivs = 264;
-    int verts_x = subdivs + 1;
-    int verts_z = subdivs + 1;
-    float step_x = width / subdivs;
-    float step_z = depth / subdivs;
-    float half_x = width * 0.5f;
-    float half_z = depth * 0.5f;
+    buffer_.vertices.resize(static_cast<size_t>(vertsX) * vertsZ);
+    buffer_.indices.resize(static_cast<size_t>(subdivs) * subdivs * 6);
 
-    int vert_count = verts_x * verts_z;
-    int idx_count = subdivs * subdivs * 6;
- 
-    buffer_.vertices.resize(vert_count);
-    buffer_.indices.resize(idx_count);
-
-    // vértices
-    for (int z = 0; z < verts_z; z++)
+    for (int z = 0; z < vertsZ; ++z)
     {
-        for (int x = 0; x < verts_x; x++)
+        for (int x = 0; x < vertsX; ++x)
         {
-            int i = z * verts_x + x;
+            int i = z * vertsX + x;
             buffer_.vertices[i] = {
-                {-half_x + x * step_x, 0.0f, -half_z + z * step_z},
-                {0, 1, 0},
-                {1, 0, 0, 1},
-                {(float)x / subdivs, (float)z / subdivs}};
+                {-halfX + x * stepX, 0.0f, -halfZ + z * stepZ},
+                {0.0f, 1.0f, 0.0f},
+                {1.0f, 0.0f, 0.0f, 1.0f},
+                {(static_cast<float>(x) / subdivs) * uvTile,
+                 (static_cast<float>(z) / subdivs) * uvTile}
+            };
         }
     }
 
-    // índices
     int idx = 0;
-    for (int z = 0; z < subdivs; z++)
+    for (int z = 0; z < subdivs; ++z)
     {
-        for (int x = 0; x < subdivs; x++)
+        for (int x = 0; x < subdivs; ++x)
         {
-            uint32_t tl = z * verts_x + x;
+            uint32_t tl = z * vertsX + x;
             uint32_t tr = tl + 1;
-            uint32_t bl = tl + verts_x;
+            uint32_t bl = tl + vertsX;
             uint32_t br = bl + 1;
             buffer_.indices[idx++] = tl;
             buffer_.indices[idx++] = bl;
@@ -159,93 +170,7 @@ void WaterNode3D::buildQuad(float width, float depth)
         }
     }
 
-
-    buffer_.aabb.min = {-half_x, -0.1f, -half_z};
-    buffer_.aabb.max = { half_x,  0.1f,  half_z};
-
+    buffer_.aabb.min = {-halfX, -0.1f, -halfZ};
+    buffer_.aabb.max = { halfX,  0.1f,  halfZ};
     buffer_.upload();
-}
-
-// ─── update ─────────────────────────────────────────────────────────────────
-
-void WaterNode3D::update(float dt)
-{
-    time_ += dt;
-    if (material_)
-        material_->setFloat("u_time", time_);
-}
-
-// ─── preRender ──────────────────────────────────────────────────────────────
-
-void WaterNode3D::preRender(Scene *scene, const Camera *mainCam)
-{
-    if (!material_ || rendering_) return; // recursion guard
-
-    rendering_ = true;
-
-    // Update near/far from current camera so depth linearisation is correct
-    if (material_)
-    {
-        material_->setFloat("u_near", mainCam->nearPlane);
-        material_->setFloat("u_far",  mainCam->farPlane);
-    }
-
-    const float waterY = worldPosition().y;
-    const glm::vec3 camPos = mainCam->position;
-
-    glm::vec3 euler = mainCam->getEulerAngles();
-    euler.x = -euler.x; // negate pitch
-
-    const glm::vec3 reflPos = {camPos.x, 2.f * waterY - camPos.y, camPos.z};
-
-    Camera reflCam;
-    reflCam.setPosition(reflPos);
-    reflCam.setEulerAngles(euler);
-    reflCam.fov           = mainCam->fov;
-    reflCam.nearPlane     = mainCam->nearPlane;
-    reflCam.farPlane      = mainCam->farPlane;
-    reflCam.viewport      = mainCam->viewport;
-    reflCam.setAspect(mainCam->viewport.z, mainCam->viewport.w);
-    reflCam.updateMatrices();
-    reflCam.clearColor    = mainCam->clearColor;
-    reflCam.clearDepth    = mainCam->clearDepth;
-    reflCam.clearColorVal = mainCam->clearColorVal;
-
-
-
-    // Reflection: clip everything below water surface (+bias to hide gap)
-    scene->setClipPlane({0.f, 1.f, 0.f, -(waterY - clipBias)});
-    scene->renderToTarget(&reflCam, reflRT_);
-
-    Camera *mutableCam = const_cast<Camera *>(mainCam);
-    // Refraction: clip everything above water surface (+bias to capture shore)
-    scene->setClipPlane({0.f, -1.f, 0.f, waterY + clipBias});
-    scene->renderToTarget(mutableCam, refrRT_);
-
-    scene->clearClipPlanes();
-
-    rendering_ = false;
-}
-
-// ─── gatherRenderItems ───────────────────────────────────────────────────────
-
-void WaterNode3D::gatherRenderItems(RenderQueue &q, const FrameContext &ctx)
-{
-    // Don't draw the water surface in secondary (reflection/refraction) renders
-    if (ctx.secondary) return;
-    if (!visible || !material_) return;
-
-    const glm::mat4  world     = worldMatrix();
-    const BoundingBox worldAABB = buffer_.aabb.transformed(world);
-
-    if (worldAABB.is_valid() && !ctx.frustum.contains(worldAABB))
-        return;
-
-    RenderItem item;
-    item.drawable  = &buffer_;
-    item.material  = material_;
-    item.model     = world;
-    item.worldAABB = worldAABB;
-    item.passMask  = RenderPassMask::Transparent;
-    q.add(item);
 }

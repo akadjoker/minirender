@@ -107,7 +107,7 @@ void Node3D::setRotation(const glm::quat &q)
     markDirty();
 }
 
-// Euler angles in RADIANS, order YXZ (same as old engine Quat::toEulerAngles)
+// Euler angles in DEGREES, order YXZ (same semantic order used in the public API)
 // returns vec3(pitch, yaw, roll)
 glm::vec3 Node3D::getEulerAngles() const
 {
@@ -128,15 +128,16 @@ glm::vec3 Node3D::getEulerAngles() const
     float cosRoll = 1.f - 2.f * (q.x * q.x + q.z * q.z);
     float roll    = std::atan2(sinRoll, cosRoll);
 
-    return glm::vec3(pitch, yaw, roll); // radians
+    return glm::degrees(glm::vec3(pitch, yaw, roll));
 }
 
-// Euler angles in RADIANS, order YXZ — matches getEulerAngles round-trip
-void Node3D::setEulerAngles(const glm::vec3 &pitchYawRoll)
+// Euler angles in DEGREES, order YXZ — matches getEulerAngles round-trip
+void Node3D::setEulerAngles(const glm::vec3 &pitchYawRollDegrees)
 {
-    float pitch = pitchYawRoll.x;
-    float yaw   = pitchYawRoll.y;
-    float roll  = pitchYawRoll.z;
+    glm::vec3 radians = glm::radians(pitchYawRollDegrees);
+    float pitch = radians.x;
+    float yaw   = radians.y;
+    float roll  = radians.z;
 
     float cy = std::cos(yaw   * 0.5f);
     float sy = std::sin(yaw   * 0.5f);

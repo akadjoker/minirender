@@ -15,36 +15,21 @@ std::string serializedTextureRef(const Texture *tex)
 {
     if (!tex)
         return std::string();
-    if (!tex->sourcePath.empty())
-        return tex->sourcePath;
     return tex->name;
+}
+
+bool isAbsolutePath(const std::string &path)
+{
+    return !path.empty() &&
+           (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
 }
 
 std::string resolveSerializedTexturePath(const std::string &textureRef,
                                         const std::string &textureDir)
 {
-    if (textureRef.empty())
-        return std::string();
-
-    if (PathIsAbsolute(textureRef) && FileExists(textureRef))
+    if (textureRef.empty() || textureDir.empty() || isAbsolutePath(textureRef))
         return textureRef;
-    if (FileExists(textureRef))
-        return textureRef;
-
-    if (!textureDir.empty())
-    {
-        std::string resolved = ResolveTexturePath(textureDir, textureRef);
-        if (!resolved.empty())
-            return resolved;
-
-        resolved = ResolveTexturePath(textureDir, PathFilename(textureRef));
-        if (!resolved.empty())
-            return resolved;
-
-        return PathJoin(textureDir, PathFilename(textureRef));
-    }
-
-    return textureRef;
+    return textureDir + "/" + textureRef;
 }
 }
 
@@ -326,16 +311,7 @@ void MeshReader::readMaterials(const ChunkHeader &h,
         if (!textureRef.empty())
         {
             const std::string resolvedPath = resolveSerializedTexturePath(textureRef, textureDir);
-            Texture *tex = nullptr;
-
-            if (!resolvedPath.empty() && FileExists(resolvedPath))
-            {
-                tex = texMgr.load(resolvedPath, resolvedPath);
-            }
-            else
-            {
-                tex = texMgr.get(textureRef);
-            }
+            Texture *tex = texMgr.load(textureRef, resolvedPath);
 
             if (tex)
             {

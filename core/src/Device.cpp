@@ -13,6 +13,11 @@
 
 double GetTime() { return static_cast<double>(SDL_GetTicks()) / 1000; }
 
+static bool isImGuiReady(bool readyFlag)
+{
+    return readyFlag && ImGui::GetCurrentContext() != nullptr;
+}
+
 //*************************************************************************************************
 // Device
 //*************************************************************************************************
@@ -161,6 +166,7 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
     TextureManager::instance();
     ShaderManager::instance();
     MeshManager::instance();
+    AnimatedMeshManager::instance();
     RenderState::instance();
     MaterialManager::instance();
     ShaderManager::instance();
@@ -262,13 +268,18 @@ bool Device::Run()
 
     while (SDL_PollEvent(&event) != 0)
     {
-        if (m_imguiReady)
+        if (isImGuiReady(m_imguiReady))
             ImGui_ImplSDL2_ProcessEvent(&event);
 
         // When ImGui is capturing input, don't forward to the game Input system.
-        const ImGuiIO &io = ImGui::GetIO();
-        bool imguiMouse    = m_imguiReady && io.WantCaptureMouse;
-        bool imguiKeyboard = m_imguiReady && io.WantCaptureKeyboard;
+        bool imguiMouse = false;
+        bool imguiKeyboard = false;
+        if (isImGuiReady(m_imguiReady))
+        {
+            const ImGuiIO &io = ImGui::GetIO();
+            imguiMouse = io.WantCaptureMouse;
+            imguiKeyboard = io.WantCaptureKeyboard;
+        }
 
         switch (event.type)
         {
@@ -352,7 +363,7 @@ int Device::PollEvents(SDL_Event *event)
     m_update = m_current - m_previous;
     m_previous = m_current;
     int ret = SDL_PollEvent(event);
-    if (ret && m_imguiReady)
+    if (ret && isImGuiReady(m_imguiReady))
         ImGui_ImplSDL2_ProcessEvent(event);
     return ret;
 }
@@ -369,6 +380,7 @@ void Device::Close()
     TextureManager::instance().unloadAll();
     ShaderManager::instance().unloadAll();
     MeshManager::instance().unloadAll();
+    AnimatedMeshManager::instance().unloadAll();
     MaterialManager::instance().unloadAll();
     RenderState::instance().shutdown();
 
@@ -383,7 +395,7 @@ void Device::Close()
 
 void Device::Flip()
 {
-    if (m_imguiReady)
+    if (isImGuiReady(m_imguiReady))
     {
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -432,7 +444,7 @@ void Device::ImGuiInit(const char *glsl_version)
 
 void Device::ImGuiBegin()
 {
-    if (!m_imguiReady) return;
+    if (!isImGuiReady(m_imguiReady)) return;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -446,7 +458,11 @@ void Device::ImGuiEnd()
 
 void Device::ImGuiShutdown()
 {
-    if (!m_imguiReady) return;
+    if (!isImGuiReady(m_imguiReady))
+    {
+        m_imguiReady = false;
+        return;
+    }
     m_imguiReady = false;
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

@@ -2,7 +2,6 @@
 
 #include "Config.hpp"
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
 
 // Forward-declare so Device.hpp doesn't pull all of imgui.h into every TU
 struct ImGuiContext;
@@ -90,6 +89,5 @@ private:
     Device& operator=(Device&&) = delete;
 
 };
-
 
 

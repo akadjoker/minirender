@@ -1,78 +1,80 @@
 #include "pch.h"
 #include "Pixmap.hpp"
-#include <SDL2/SDL_image.h>
+#include "Utils.hpp"
+#include <stb_image.h>
+#include <stb_image_write.h>
 
 namespace
 {
-bool HasExtension(const char *fileName, const char *extension)
+int SelectPixmapComponents(int sourceComponents)
 {
-    if (!fileName || !extension)
+    switch (sourceComponents)
     {
-        return false;
+    case 2:
+    case 4:
+        return 4;
+    case 1:
+    case 3:
+    default:
+        return 3;
     }
-
-    const std::string path(fileName);
-    const std::string suffix(extension);
-    if (path.length() < suffix.length())
-    {
-        return false;
-    }
-
-    return path.compare(path.length() - suffix.length(), suffix.length(), suffix) == 0;
 }
 
-SDL_Surface *ConvertSurfaceForPixmap(SDL_Surface *surface, int &outComponents)
+bool AssignLoadedPixelsToPixmap(Pixmap &pixmap,
+                                const unsigned char *sourcePixels,
+                                int width, int height,
+                                int sourceComponents)
 {
-    if (!surface)
+    if (!sourcePixels || width <= 0 || height <= 0 || sourceComponents < 1 || sourceComponents > 4)
     {
-        return nullptr;
-    }
-
-    const bool hasAlpha = SDL_ISPIXELFORMAT_ALPHA(surface->format->format) || surface->format->Amask != 0;
-    const Uint32 targetFormat = hasAlpha ? SDL_PIXELFORMAT_RGBA32 : SDL_PIXELFORMAT_RGB24;
-    outComponents = hasAlpha ? 4 : 3;
-
-    return SDL_ConvertSurfaceFormat(surface, targetFormat, 0);
-}
-
-bool AssignSurfaceToPixmap(Pixmap &pixmap, SDL_Surface *surface)
-{
-    int newComponents = 0;
-    SDL_Surface *converted = ConvertSurfaceForPixmap(surface, newComponents);
-    if (!converted)
-    {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to convert surface: %s", SDL_GetError());
         return false;
     }
 
-    const size_t rowBytes = static_cast<size_t>(converted->w) * static_cast<size_t>(newComponents);
-    const size_t totalBytes = static_cast<size_t>(converted->w) * static_cast<size_t>(converted->h) * 4;
+    const int newComponents = SelectPixmapComponents(sourceComponents);
+    const size_t totalBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
     unsigned char *newPixels = static_cast<unsigned char *>(malloc(totalBytes));
     if (!newPixels)
     {
-        SDL_FreeSurface(converted);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to allocate %zu bytes for image", totalBytes);
         return false;
     }
     memset(newPixels, 0, totalBytes);
 
-    if (SDL_MUSTLOCK(converted) && SDL_LockSurface(converted) != 0)
+    if (newComponents == sourceComponents)
     {
-        free(newPixels);
-        SDL_FreeSurface(converted);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to lock surface: %s", SDL_GetError());
-        return false;
+        memcpy(newPixels, sourcePixels, static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(newComponents));
     }
-
-    for (int y = 0; y < converted->h; y++)
+    else
     {
-        const unsigned char *srcRow = static_cast<const unsigned char *>(converted->pixels) + static_cast<size_t>(y) * static_cast<size_t>(converted->pitch);
-        memcpy(newPixels + static_cast<size_t>(y) * rowBytes, srcRow, rowBytes);
-    }
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                const size_t srcIndex = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * static_cast<size_t>(sourceComponents);
+                const size_t dstIndex = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * static_cast<size_t>(newComponents);
 
-    if (SDL_MUSTLOCK(converted))
-    {
-        SDL_UnlockSurface(converted);
+                const unsigned char r = sourcePixels[srcIndex + 0];
+                const unsigned char g = (sourceComponents >= 3) ? sourcePixels[srcIndex + 1] : r;
+                const unsigned char b = (sourceComponents >= 3) ? sourcePixels[srcIndex + 2] : r;
+                const unsigned char a = (sourceComponents == 2) ? sourcePixels[srcIndex + 1]
+                                          : (sourceComponents == 4) ? sourcePixels[srcIndex + 3]
+                                                                     : 255;
+
+                if (newComponents == 3)
+                {
+                    newPixels[dstIndex + 0] = r;
+                    newPixels[dstIndex + 1] = g;
+                    newPixels[dstIndex + 2] = b;
+                }
+                else
+                {
+                    newPixels[dstIndex + 0] = r;
+                    newPixels[dstIndex + 1] = g;
+                    newPixels[dstIndex + 2] = b;
+                    newPixels[dstIndex + 3] = a;
+                }
+            }
+        }
     }
 
     if (pixmap.pixels)
@@ -81,32 +83,27 @@ bool AssignSurfaceToPixmap(Pixmap &pixmap, SDL_Surface *surface)
     }
 
     pixmap.pixels = newPixels;
-    pixmap.width = converted->w;
-    pixmap.height = converted->h;
+    pixmap.width = width;
+    pixmap.height = height;
     pixmap.components = newComponents;
-
-    SDL_FreeSurface(converted);
     return true;
 }
 
-SDL_Surface *CreateSurfaceFromPixmap(const Pixmap &pixmap, std::vector<unsigned char> &scratch)
+bool BuildSaveBuffer(const Pixmap &pixmap, std::vector<unsigned char> &scratch, int &saveComponents, const unsigned char *&savePixels)
 {
     if (!pixmap.pixels || pixmap.width <= 0 || pixmap.height <= 0)
     {
-        return nullptr;
+        return false;
     }
 
-    if (pixmap.components == 3)
+    if (pixmap.components == 1 || pixmap.components == 3 || pixmap.components == 4)
     {
-        return SDL_CreateRGBSurfaceWithFormatFrom(pixmap.pixels, pixmap.width, pixmap.height, 24,
-                                                  pixmap.width * 3, SDL_PIXELFORMAT_RGB24);
+        saveComponents = pixmap.components;
+        savePixels = pixmap.pixels;
+        return true;
     }
 
-    if (pixmap.components == 4)
-    {
-        return SDL_CreateRGBSurfaceWithFormatFrom(pixmap.pixels, pixmap.width, pixmap.height, 32,
-                                                  pixmap.width * 4, SDL_PIXELFORMAT_RGBA32);
-    }
+    saveComponents = 4;
 
     scratch.resize(static_cast<size_t>(pixmap.width) * static_cast<size_t>(pixmap.height) * 4);
     for (int y = 0; y < pixmap.height; y++)
@@ -122,8 +119,8 @@ SDL_Surface *CreateSurfaceFromPixmap(const Pixmap &pixmap, std::vector<unsigned 
         }
     }
 
-    return SDL_CreateRGBSurfaceWithFormatFrom(scratch.data(), pixmap.width, pixmap.height, 32,
-                                              pixmap.width * 4, SDL_PIXELFORMAT_RGBA32);
+    savePixels = scratch.data();
+    return true;
 }
 
 bool SavePixmapAsTga(const Pixmap &pixmap, const char *fileName)
@@ -198,7 +195,7 @@ bool SavePixmapAsTga(const Pixmap &pixmap, const char *fileName)
 
     return true;
 }
-}
+} // namespace
 
 
 Pixmap::Pixmap()
@@ -403,15 +400,19 @@ void Pixmap::Fill(u32 rgba)
 
 bool Pixmap::Load(const char *file_name)
 {
-    SDL_Surface *surface = IMG_Load(file_name);
-    if (!surface)
+    int width = 0;
+    int height = 0;
+    int sourceComponents = 0;
+    unsigned char *loadedPixels = stbi_load(file_name, &width, &height, &sourceComponents, 0);
+    if (!loadedPixels)
     {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to load image: %s (%s)", file_name, IMG_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to load image: %s (%s)",
+                     file_name, stbi_failure_reason());
         return false;
     }
 
-    const bool loaded = AssignSurfaceToPixmap(*this, surface);
-    SDL_FreeSurface(surface);
+    const bool loaded = AssignLoadedPixelsToPixmap(*this, loadedPixels, width, height, sourceComponents);
+    stbi_image_free(loadedPixels);
     if (!loaded)
     {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to load image: %s", file_name);
@@ -437,22 +438,22 @@ bool Pixmap::LoadFromMemory(const unsigned char *buffer, unsigned int bytesRead)
         return false;
     }
 
-    SDL_RWops *rw = SDL_RWFromConstMem(buffer, static_cast<int>(bytesRead));
-    if (!rw)
+    int width = 0;
+    int height = 0;
+    int sourceComponents = 0;
+    unsigned char *loadedPixels = stbi_load_from_memory(buffer,
+                                                        static_cast<int>(bytesRead),
+                                                        &width, &height,
+                                                        &sourceComponents, 0);
+    if (!loadedPixels)
     {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to create SDL RWops: %s", SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to load image from memory: %s",
+                     stbi_failure_reason());
         return false;
     }
 
-    SDL_Surface *surface = IMG_Load_RW(rw, 1);
-    if (!surface)
-    {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to load image from memory: %s", IMG_GetError());
-        return false;
-    }
-
-    const bool loaded = AssignSurfaceToPixmap(*this, surface);
-    SDL_FreeSurface(surface);
+    const bool loaded = AssignLoadedPixelsToPixmap(*this, loadedPixels, width, height, sourceComponents);
+    stbi_image_free(loadedPixels);
     return loaded;
 }
 
@@ -470,28 +471,30 @@ bool Pixmap::Save(const char *file_name)
     }
 
     std::vector<unsigned char> scratch;
-    SDL_Surface *surface = CreateSurfaceFromPixmap(*this, scratch);
-    if (!surface)
+    int saveComponents = 0;
+    const unsigned char *savePixels = nullptr;
+    if (!BuildSaveBuffer(*this, scratch, saveComponents, savePixels))
     {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to create SDL surface for saving: %s", SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to prepare image buffer for saving: %s", file_name);
         return false;
     }
 
     bool saved = false;
     if (HasExtension(file_name, ".bmp"))
     {
-        saved = (SDL_SaveBMP(surface, file_name) == 0);
+        saved = (stbi_write_bmp(file_name, width, height, saveComponents, savePixels) != 0);
         if (!saved)
         {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save BMP: %s (%s)", file_name, SDL_GetError());
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save BMP: %s", file_name);
         }
     }
     else if (HasExtension(file_name, ".png"))
     {
-        saved = (IMG_SavePNG(surface, file_name) == 0);
+        const int strideBytes = width * saveComponents;
+        saved = (stbi_write_png(file_name, width, height, saveComponents, savePixels, strideBytes) != 0);
         if (!saved)
         {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save PNG: %s (%s)", file_name, IMG_GetError());
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save PNG: %s", file_name);
         }
     }
     else
@@ -499,7 +502,6 @@ bool Pixmap::Save(const char *file_name)
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Unsupported output format: %s", file_name);
     }
 
-    SDL_FreeSurface(surface);
     return saved;
 }
 

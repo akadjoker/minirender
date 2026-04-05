@@ -13,11 +13,6 @@
 
 double GetTime() { return static_cast<double>(SDL_GetTicks()) / 1000; }
 
-static bool isImGuiReady(bool readyFlag)
-{
-    return readyFlag && ImGui::GetCurrentContext() != nullptr;
-}
-
 //*************************************************************************************************
 // Device
 //*************************************************************************************************
@@ -60,7 +55,6 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL could not initialize! SDL_Error: %s", SDL_GetError());
         return false;
     }
-    IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG);
     m_current = 0;
     m_previous = 0;
     m_update = 0;
@@ -166,7 +160,6 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
     TextureManager::instance();
     ShaderManager::instance();
     MeshManager::instance();
-    AnimatedMeshManager::instance();
     RenderState::instance();
     MaterialManager::instance();
     ShaderManager::instance();
@@ -268,18 +261,13 @@ bool Device::Run()
 
     while (SDL_PollEvent(&event) != 0)
     {
-        if (isImGuiReady(m_imguiReady))
+        if (m_imguiReady)
             ImGui_ImplSDL2_ProcessEvent(&event);
 
         // When ImGui is capturing input, don't forward to the game Input system.
-        bool imguiMouse = false;
-        bool imguiKeyboard = false;
-        if (isImGuiReady(m_imguiReady))
-        {
-            const ImGuiIO &io = ImGui::GetIO();
-            imguiMouse = io.WantCaptureMouse;
-            imguiKeyboard = io.WantCaptureKeyboard;
-        }
+        const ImGuiIO &io = ImGui::GetIO();
+        bool imguiMouse    = m_imguiReady && io.WantCaptureMouse;
+        bool imguiKeyboard = m_imguiReady && io.WantCaptureKeyboard;
 
         switch (event.type)
         {
@@ -363,7 +351,7 @@ int Device::PollEvents(SDL_Event *event)
     m_update = m_current - m_previous;
     m_previous = m_current;
     int ret = SDL_PollEvent(event);
-    if (ret && isImGuiReady(m_imguiReady))
+    if (ret && m_imguiReady)
         ImGui_ImplSDL2_ProcessEvent(event);
     return ret;
 }
@@ -380,7 +368,6 @@ void Device::Close()
     TextureManager::instance().unloadAll();
     ShaderManager::instance().unloadAll();
     MeshManager::instance().unloadAll();
-    AnimatedMeshManager::instance().unloadAll();
     MaterialManager::instance().unloadAll();
     RenderState::instance().shutdown();
 
@@ -389,13 +376,12 @@ void Device::Close()
 
     m_window = NULL;
     SDL_Log("[DEVICE] closed!");
-    IMG_Quit();
     SDL_Quit();
 }
 
 void Device::Flip()
 {
-    if (isImGuiReady(m_imguiReady))
+    if (m_imguiReady)
     {
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -444,7 +430,7 @@ void Device::ImGuiInit(const char *glsl_version)
 
 void Device::ImGuiBegin()
 {
-    if (!isImGuiReady(m_imguiReady)) return;
+    if (!m_imguiReady) return;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
@@ -458,11 +444,7 @@ void Device::ImGuiEnd()
 
 void Device::ImGuiShutdown()
 {
-    if (!isImGuiReady(m_imguiReady))
-    {
-        m_imguiReady = false;
-        return;
-    }
+    if (!m_imguiReady) return;
     m_imguiReady = false;
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();

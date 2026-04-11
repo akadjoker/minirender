@@ -188,6 +188,8 @@ public:
                            const std::string &texture_dir = "");
     Mesh *load_bsp(const std::string &name, const std::string &path,
                    const std::string &texture_dir = "");
+    Mesh *load_map(const std::string &name, const std::string &path,
+                   const std::string &texture_dir = "");
  
 
     Mesh *create_cube(const std::string &name, float size = 1.0f);

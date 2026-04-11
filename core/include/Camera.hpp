@@ -4,6 +4,7 @@
 #include "Node.hpp"
 
 class CameraController;
+class CollisionSystem;
 
 enum class ProjectionType
 {
@@ -117,6 +118,41 @@ public:
     float sprintMultiplier = 2.5f;
 
     void update(Camera &camera, float dt) override;
+};
+
+// ============================================================
+//  CharacterCameraController — camera with body collision
+// ============================================================
+class CharacterCameraController : public CameraController
+{
+public:
+    CollisionSystem *collision = nullptr; // non-owning
+
+    glm::vec3 bodyPosition = {0.f, 0.f, 0.f};
+    glm::vec3 radius = {18.f, 36.f, 12.f};
+    float eyeOffsetY = 18.0f;
+
+    float yawDegrees = 0.0f;
+    float pitchDegrees = 0.0f;
+    float turnSpeed = 180.0f;
+    float mouseSensitivity = 0.15f;
+
+    float forwardSpeed = 128.0f;
+    float backwardSpeed = 92.0f;
+    float sprintMultiplier = 2.0f;
+    float gravity = 512.0f;
+    float jumpSpeed = 256.0f;
+    float groundSnapDistance = 24.0f;
+
+    float verticalSpeed = 0.0f;
+    bool grounded = false;
+    bool useMouseLook = true;
+
+    void onAttach(Camera &camera) override;
+    void update(Camera &camera, float dt) override;
+
+    void setBodyPosition(const glm::vec3 &position);
+    glm::vec3 cameraWorldPosition() const;
 };
 
 // ============================================================

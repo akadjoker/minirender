@@ -10,9 +10,9 @@ add_compile_definitions(IMGUI_IMPL_OPENGL_ES3)
 add_subdirectory(vendor/imgui)
 add_subdirectory(core)
 add_subdirectory(demos)
+add_subdirectory(editor)
+add_subdirectory(mapload_demo)
+add_subdirectory(gridmap_demo)
 
  
  
-
-
-

@@ -38,11 +38,16 @@ set(SOURCES
     src/Color.cpp
     src/DebugDraw.cpp
     src/Device.cpp
+    src/Effects.cpp
     src/Font.cpp
     src/FrameAnimator.cpp
+    src/GridMapData.cpp
+    src/GridMapMeshBuilder.cpp
+    src/GridMapNode.cpp
     src/Input.cpp
     src/Material.cpp
     src/Math.cpp
+    src/M8Texture.cpp
     src/Mesh.cpp
     src/MeshB3DLoader.cpp
     src/MeshGLTFLoader.cpp
@@ -55,12 +60,15 @@ set(SOURCES
     src/Node.cpp
     src/Node3D.cpp
     src/Pixmap.cpp
+    src/ParticleNode.cpp
     src/RenderState.cpp
     src/RenderTarget.cpp
     src/Scene.cpp
     src/Shader.cpp
     src/ShaderManager.cpp
     src/TerrainNode.cpp
+    src/TextMap.cpp
+    src/TextMapLoader.cpp
     src/TextureManager.cpp
     src/Tree.cpp
     src/Utils.cpp

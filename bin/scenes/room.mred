@@ -1,0 +1,739 @@
+{
+  "brushes": [
+    {
+      "color": [
+        0.949999988079071,
+        0.8987648487091064,
+        0.5224999785423279
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_trim/dirty_pewter_big.jpg",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            8.5,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            2.200000047683716,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1456.0,
+        1.0,
+        640.0
+      ],
+      "mins": [
+        -1168.0,
+        0.0,
+        -960.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/support1_1.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5224999785423279,
+        0.949999988079071,
+        0.9493256211280823
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1488.75048828125,
+        592.0,
+        672.0
+      ],
+      "mins": [
+        -1202.24951171875,
+        0.0,
+        624.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/cable.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5224999785423279,
+        0.949999988079071,
+        0.9493256211280823
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1472.75048828125,
+        592.0,
+        -928.0
+      ],
+      "mins": [
+        -1218.24951171875,
+        0.0,
+        -976.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/cable.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5224999785423279,
+        0.949999988079071,
+        0.9493256211280823
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -1144.74951171875,
+        592.0,
+        665.5
+      ],
+      "mins": [
+        -1192.74951171875,
+        0.0,
+        -985.5
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/cable.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5224999785423279,
+        0.949999988079071,
+        0.9493256211280823
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1463.25048828125,
+        592.0,
+        697.5
+      ],
+      "mins": [
+        1415.25048828125,
+        0.0,
+        118.5
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/cable.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5224999785423279,
+        0.949999988079071,
+        0.9493256211280823
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1447.25048828125,
+        592.0,
+        -374.5
+      ],
+      "mins": [
+        1399.25048828125,
+        0.0,
+        -953.5
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_support/cable.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.949999988079071,
+        0.8987648487091064,
+        0.5224999785423279
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_trim/dirty_pewter_big.jpg",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            8.5,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            2.200000047683716,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        1424.0,
+        577.0,
+        656.0
+      ],
+      "mins": [
+        -1200.0,
+        576.0,
+        -944.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+  "focus": [
+    -294.0057067871094,
+    144.58914184570313,
+    -159.3665008544922
+  ],
+  "version": 1
+}

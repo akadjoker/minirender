@@ -40,11 +40,25 @@ struct EffectBuffer : public IDrawable
     int       indexCount()                                const override { return (int)indices.size(); }
 };
 
+struct RibbonStripVertex
+{
+    glm::vec3 left  = {};
+    glm::vec3 right = {};
+    glm::vec4 color = {1.f, 1.f, 1.f, 1.f};
+    float     u     = 0.0f;
+};
+
+class RibbonStripBuilder
+{
+public:
+    static void build(const std::vector<RibbonStripVertex> &samples, EffectBuffer &buffer);
+};
+
 // ============================================================
 //  DecalNode
 //  World-space projected quads oriented along surface normal.
 // ============================================================
-class DecalNode : public Node3D
+class DecalNode : public RenderableNode
 {
 public:
     struct Decal
@@ -86,6 +100,7 @@ public:
 
     // ── Node overrides ──────────────────────────────────────
     void update(float dt) override;
+    void render(Shader *shader, Camera *camera) override;
 
 private:
     std::vector<Decal> decals_;
@@ -149,7 +164,7 @@ struct FlareElement
 //  Submitted as transparent RenderItems with NDC-space geometry.
 //  Requires a simple unlit shader (depth-test OFF).
 // ============================================================
-class LensFlareNode : public Node3D
+class LensFlareNode : public RenderableNode
 {
 public:
     LensFlareNode();
@@ -176,6 +191,7 @@ public:
 
     glm::vec3 getSunDirection() const { return sunDirection_; }
     bool      isEnabled()       const { return enabled_; }
+    void      render(Shader *shader, Camera *camera) override;
 
 private:
     glm::vec3               sunDirection_ = {0.f, -1.f, 0.f};
@@ -199,7 +215,7 @@ private:
 //  Static-batch of cross/tri-cross billboard quads for grass.
 //  Wind animation is driven by u_time / u_windStrength in shader.
 // ============================================================
-class GrassNode : public Node3D
+class GrassNode : public RenderableNode
 {
 public:
     enum class GrassType { Single, Cross, TriCross };
@@ -235,6 +251,7 @@ public:
 
     // ── Node overrides ──────────────────────────────────────
     void update(float dt) override;
+    void render(Shader *shader, Camera *camera) override;
 
 private:
     struct ClumpInfo
@@ -262,11 +279,128 @@ private:
 };
 
 // ============================================================
+//  RibbonTrailNode
+//  Ogre-style ribbon trail made of camera-facing quads.
+//  Each chain follows one emitter node and keeps a short history.
+// ============================================================
+class RibbonTrailNode : public RenderableNode
+{
+public:
+    explicit RibbonTrailNode(int maxChains = 4, int maxElementsPerChain = 32);
+    ~RibbonTrailNode();
+
+    int  addChain(Node3D *emitter,
+                  const glm::vec4 &startColor = {1.f, 1.f, 1.f, 1.f},
+                  const glm::vec4 &endColor   = {1.f, 1.f, 1.f, 0.f},
+                  float startWidth = 0.7f,
+                  float endWidth   = 0.05f);
+    void removeChain(int index);
+    void clearChains();
+
+    bool setChainColors(int index, const glm::vec4 &startColor, const glm::vec4 &endColor);
+    bool setChainWidths(int index, float startWidth, float endWidth);
+
+    void setTrailLength(float seconds)    { trailLength_ = glm::max(0.01f, seconds); }
+    void setMinSegmentLength(float value) { minSegmentLength_ = glm::max(0.001f, value); }
+    void setMaxElementsPerChain(int count);
+
+    int chainCount() const;
+    int activeChainCount() const;
+
+    Material *material = nullptr;
+
+    void update(float dt) override;
+    void render(Shader *shader, Camera *camera) override;
+
+private:
+    struct ChainElement
+    {
+        glm::vec3 position = {};
+        float     age      = 0.f;
+    };
+
+    struct Chain
+    {
+        Node3D *emitter          = nullptr;
+        std::vector<ChainElement> elements;
+        glm::vec4 startColor     = {1.f, 1.f, 1.f, 1.f};
+        glm::vec4 endColor       = {1.f, 1.f, 1.f, 0.f};
+        float     startWidth     = 0.7f;
+        float     endWidth       = 0.05f;
+        bool      active         = true;
+    };
+
+    std::vector<Chain> chains_;
+    EffectBuffer       buffer_;
+    int                maxChains_           = 4;
+    int                maxElementsPerChain_ = 32;
+    float              trailLength_         = 1.2f;
+    float              minSegmentLength_    = 0.05f;
+    bool               geometryDirty_       = true;
+
+    void rebuildGeometry(const Camera *camera);
+    void ensureCapacity();
+};
+
+// ============================================================
+//  RibbonSheetNode
+//  Stores left/right edge pairs over time to form a continuous
+//  textured sheet, useful for aircraft wing trails.
+// ============================================================
+class RibbonSheetNode : public RenderableNode
+{
+public:
+    explicit RibbonSheetNode(int maxSamples = 96);
+    ~RibbonSheetNode();
+
+    void addSample(const glm::vec3 &left, const glm::vec3 &right);
+    void clearSamples();
+
+    void setLifetime(float seconds)         { lifetime_ = glm::max(0.01f, seconds); }
+    void setMinSampleDistance(float value)  { minSampleDistance_ = glm::max(0.0f, value); }
+    void setMaxSamples(int count);
+    void setColors(const glm::vec4 &startColor, const glm::vec4 &endColor)
+    {
+        startColor_ = startColor;
+        endColor_ = endColor;
+        geometryDirty_ = true;
+    }
+
+    int sampleCount() const { return (int)samples_.size(); }
+
+    Material *material = nullptr;
+
+    void update(float dt) override;
+    void render(Shader *shader, Camera *camera) override;
+
+private:
+    struct Sample
+    {
+        glm::vec3 left  = {};
+        glm::vec3 right = {};
+        float     age   = 0.0f;
+    };
+
+    std::vector<Sample> samples_;
+    EffectBuffer        buffer_;
+    int                 maxSamples_        = 96;
+    float               lifetime_          = 0.6f;
+    float               minSampleDistance_ = 0.05f;
+    glm::vec4           startColor_        = {1.f, 1.f, 1.f, 1.f};
+    glm::vec4           endColor_          = {1.f, 1.f, 1.f, 0.f};
+    bool                geometryDirty_     = true;
+
+    std::vector<RibbonStripVertex> buildStripSamples() const;
+    void rebuild();
+    void ensureCapacity();
+};
+
+// ============================================================
 //  ManualMeshNode
 //  Ogre-like manual geometry builder.
 //  Supports both a streaming API and direct vertex/index access.
 // ============================================================
-class ManualMeshNode : public Node3D
+class ManualMeshNode : public RenderableNode
 {
 public:
     ManualMeshNode();
@@ -318,6 +452,7 @@ public:
     int indexCount()  const { return (int)buffer_.indices.size();  }
 
     Material *material = nullptr;
+    void render(Shader *shader, Camera *camera) override;
 
 private:
     MeshBuffer buffer_;

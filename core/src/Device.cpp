@@ -10,6 +10,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
+#include "ImGuiFontAwesome.h"
 
 double GetTime() { return static_cast<double>(SDL_GetTicks()) / 1000; }
 
@@ -423,11 +424,14 @@ void Device::ImGuiInit(const char *glsl_version)
     ImGui::CreateContext();
     ImGuiIO &io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    ImFont *baseFont = io.Fonts->Fonts.empty() ? io.Fonts->AddFontDefault() : io.Fonts->Fonts[0];
+    const bool iconsLoaded = ImGuiFontAwesome::MergeSolid(io, baseFont, 13.0f);
     ImGui::StyleColorsDark();
     ImGui_ImplSDL2_InitForOpenGL(m_window, m_context);
     ImGui_ImplOpenGL3_Init(glsl_version);
     m_imguiReady = true;
     SDL_Log("[DEVICE] ImGui initialised (%s)", glsl_version);
+    SDL_Log("[DEVICE] ImGui FontAwesome: %s", iconsLoaded ? "loaded" : "not loaded");
 }
 
 void Device::ImGuiBegin()

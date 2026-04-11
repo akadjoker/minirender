@@ -114,6 +114,49 @@ void EffectBuffer::free()
     indices.clear();
 }
 
+void RibbonStripBuilder::build(const std::vector<RibbonStripVertex> &samples, EffectBuffer &buffer)
+{
+    buffer.vertices.clear();
+    buffer.indices.clear();
+    buffer.aabb = BoundingBox{};
+
+    if (samples.size() < 2)
+    {
+        buffer.upload();
+        return;
+    }
+
+    bool firstPoint = true;
+    const uint32_t base = (uint32_t)buffer.vertices.size();
+    for (size_t i = 0; i < samples.size(); ++i)
+    {
+        const RibbonStripVertex &sample = samples[i];
+        buffer.vertices.push_back({sample.left, {sample.u, 1.0f}, sample.color});
+        buffer.vertices.push_back({sample.right, {sample.u, 0.0f}, sample.color});
+
+        if (firstPoint)
+        {
+            buffer.aabb.min = sample.left;
+            buffer.aabb.max = sample.left;
+            firstPoint = false;
+        }
+
+        buffer.aabb.expand(sample.left);
+        buffer.aabb.expand(sample.right);
+    }
+
+    for (size_t i = 0; i + 1 < samples.size(); ++i)
+    {
+        const uint32_t i0 = base + (uint32_t)(i * 2);
+        const uint32_t i1 = i0 + 1;
+        const uint32_t i2 = i0 + 2;
+        const uint32_t i3 = i0 + 3;
+        buffer.indices.insert(buffer.indices.end(), {i0, i1, i3, i3, i2, i0});
+    }
+
+    buffer.upload();
+}
+
 // ============================================================
 //  DecalNode
 // ============================================================
@@ -121,6 +164,7 @@ DecalNode::DecalNode(int maxDecals)
     : maxDecals_(maxDecals)
 {
     type = NodeType::Decal;
+    renderType = RenderType::Transparent;
     buffer_.allocate(maxDecals);
 }
 
@@ -209,6 +253,26 @@ void DecalNode::update(float dt)
     if (changed) dirty_ = true;
 }
 
+void DecalNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !material)
+        return;
+
+    if (dirty_)
+        rebuild();
+
+    if (buffer_.indices.empty())
+        return;
+
+    shader->setMat4("u_model", worldMatrix());
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(worldMatrix()))));
+
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
+}
+
 void DecalNode::rebuild()
 {
     buffer_.vertices.clear();
@@ -254,6 +318,7 @@ void DecalNode::rebuild()
 LensFlareNode::LensFlareNode()
 {
     type = NodeType::LensFlare;
+    renderType = RenderType::Overlay;
 }
 
 LensFlareNode::~LensFlareNode()
@@ -414,6 +479,29 @@ void LensFlareNode::buildGeometry(const glm::vec2& sunNDC, float fade,
     buffer_.upload();
 }
 
+void LensFlareNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !enabled_ || !material)
+        return;
+
+    const glm::vec3 cameraPos = camera->worldPosition();
+    const glm::vec3 sunWorld = cameraPos - sunDirection_ * 5000.0f;
+    const glm::vec4 clip = camera->projection * camera->view * glm::vec4(sunWorld, 1.0f);
+    const glm::vec2 sunNdc = toNDC(clip);
+    const float fade = computeFade(sunNdc);
+    if (fade <= 0.0f)
+        return;
+
+    buildGeometry(sunNdc, fade, camera->viewport.z, camera->viewport.w);
+    if (buffer_.indices.empty())
+        return;
+
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
+}
+
 // ============================================================
 //  GrassNode
 // ============================================================
@@ -421,6 +509,7 @@ GrassNode::GrassNode(GrassType type)
     : type_(type)
 {
     this->type = NodeType::Grass;
+    renderType = RenderType::Transparent;
     buffer_.dynamic = false;
     buffer_.mode    = GL_TRIANGLES;
 }
@@ -550,12 +639,479 @@ void GrassNode::update(float dt)
     time_ += dt;
 }
 
+void GrassNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !material)
+        return;
+
+    if (dirty_ || !built_)
+        build();
+
+    if (buffer_.indices.empty())
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    const BoundingBox worldBounds = aabb_.transformed(model);
+    if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
+        return;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    material->setFloat("u_time", time_);
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
+}
+
+// ============================================================
+//  RibbonTrailNode
+// ============================================================
+RibbonTrailNode::RibbonTrailNode(int maxChains, int maxElementsPerChain)
+    : maxChains_(glm::max(1, maxChains))
+    , maxElementsPerChain_(glm::max(2, maxElementsPerChain))
+{
+    type = NodeType::RibbonTrail;
+    renderType = RenderType::Transparent;
+    ensureCapacity();
+}
+
+RibbonTrailNode::~RibbonTrailNode()
+{
+    buffer_.free();
+}
+
+int RibbonTrailNode::addChain(Node3D *emitter,
+                              const glm::vec4 &startColor,
+                              const glm::vec4 &endColor,
+                              float startWidth,
+                              float endWidth)
+{
+    if (!emitter || (int)chains_.size() >= maxChains_)
+        return -1;
+
+    Chain chain;
+    chain.emitter = emitter;
+    chain.startColor = startColor;
+    chain.endColor = endColor;
+    chain.startWidth = glm::max(0.001f, startWidth);
+    chain.endWidth = glm::max(0.0f, endWidth);
+    chain.elements.push_back({emitter->worldPosition(), 0.0f});
+    chains_.push_back(chain);
+    geometryDirty_ = true;
+    return (int)chains_.size() - 1;
+}
+
+void RibbonTrailNode::removeChain(int index)
+{
+    if (index < 0 || index >= (int)chains_.size())
+        return;
+
+    chains_.erase(chains_.begin() + index);
+    geometryDirty_ = true;
+}
+
+void RibbonTrailNode::clearChains()
+{
+    chains_.clear();
+    geometryDirty_ = true;
+}
+
+bool RibbonTrailNode::setChainColors(int index, const glm::vec4 &startColor, const glm::vec4 &endColor)
+{
+    if (index < 0 || index >= (int)chains_.size())
+        return false;
+
+    chains_[index].startColor = startColor;
+    chains_[index].endColor = endColor;
+    geometryDirty_ = true;
+    return true;
+}
+
+bool RibbonTrailNode::setChainWidths(int index, float startWidth, float endWidth)
+{
+    if (index < 0 || index >= (int)chains_.size())
+        return false;
+
+    chains_[index].startWidth = glm::max(0.001f, startWidth);
+    chains_[index].endWidth = glm::max(0.0f, endWidth);
+    geometryDirty_ = true;
+    return true;
+}
+
+void RibbonTrailNode::setMaxElementsPerChain(int count)
+{
+    maxElementsPerChain_ = glm::max(2, count);
+    for (auto &chain : chains_)
+    {
+        if ((int)chain.elements.size() > maxElementsPerChain_)
+            chain.elements.erase(chain.elements.begin(),
+                                 chain.elements.begin() + ((int)chain.elements.size() - maxElementsPerChain_));
+    }
+    ensureCapacity();
+    geometryDirty_ = true;
+}
+
+int RibbonTrailNode::chainCount() const
+{
+    return (int)chains_.size();
+}
+
+int RibbonTrailNode::activeChainCount() const
+{
+    int count = 0;
+    for (const auto &chain : chains_)
+        if (chain.active && chain.emitter)
+            ++count;
+    return count;
+}
+
+void RibbonTrailNode::update(float dt)
+{
+    bool changed = false;
+
+    for (auto &chain : chains_)
+    {
+        if (!chain.active || !chain.emitter)
+            continue;
+
+        for (auto &element : chain.elements)
+            element.age += dt;
+
+        while (!chain.elements.empty() && chain.elements.front().age > trailLength_)
+        {
+            chain.elements.erase(chain.elements.begin());
+            changed = true;
+        }
+
+        const glm::vec3 currentPos = chain.emitter->worldPosition();
+        if (chain.elements.empty())
+        {
+            chain.elements.push_back({currentPos, 0.0f});
+            changed = true;
+        }
+        else
+        {
+            ChainElement &head = chain.elements.back();
+            if (glm::distance2(head.position, currentPos) >= minSegmentLength_ * minSegmentLength_)
+            {
+                chain.elements.push_back({currentPos, 0.0f});
+                changed = true;
+            }
+            else
+            {
+                head.position = currentPos;
+                head.age = 0.0f;
+                changed = true;
+            }
+        }
+
+        while ((int)chain.elements.size() > maxElementsPerChain_)
+        {
+            chain.elements.erase(chain.elements.begin());
+            changed = true;
+        }
+    }
+
+    if (changed)
+        geometryDirty_ = true;
+}
+
+void RibbonTrailNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !material)
+        return;
+
+    if (geometryDirty_)
+        rebuildGeometry(camera);
+
+    if (buffer_.indices.empty())
+        return;
+
+    if (buffer_.aabb.is_valid() && !camera->frustum.contains(buffer_.aabb))
+        return;
+
+    shader->setMat4("u_model", glm::mat4(1.0f));
+    shader->setMat3("u_normalMatrix", glm::mat3(1.0f));
+
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
+}
+
+void RibbonTrailNode::rebuildGeometry(const Camera *camera)
+{
+    buffer_.vertices.clear();
+    buffer_.indices.clear();
+    buffer_.aabb = BoundingBox{};
+
+    if (!camera)
+    {
+        geometryDirty_ = false;
+        return;
+    }
+
+    const glm::vec3 cameraPos = camera->worldPosition();
+    bool firstPoint = true;
+
+    for (const auto &chain : chains_)
+    {
+        if (!chain.active || !chain.emitter || chain.elements.size() < 2)
+            continue;
+
+        const size_t pointCount = chain.elements.size();
+        std::vector<glm::vec3> leftPoints(pointCount);
+        std::vector<glm::vec3> rightPoints(pointCount);
+        std::vector<glm::vec4> colors(pointCount);
+        std::vector<float> vCoords(pointCount);
+
+        for (size_t i = 0; i < pointCount; ++i)
+        {
+            const ChainElement &element = chain.elements[i];
+            glm::vec3 prevTangent(0.0f);
+            glm::vec3 nextTangent(0.0f);
+
+            if (i > 0)
+                prevTangent = element.position - chain.elements[i - 1].position;
+            if (i + 1 < pointCount)
+                nextTangent = chain.elements[i + 1].position - element.position;
+
+            const bool hasPrev = glm::length2(prevTangent) >= 1e-8f;
+            const bool hasNext = glm::length2(nextTangent) >= 1e-8f;
+            if (!hasPrev && !hasNext)
+                continue;
+
+            glm::vec3 tangent(0.0f);
+            if (hasPrev && hasNext)
+            {
+                prevTangent = glm::normalize(prevTangent);
+                nextTangent = glm::normalize(nextTangent);
+                tangent = prevTangent + nextTangent;
+                if (glm::length2(tangent) < 1e-8f)
+                    tangent = nextTangent;
+            }
+            else
+            {
+                tangent = hasNext ? nextTangent : prevTangent;
+            }
+
+            tangent = glm::normalize(tangent);
+            glm::vec3 viewDir = cameraPos - element.position;
+            if (glm::length2(viewDir) < 1e-8f)
+                viewDir = glm::vec3(0.0f, 0.0f, 1.0f);
+            else
+                viewDir = glm::normalize(viewDir);
+
+            glm::vec3 side = glm::cross(tangent, viewDir);
+            if (glm::length2(side) < 1e-8f)
+                side = glm::cross(tangent, glm::vec3(0.0f, 1.0f, 0.0f));
+            if (glm::length2(side) < 1e-8f)
+                side = glm::cross(tangent, glm::vec3(1.0f, 0.0f, 0.0f));
+            side = glm::normalize(side);
+
+            const float t = glm::clamp(element.age / trailLength_, 0.0f, 1.0f);
+            const float halfWidth = glm::mix(chain.startWidth, chain.endWidth, t) * 0.5f;
+            leftPoints[i] = element.position - side * halfWidth;
+            rightPoints[i] = element.position + side * halfWidth;
+            colors[i] = glm::mix(chain.startColor, chain.endColor, t);
+            vCoords[i] = t;
+
+            if (firstPoint)
+            {
+                buffer_.aabb.min = leftPoints[i];
+                buffer_.aabb.max = leftPoints[i];
+                firstPoint = false;
+            }
+
+            buffer_.aabb.expand(leftPoints[i]);
+            buffer_.aabb.expand(rightPoints[i]);
+        }
+
+        const uint32_t base = (uint32_t)buffer_.vertices.size();
+        for (size_t i = 0; i < pointCount; ++i)
+        {
+            buffer_.vertices.push_back({leftPoints[i], {0.0f, vCoords[i]}, colors[i]});
+            buffer_.vertices.push_back({rightPoints[i], {1.0f, vCoords[i]}, colors[i]});
+        }
+
+        for (size_t i = 0; i + 1 < pointCount; ++i)
+        {
+            const uint32_t i0 = base + (uint32_t)(i * 2);
+            const uint32_t i1 = i0 + 1;
+            const uint32_t i2 = i0 + 2;
+            const uint32_t i3 = i0 + 3;
+            buffer_.indices.insert(buffer_.indices.end(), {i0, i1, i3, i3, i2, i0});
+        }
+    }
+
+    buffer_.upload();
+    geometryDirty_ = false;
+}
+
+void RibbonTrailNode::ensureCapacity()
+{
+    buffer_.free();
+    buffer_.allocate(maxChains_ * glm::max(1, maxElementsPerChain_ - 1));
+}
+
+// ============================================================
+//  RibbonSheetNode
+// ============================================================
+RibbonSheetNode::RibbonSheetNode(int maxSamples)
+    : maxSamples_(glm::max(2, maxSamples))
+{
+    type = NodeType::RibbonSheet;
+    renderType = RenderType::Transparent;
+    ensureCapacity();
+}
+
+RibbonSheetNode::~RibbonSheetNode()
+{
+    buffer_.free();
+}
+
+void RibbonSheetNode::addSample(const glm::vec3 &left, const glm::vec3 &right)
+{
+    if (glm::distance2(left, right) < 1e-8f)
+        return;
+
+    const glm::vec3 newMid = (left + right) * 0.5f;
+    const float minDistance2 = minSampleDistance_ * minSampleDistance_;
+
+    if (!samples_.empty())
+    {
+        Sample &last = samples_.back();
+        const glm::vec3 lastMid = (last.left + last.right) * 0.5f;
+        const bool movedEnough =
+            glm::distance2(lastMid, newMid) >= minDistance2 ||
+            glm::distance2(last.left, left) >= minDistance2 ||
+            glm::distance2(last.right, right) >= minDistance2;
+
+        if (!movedEnough)
+        {
+            last.left = left;
+            last.right = right;
+            last.age = 0.0f;
+            geometryDirty_ = true;
+            return;
+        }
+    }
+
+    samples_.push_back({left, right, 0.0f});
+    while ((int)samples_.size() > maxSamples_)
+        samples_.erase(samples_.begin());
+
+    geometryDirty_ = true;
+}
+
+void RibbonSheetNode::clearSamples()
+{
+    samples_.clear();
+    geometryDirty_ = true;
+}
+
+void RibbonSheetNode::setMaxSamples(int count)
+{
+    maxSamples_ = glm::max(2, count);
+    while ((int)samples_.size() > maxSamples_)
+        samples_.erase(samples_.begin());
+    ensureCapacity();
+    geometryDirty_ = true;
+}
+
+void RibbonSheetNode::update(float dt)
+{
+    bool changed = false;
+    for (auto &sample : samples_)
+        sample.age += dt;
+
+    while (!samples_.empty() && samples_.front().age > lifetime_)
+    {
+        samples_.erase(samples_.begin());
+        changed = true;
+    }
+
+    if (changed)
+        geometryDirty_ = true;
+}
+
+void RibbonSheetNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !material)
+        return;
+
+    if (geometryDirty_)
+        rebuild();
+
+    if (buffer_.indices.empty())
+        return;
+
+    if (buffer_.aabb.is_valid() && !camera->frustum.contains(buffer_.aabb))
+        return;
+
+    shader->setMat4("u_model", glm::mat4(1.0f));
+    shader->setMat3("u_normalMatrix", glm::mat3(1.0f));
+
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
+}
+
+void RibbonSheetNode::rebuild()
+{
+    RibbonStripBuilder::build(buildStripSamples(), buffer_);
+    geometryDirty_ = false;
+}
+
+void RibbonSheetNode::ensureCapacity()
+{
+    buffer_.free();
+    buffer_.allocate(glm::max(1, maxSamples_ - 1));
+}
+
+std::vector<RibbonStripVertex> RibbonSheetNode::buildStripSamples() const
+{
+    std::vector<RibbonStripVertex> stripSamples;
+    if (samples_.size() < 2)
+        return stripSamples;
+
+    stripSamples.resize(samples_.size());
+    std::vector<float> uCoords(samples_.size(), 0.0f);
+    float totalLength = 0.0f;
+    for (size_t i = 1; i < samples_.size(); ++i)
+    {
+        const glm::vec3 prevMid = (samples_[i - 1].left + samples_[i - 1].right) * 0.5f;
+        const glm::vec3 nextMid = (samples_[i].left + samples_[i].right) * 0.5f;
+        totalLength += glm::length(nextMid - prevMid);
+        uCoords[i] = totalLength;
+    }
+
+    if (totalLength <= 1e-6f)
+        totalLength = 1.0f;
+
+    for (size_t i = 0; i < samples_.size(); ++i)
+    {
+        const Sample &sample = samples_[i];
+        const float t = glm::clamp(sample.age / lifetime_, 0.0f, 1.0f);
+        stripSamples[i].left = sample.left;
+        stripSamples[i].right = sample.right;
+        stripSamples[i].color = glm::mix(startColor_, endColor_, t);
+        stripSamples[i].u = uCoords[i] / totalLength;
+    }
+
+    return stripSamples;
+}
+
 // ============================================================
 //  ManualMeshNode
 // ============================================================
 ManualMeshNode::ManualMeshNode()
 {
     type = NodeType::ManualMesh;
+    renderType = RenderType::Solid;
     buffer_.dynamic = true;
     buffer_.mode    = GL_TRIANGLES;
     // Init current-vertex state
@@ -693,4 +1249,23 @@ BoundingBox ManualMeshNode::computeAABB() const
         box.max = glm::max(box.max, v.position);
     }
     return box;
+}
+
+void ManualMeshNode::render(Shader *shader, Camera *camera)
+{
+    if (!shader || !camera || !material || buffer_.indices.empty())
+        return;
+
+    const glm::mat4 model = worldMatrix();
+    const BoundingBox worldBounds = buffer_.aabb.transformed(model);
+    if (worldBounds.is_valid() && !camera->frustum.contains(worldBounds))
+        return;
+
+    shader->setMat4("u_model", model);
+    shader->setMat3("u_normalMatrix", glm::mat3(glm::transpose(glm::inverse(model))));
+
+    material->applyStates();
+    material->applyUniformsTo(shader);
+    material->bindTexturesTo(shader);
+    buffer_.draw();
 }

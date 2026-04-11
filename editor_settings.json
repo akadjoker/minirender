@@ -1,0 +1,47 @@
+{
+    "assetPanelHeight": 200,
+    "assetRoot": "assets",
+    "assetViewAsGrid": false,
+    "currentTexturePath": "assets/wall.jpg",
+    "defaultBrushHeight": 128.0,
+    "defaultBrushThickness": 128.0,
+    "focus": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "gridStep": 32.0,
+    "layoutMode": 4,
+    "showAxes": true,
+    "showGrid": true,
+    "sidebarTopHeight": 520.0,
+    "sidebarWidth": 340,
+    "snapEnabled": true,
+    "snapSize": 16.0,
+    "views": [
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        }
+    ]
+}

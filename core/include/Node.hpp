@@ -26,6 +26,8 @@ enum class NodeType
     Decal,
     LensFlare,
     Grass,
+    RibbonTrail,
+    RibbonSheet,
     ManualMesh,
 };
 

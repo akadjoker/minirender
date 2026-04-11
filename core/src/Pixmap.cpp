@@ -497,6 +497,14 @@ bool Pixmap::Save(const char *file_name)
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save PNG: %s", file_name);
         }
     }
+    else if (HasExtension(file_name, ".jpg") || HasExtension(file_name, ".jpeg"))
+    {
+        saved = (stbi_write_jpg(file_name, width, height, saveComponents, savePixels, 95) != 0);
+        if (!saved)
+        {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Failed to save JPG: %s", file_name);
+        }
+    }
     else
     {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[PIXMAP] Unsupported output format: %s", file_name);

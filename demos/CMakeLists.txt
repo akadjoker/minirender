@@ -41,11 +41,16 @@ add_compile_options(
 
 
 add_executable(demos src/main.cpp)
+add_executable(m8convert src/m8convert.cpp)
  
 if (WIN32)
     target_include_directories(demos PUBLIC "${LIBS_DIR}/include" include src)
+    target_include_directories(m8convert PUBLIC "${LIBS_DIR}/include" include src)
 else() 
     target_include_directories(demos PUBLIC  include src
+        ${CMAKE_SOURCE_DIR}/vendor/imgui
+    )
+    target_include_directories(m8convert PUBLIC  include src
         ${CMAKE_SOURCE_DIR}/vendor/imgui
     )
  
@@ -72,11 +77,13 @@ endif()
 
 if (WIN32)
     target_link_libraries(demos core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib"  Winmm.lib opengl32.lib)
+    target_link_libraries(m8convert core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib"  Winmm.lib opengl32.lib)
 endif()
 
 
 if (UNIX)
     target_link_libraries(demos core imgui m SDL2 GL)
+    target_link_libraries(m8convert core imgui m SDL2 GL)
  
 endif()
 

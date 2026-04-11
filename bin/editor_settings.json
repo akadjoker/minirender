@@ -1,0 +1,48 @@
+{
+    "assetPanelHeight": 200,
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures",
+    "assetViewAsGrid": true,
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+    "defaultBrushHeight": 128.0,
+    "defaultBrushThickness": 67.0,
+    "focus": [
+        -294.0057067871094,
+        144.58914184570313,
+        -159.3665008544922
+    ],
+    "gridStep": 32.0,
+    "layoutMode": 4,
+    "renderingMode": 2,
+    "showAxes": true,
+    "showGrid": true,
+    "sidebarTopHeight": 553.0,
+    "sidebarWidth": 340,
+    "snapEnabled": true,
+    "snapSize": 16.0,
+    "views": [
+        {
+            "orthoSize": 1648.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 1072.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 720.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 1282.0,
+            "perspectivePitch": -2.0,
+            "perspectiveYaw": 85.5
+        }
+    ]
+}

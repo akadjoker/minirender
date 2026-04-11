@@ -1,4 +1,5 @@
 #include "Camera.hpp"
+#include "Collision.hpp"
 #include "Input.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -171,6 +172,104 @@ void FreeCameraController::update(Camera &camera, float dt)
         camera.rotate(glm::radians(-Input::GetMouseDelta().y * mouseSensitivity),
                       {1, 0, 0}, TransformSpace::Local);
     }
+}
+
+// ============================================================
+//  CharacterCameraController
+// ============================================================
+void CharacterCameraController::setBodyPosition(const glm::vec3 &position)
+{
+    bodyPosition = position;
+}
+
+glm::vec3 CharacterCameraController::cameraWorldPosition() const
+{
+    return bodyPosition + glm::vec3(0.0f, eyeOffsetY, 0.0f);
+}
+
+void CharacterCameraController::onAttach(Camera &camera)
+{
+    const glm::vec3 euler = camera.getEulerAngles();
+    pitchDegrees = euler.x;
+    yawDegrees = euler.y;
+    bodyPosition = camera.position - glm::vec3(0.0f, eyeOffsetY, 0.0f);
+    verticalSpeed = 0.0f;
+    grounded = false;
+}
+
+void CharacterCameraController::update(Camera &camera, float dt)
+{
+    float movement = 0.0f;
+    float turn = 0.0f;
+
+    if (Input::IsKeyDown(KEY_UP) || Input::IsKeyDown(KEY_W))
+        movement = forwardSpeed;
+    if (Input::IsKeyDown(KEY_DOWN) || Input::IsKeyDown(KEY_S))
+        movement = -backwardSpeed;
+    if (Input::IsKeyDown(KEY_LEFT) || Input::IsKeyDown(KEY_A))
+        turn = -turnSpeed;
+    if (Input::IsKeyDown(KEY_RIGHT) || Input::IsKeyDown(KEY_D))
+        turn = turnSpeed;
+
+    if (Input::IsKeyDown(KEY_LEFT_SHIFT) && movement > 0.0f)
+        movement *= sprintMultiplier;
+
+    yawDegrees += turn * dt;
+
+    if (useMouseLook && Input::IsMouseDown(MouseButton::LEFT))
+    {
+        yawDegrees += -Input::GetMouseDelta().x * mouseSensitivity;
+        pitchDegrees += -Input::GetMouseDelta().y * mouseSensitivity;
+        pitchDegrees = std::clamp(pitchDegrees, -89.0f, 89.0f);
+    }
+
+    if (Input::IsKeyPressed(KEY_SPACE) && grounded)
+        verticalSpeed = jumpSpeed;
+
+    const float yawRadians = glm::radians(yawDegrees);
+    glm::vec3 flatForward(std::sin(yawRadians), 0.0f, -std::cos(yawRadians));
+    if (glm::length2(flatForward) <= 1e-8f)
+        flatForward = glm::vec3(0.0f, 0.0f, -1.0f);
+    else
+        flatForward = glm::normalize(flatForward);
+
+    if (collision)
+    {
+        const glm::vec3 moveDelta = flatForward * (movement * dt);
+        bodyPosition = collision->collideAndSlide(bodyPosition, moveDelta, radius);
+
+        verticalSpeed -= gravity * dt;
+        glm::vec3 candidatePosition = bodyPosition;
+        candidatePosition.y += verticalSpeed * dt;
+
+        bool groundedNow = false;
+        CollisionInfo groundHit;
+        glm::vec3 rayOrigin = candidatePosition;
+        rayOrigin.y += radius.y + groundSnapDistance;
+        const float rayLength = (radius.y + groundSnapDistance) * 2.0f + 64.0f;
+
+        if (verticalSpeed <= 0.0f &&
+            collision->rayCast(Ray(rayOrigin, glm::vec3(0.0f, -1.0f, 0.0f)), rayLength, groundHit))
+        {
+            const float targetY = groundHit.point.y + radius.y + 0.5f;
+            if (candidatePosition.y <= targetY + groundSnapDistance)
+            {
+                candidatePosition.y = targetY;
+                verticalSpeed = 0.0f;
+                groundedNow = true;
+            }
+        }
+
+        bodyPosition = candidatePosition;
+        grounded = groundedNow;
+    }
+    else
+    {
+        bodyPosition += flatForward * (movement * dt);
+    }
+
+    camera.setPosition(cameraWorldPosition());
+    camera.setEulerAngles(glm::vec3(pitchDegrees, yawDegrees, 0.0f));
 }
 
 // ============================================================

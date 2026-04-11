@@ -4,6 +4,8 @@
 #include "cgltf.h"
 #include "Manager.hpp"
 #include "MeshLoader.hpp"
+#include "TextMapLoader.hpp"
+#include "Utils.hpp"
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -87,10 +89,48 @@ Mesh *MeshManager::load(const std::string &name, const std::string &path,
         return load_b3d(name, path, texture_dir);
     if (ext == "bsp")
         return load_bsp(name, path, texture_dir);
+    if (ext == "map")
+        return load_map(name, path, texture_dir);
 
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[MeshManager] Unknown mesh format '%s': %s", ext.c_str(), path.c_str());
     return nullptr;
+}
+
+Mesh *MeshManager::load_map(const std::string &name, const std::string &path,
+                            const std::string &texture_dir)
+{
+    if (auto *existing = get(name))
+        return existing;
+
+    auto *mesh = new Mesh();
+    mesh->name = name;
+
+    TextMapLoadOptions options;
+    if (!texture_dir.empty())
+    {
+        options.textureDirectory = texture_dir;
+    }
+    else
+    {
+        const std::string mapDir = PathDirectory(path);
+        const std::string baseTextures = PathJoin(mapDir, "base/textures");
+        const std::string texturesDir = PathJoin(mapDir, "textures");
+        options.textureDirectory = FileExists(baseTextures) ? baseTextures : texturesDir;
+    }
+
+    std::string error;
+    if (!TextMapLoader::load(name, path, options, *mesh, nullptr, &error))
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[MeshManager] Failed to load map '%s': %s",
+                     path.c_str(), error.c_str());
+        delete mesh;
+        return nullptr;
+    }
+
+    cache[name] = mesh;
+    return mesh;
 }
 
 // ============================================================

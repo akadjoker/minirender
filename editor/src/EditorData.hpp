@@ -2,6 +2,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -87,6 +88,27 @@ struct BrushVolume
 
     glm::vec3 center() const { return (mins + maxs) * 0.5f; }
     glm::vec3 size()   const { return maxs - mins; }
+};
+
+struct EditorKeyValue
+{
+    std::string key;
+    std::string value;
+};
+
+struct EditorEntity
+{
+    std::string name;
+    std::string classname = "worldspawn";
+    glm::vec3 origin = glm::vec3(0.0f);
+    bool hidden = false;
+    std::vector<EditorKeyValue> keyvalues;
+    std::vector<BrushVolume> brushes;
+
+    bool isWorldspawn() const
+    {
+        return classname.empty() || classname == "worldspawn";
+    }
 };
 
 struct PendingBrush

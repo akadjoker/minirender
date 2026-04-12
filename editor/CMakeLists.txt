@@ -25,7 +25,14 @@ add_compile_options(
     -funsigned-char
 )
 
-add_executable(editor src/main.cpp)
+add_executable(editor
+    src/EditorBrushGeometryOps.cpp
+    src/EditorBrushOps.cpp
+    src/main.cpp
+    src/EditorSceneIO.cpp
+    src/EditorTheme.cpp
+    src/EditorViewOps.cpp
+)
 
 if (WIN32)
     set(LIBS_DIR "E:/windows/libs")

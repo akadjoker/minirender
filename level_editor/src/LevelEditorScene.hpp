@@ -19,6 +19,7 @@ struct LevelMeshObject
     glm::vec3 position {0.0f, 0.0f, 0.0f};
     glm::vec3 rotationEuler {0.0f, 0.0f, 0.0f};
     glm::vec3 scale {1.0f, 1.0f, 1.0f};
+    glm::vec3 pivot {0.0f, 0.0f, 0.0f};
     EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-64.0f, 0.0f, -64.0f), glm::vec3(64.0f, 128.0f, 64.0f));
 };
 

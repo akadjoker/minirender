@@ -20,6 +20,7 @@ class EditableMesh
 {
 public:
     static EditableMesh MakeBox(const glm::vec3& minBounds, const glm::vec3& maxBounds);
+    static EditableMesh MakeHollowBox(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness);
     static EditableMesh FromData(const std::vector<EditableVertex>& vertices, const std::vector<EditableFace>& faces);
 
     const std::vector<EditableVertex>& vertices() const { return vertices_; }

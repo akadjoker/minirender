@@ -3,6 +3,8 @@
 #include "Input.hpp"
 #include "LevelEditorSceneIO.hpp"
 #include "Manager.hpp"
+#include "CSG.hpp"
+#include "MeshCSG.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -23,6 +25,10 @@
 
 namespace
 {
+glm::mat4 meshLocalPivotTransform(const LevelMeshObject& object,
+                                  const glm::vec3& rotationEuler,
+                                  const glm::vec3& scale);
+
 const char* selectionModeName(LevelEditorApp::SelectionMode mode)
 {
     switch (mode)
@@ -56,6 +62,17 @@ const char* assetViewModeName(LevelEditorApp::AssetViewMode mode)
     case LevelEditorApp::AssetViewMode::Grid: return "Grid";
     }
     return "Details";
+}
+
+const char* csgAxisName(int axis)
+{
+    switch (axis)
+    {
+    case 0: return "X";
+    case 1: return "Y";
+    case 2: return "Z";
+    }
+    return "Y";
 }
 
 const char* entityTypeName(LevelEntityType type)
@@ -163,15 +180,465 @@ glm::vec3 normalizeEulerDegrees(const glm::vec3& degrees)
     return result;
 }
 
+bool nearlyEqualVec3(const glm::vec3& a, const glm::vec3& b, float epsilon = 0.0001f)
+{
+    return glm::all(glm::lessThanEqual(glm::abs(a - b), glm::vec3(epsilon)));
+}
+
+BoundingBox editableMeshLocalBounds(const EditableMesh& mesh)
+{
+    BoundingBox bounds;
+    for (const EditableVertex& vertex : mesh.vertices())
+        bounds.expand(vertex.position);
+    return bounds;
+}
+
+glm::vec3 editableMeshBoundsCenter(const EditableMesh& mesh)
+{
+    const BoundingBox bounds = editableMeshLocalBounds(mesh);
+    return (bounds.min + bounds.max) * 0.5f;
+}
+
+glm::vec3 editableMeshBoundsBottomCenter(const EditableMesh& mesh)
+{
+    const BoundingBox bounds = editableMeshLocalBounds(mesh);
+    return glm::vec3((bounds.min.x + bounds.max.x) * 0.5f,
+                     bounds.min.y,
+                     (bounds.min.z + bounds.max.z) * 0.5f);
+}
+
+glm::vec3 editableFaceNormal(const EditableMesh& mesh, const EditableFace& face)
+{
+    if (face.indices.size() < 3)
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+
+    glm::vec3 normal(0.0f);
+    for (std::size_t i = 0; i < face.indices.size(); ++i)
+    {
+        const int currentIndex = face.indices[i];
+        const int nextIndex = face.indices[(i + 1) % face.indices.size()];
+        if (currentIndex < 0 || currentIndex >= static_cast<int>(mesh.vertices().size()) ||
+            nextIndex < 0 || nextIndex >= static_cast<int>(mesh.vertices().size()))
+        {
+            continue;
+        }
+
+        const glm::vec3& current = mesh.vertices()[(size_t)currentIndex].position;
+        const glm::vec3& next = mesh.vertices()[(size_t)nextIndex].position;
+        normal.x += (current.y - next.y) * (current.z + next.z);
+        normal.y += (current.z - next.z) * (current.x + next.x);
+        normal.z += (current.x - next.x) * (current.y + next.y);
+    }
+
+    const float len2 = glm::length2(normal);
+    if (len2 <= 1e-8f)
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+    return glm::normalize(normal);
+}
+
+bool extrudeMeshFace(LevelMeshObject& object, int faceIndex, float distance)
+{
+    if (faceIndex < 0 || faceIndex >= static_cast<int>(object.mesh.faces().size()))
+        return false;
+
+    EditableFace& face = object.mesh.facesMutable()[(size_t)faceIndex];
+    if (face.indices.size() < 3)
+        return false;
+
+    const glm::vec3 normal = editableFaceNormal(object.mesh, face);
+    std::vector<int> baseIndices = face.indices;
+    std::vector<int> newIndices;
+    newIndices.reserve(baseIndices.size());
+
+    for (int index : baseIndices)
+    {
+        if (index < 0 || index >= static_cast<int>(object.mesh.vertices().size()))
+            return false;
+
+        EditableVertex vertex = object.mesh.vertices()[(size_t)index];
+        vertex.position += normal * distance;
+        object.mesh.verticesMutable().push_back(vertex);
+        newIndices.push_back(static_cast<int>(object.mesh.vertices().size()) - 1);
+    }
+
+    face.indices = newIndices;
+
+    std::vector<EditableFace>& faces = object.mesh.facesMutable();
+    for (std::size_t i = 0; i < baseIndices.size(); ++i)
+    {
+        const std::size_t next = (i + 1) % baseIndices.size();
+        EditableFace sideFace;
+        sideFace.materialName = face.materialName;
+        sideFace.indices = {
+            baseIndices[i],
+            baseIndices[next],
+            newIndices[next],
+            newIndices[i]
+        };
+        faces.push_back(sideFace);
+    }
+
+    return true;
+}
+
+glm::vec3 worldNormalForLocalDirection(const LevelMeshObject& object, const glm::vec3& localDirection)
+{
+    const glm::vec3 worldDirection = glm::vec3(meshLocalPivotTransform(object, object.rotationEuler, object.scale) *
+                                               glm::vec4(localDirection, 0.0f));
+    const float len2 = glm::length2(worldDirection);
+    if (len2 <= 1e-8f)
+        return glm::vec3(0.0f, 1.0f, 0.0f);
+    return glm::normalize(worldDirection);
+}
+
+glm::vec3 orthoVisibleAxisMask(LevelEditorApp::ViewType viewType)
+{
+    switch (viewType)
+    {
+    case LevelEditorApp::ViewType::Top:
+    case LevelEditorApp::ViewType::Bottom:
+        return glm::vec3(1.0f, 0.0f, 1.0f);
+    case LevelEditorApp::ViewType::Front:
+    case LevelEditorApp::ViewType::Back:
+        return glm::vec3(1.0f, 1.0f, 0.0f);
+    case LevelEditorApp::ViewType::Left:
+    case LevelEditorApp::ViewType::Right:
+        return glm::vec3(0.0f, 1.0f, 1.0f);
+    case LevelEditorApp::ViewType::Perspective:
+        break;
+    }
+    return glm::vec3(1.0f);
+}
+
+glm::mat4 meshLocalPivotTransform(const LevelMeshObject& object,
+                                  const glm::vec3& rotationEuler,
+                                  const glm::vec3& scale)
+{
+    glm::mat4 localTransform(1.0f);
+    localTransform = glm::translate(localTransform, object.pivot);
+    localTransform = glm::rotate(localTransform, glm::radians(rotationEuler.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    localTransform = glm::rotate(localTransform, glm::radians(rotationEuler.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    localTransform = glm::rotate(localTransform, glm::radians(rotationEuler.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    localTransform = glm::scale(localTransform, scale);
+    localTransform = glm::translate(localTransform, -object.pivot);
+    return localTransform;
+}
+
+glm::mat4 meshObjectPivotFrameMatrix(const LevelMeshObject& object)
+{
+    glm::mat4 frame(1.0f);
+    frame = glm::translate(frame, object.position + object.pivot);
+    frame = glm::rotate(frame, glm::radians(object.rotationEuler.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    frame = glm::rotate(frame, glm::radians(object.rotationEuler.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    frame = glm::rotate(frame, glm::radians(object.rotationEuler.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    frame = glm::scale(frame, object.scale);
+    return frame;
+}
+
+glm::vec3 meshPivotTranslationDelta(const LevelMeshObject& object, const glm::vec3& newPivot)
+{
+    const glm::mat3 rotationScale = glm::mat3(meshLocalPivotTransform(object, object.rotationEuler, object.scale));
+    const glm::vec3 oldOffset = object.pivot - rotationScale * object.pivot;
+    const glm::vec3 newOffset = newPivot - rotationScale * newPivot;
+    return oldOffset - newOffset;
+}
+
+void setMeshPivotPreserveWorld(LevelMeshObject& object, const glm::vec3& newPivot)
+{
+    if (nearlyEqualVec3(object.pivot, newPivot))
+        return;
+
+    object.position += meshPivotTranslationDelta(object, newPivot);
+    object.pivot = newPivot;
+}
+
+void bakeMeshPivotIntoVertices(LevelMeshObject& object)
+{
+    if (nearlyEqualVec3(object.pivot, glm::vec3(0.0f)))
+        return;
+
+    for (EditableVertex& vertex : object.mesh.verticesMutable())
+        vertex.position -= object.pivot;
+
+    object.position += object.pivot;
+    object.pivot = glm::vec3(0.0f);
+}
+
+void bakeMeshRotationScaleIntoVertices(LevelMeshObject& object)
+{
+    const glm::vec3 normalizedRotation = normalizeEulerDegrees(object.rotationEuler);
+    const bool hasRotation = !nearlyEqualVec3(normalizedRotation, glm::vec3(0.0f));
+    const bool hasScale = !nearlyEqualVec3(object.scale, glm::vec3(1.0f));
+    if (!hasRotation && !hasScale)
+        return;
+
+    const glm::mat4 localTransform = meshLocalPivotTransform(object, object.rotationEuler, object.scale);
+
+    for (EditableVertex& vertex : object.mesh.verticesMutable())
+        vertex.position = glm::vec3(localTransform * glm::vec4(vertex.position, 1.0f));
+
+    object.rotationEuler = glm::vec3(0.0f);
+    object.scale = glm::vec3(1.0f);
+}
+
+void bakeMeshVertexTransform(LevelMeshObject& object,
+                             const glm::vec3& translate,
+                             const glm::vec3& rotateEuler,
+                             const glm::vec3& scale)
+{
+    const bool hasTranslate = !nearlyEqualVec3(translate, glm::vec3(0.0f));
+    const bool hasRotate = !nearlyEqualVec3(normalizeEulerDegrees(rotateEuler), glm::vec3(0.0f));
+    const bool hasScale = !nearlyEqualVec3(scale, glm::vec3(1.0f));
+    if (!hasTranslate && !hasRotate && !hasScale)
+        return;
+
+    glm::mat4 localTransform = meshLocalPivotTransform(object, rotateEuler, scale);
+    localTransform = glm::translate(glm::mat4(1.0f), translate) * localTransform;
+
+    for (EditableVertex& vertex : object.mesh.verticesMutable())
+        vertex.position = glm::vec3(localTransform * glm::vec4(vertex.position, 1.0f));
+}
+
 glm::mat4 meshObjectModelMatrix(const LevelMeshObject& object)
 {
     glm::mat4 model(1.0f);
     model = glm::translate(model, object.position);
+    model = glm::translate(model, object.pivot);
     model = glm::rotate(model, glm::radians(object.rotationEuler.x), glm::vec3(1.0f, 0.0f, 0.0f));
     model = glm::rotate(model, glm::radians(object.rotationEuler.y), glm::vec3(0.0f, 1.0f, 0.0f));
     model = glm::rotate(model, glm::radians(object.rotationEuler.z), glm::vec3(0.0f, 0.0f, 1.0f));
     model = glm::scale(model, object.scale);
+    model = glm::translate(model, -object.pivot);
     return model;
+}
+
+EditableMesh transformedEditableMesh(const EditableMesh& mesh, const glm::mat4& transform)
+{
+    std::vector<EditableVertex> vertices = mesh.vertices();
+    for (EditableVertex& vertex : vertices)
+        vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
+    return EditableMesh::FromData(vertices, mesh.faces());
+}
+
+struct LevelCSGBox
+{
+    glm::vec3 mins {0.0f};
+    glm::vec3 maxs {0.0f};
+
+    bool isValid() const
+    {
+        return (maxs.x - mins.x) > 1e-4f &&
+               (maxs.y - mins.y) > 1e-4f &&
+               (maxs.z - mins.z) > 1e-4f;
+    }
+};
+
+LevelCSGBox editableMeshWorldBox(const LevelMeshObject& object)
+{
+    BoundingBox bounds;
+    const glm::mat4 model = meshObjectModelMatrix(object);
+    for (const EditableVertex& vertex : object.mesh.vertices())
+        bounds.expand(glm::vec3(model * glm::vec4(vertex.position, 1.0f)));
+    return {bounds.min, bounds.max};
+}
+
+bool csgBoxesIntersect(const LevelCSGBox& a, const LevelCSGBox& b)
+{
+    return !(a.maxs.x <= b.mins.x || a.mins.x >= b.maxs.x ||
+             a.maxs.y <= b.mins.y || a.mins.y >= b.maxs.y ||
+             a.maxs.z <= b.mins.z || a.mins.z >= b.maxs.z);
+}
+
+std::vector<LevelCSGBox> subtractCSGBoxes(const LevelCSGBox& a, const LevelCSGBox& b)
+{
+    std::vector<LevelCSGBox> result;
+    if (!csgBoxesIntersect(a, b))
+    {
+        result.push_back(a);
+        return result;
+    }
+
+    const float ox0 = glm::max(a.mins.x, b.mins.x);
+    const float ox1 = glm::min(a.maxs.x, b.maxs.x);
+    const float oy0 = glm::max(a.mins.y, b.mins.y);
+    const float oy1 = glm::min(a.maxs.y, b.maxs.y);
+
+    auto addPiece = [&](const glm::vec3& mins, const glm::vec3& maxs)
+    {
+        LevelCSGBox piece {mins, maxs};
+        if (piece.isValid())
+            result.push_back(piece);
+    };
+
+    addPiece(a.mins, glm::vec3(glm::min(b.mins.x, a.maxs.x), a.maxs.y, a.maxs.z));
+    addPiece(glm::vec3(glm::max(b.maxs.x, a.mins.x), a.mins.y, a.mins.z), a.maxs);
+    addPiece(glm::vec3(ox0, a.mins.y, a.mins.z), glm::vec3(ox1, glm::min(b.mins.y, a.maxs.y), a.maxs.z));
+    addPiece(glm::vec3(ox0, glm::max(b.maxs.y, a.mins.y), a.mins.z), glm::vec3(ox1, a.maxs.y, a.maxs.z));
+    addPiece(glm::vec3(ox0, oy0, a.mins.z), glm::vec3(ox1, oy1, glm::min(b.mins.z, a.maxs.z)));
+    addPiece(glm::vec3(ox0, oy0, glm::max(b.maxs.z, a.mins.z)), glm::vec3(ox1, oy1, a.maxs.z));
+
+    return result;
+}
+
+std::vector<LevelCSGBox> intersectCSGBoxes(const LevelCSGBox& a, const LevelCSGBox& b)
+{
+    std::vector<LevelCSGBox> result;
+    if (!csgBoxesIntersect(a, b))
+        return result;
+
+    LevelCSGBox piece {
+        glm::max(a.mins, b.mins),
+        glm::min(a.maxs, b.maxs)
+    };
+    if (piece.isValid())
+        result.push_back(piece);
+    return result;
+}
+
+LevelMeshObject makeLevelObjectFromCSGBox(const LevelMeshObject& source, const LevelCSGBox& box, const std::string& name)
+{
+    LevelMeshObject out = source;
+    out.name = name;
+    out.position = glm::vec3(0.0f);
+    out.rotationEuler = glm::vec3(0.0f);
+    out.scale = glm::vec3(1.0f);
+    out.pivot = glm::vec3(0.0f);
+    out.mesh = EditableMesh::MakeBox(box.mins, box.maxs);
+    return out;
+}
+
+void fillRenderMeshFromEditable(const EditableMesh& editableMesh, Mesh& mesh)
+{
+    for (const EditableFace& face : editableMesh.faces())
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const uint32_t baseIndex = static_cast<uint32_t>(mesh.buffer.vertices.size());
+        for (int vertexIndex : face.indices)
+        {
+            if (vertexIndex < 0 || vertexIndex >= static_cast<int>(editableMesh.vertices().size()))
+                continue;
+
+            Vertex vertex{};
+            vertex.position = editableMesh.vertices()[(size_t)vertexIndex].position;
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            vertex.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            vertex.uv = glm::vec2(0.0f);
+            mesh.buffer.vertices.push_back(vertex);
+        }
+
+        const uint32_t vertexCount = static_cast<uint32_t>(face.indices.size());
+        for (uint32_t i = 1; i + 1 < vertexCount; ++i)
+        {
+            mesh.buffer.indices.push_back(baseIndex);
+            mesh.buffer.indices.push_back(baseIndex + i);
+            mesh.buffer.indices.push_back(baseIndex + i + 1);
+        }
+    }
+
+    mesh.compute_normals();
+}
+
+EditableMesh makeEditableFromRenderMesh(const Mesh& mesh, const glm::mat4& transform)
+{
+    std::vector<EditableVertex> vertices;
+    std::vector<EditableFace> faces;
+    vertices.reserve(mesh.buffer.vertices.size());
+    faces.reserve(mesh.buffer.indices.size() / 3);
+
+    for (std::size_t i = 0; i + 2 < mesh.buffer.indices.size(); i += 3)
+    {
+        EditableFace face;
+        face.materialName = "csg";
+        for (int k = 0; k < 3; ++k)
+        {
+            const uint32_t index = mesh.buffer.indices[i + k];
+            if (index >= mesh.buffer.vertices.size())
+                continue;
+
+            EditableVertex vertex;
+            vertex.position = glm::vec3(transform * glm::vec4(mesh.buffer.vertices[index].position, 1.0f));
+            vertices.push_back(vertex);
+            face.indices.push_back(static_cast<int>(vertices.size()) - 1);
+        }
+        if (face.indices.size() == 3)
+            faces.push_back(face);
+    }
+
+    return EditableMesh::FromData(vertices, faces);
+}
+
+MeshPlane editableFacePlane(const EditableMesh& mesh, const EditableFace& face, const glm::vec3& meshCenter)
+{
+    glm::vec3 faceCenter(0.0f);
+    int validCount = 0;
+    for (int index : face.indices)
+    {
+        if (index < 0 || index >= static_cast<int>(mesh.vertices().size()))
+            continue;
+        faceCenter += mesh.vertices()[(size_t)index].position;
+        ++validCount;
+    }
+
+    if (validCount <= 0)
+        return MeshPlane::FromPointNormal(glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    faceCenter /= static_cast<float>(validCount);
+    glm::vec3 normal = editableFaceNormal(mesh, face);
+    if (glm::dot(normal, meshCenter - faceCenter) > 0.0f)
+        normal = -normal;
+    return MeshPlane::FromPointNormal(faceCenter, normal);
+}
+
+std::vector<MeshPlane> buildConvexClipPlanes(const EditableMesh& mesh)
+{
+    std::vector<MeshPlane> planes;
+    if (mesh.vertexCount() == 0)
+        return planes;
+
+    glm::vec3 center(0.0f);
+    for (const EditableVertex& vertex : mesh.vertices())
+        center += vertex.position;
+    center /= static_cast<float>(mesh.vertexCount());
+
+    planes.reserve(mesh.faceCount());
+    for (const EditableFace& face : mesh.faces())
+    {
+        if (face.indices.size() < 3)
+            continue;
+        planes.push_back(editableFacePlane(mesh, face, center));
+    }
+    return planes;
+}
+
+EditableMesh intersectEditableMeshesConvex(const EditableMesh& target, const EditableMesh& cutter)
+{
+    EditableMesh result = target;
+    for (const MeshPlane& plane : buildConvexClipPlanes(cutter))
+    {
+        result = clipEditableMeshAgainstPlane(result, plane, false, true);
+        if (result.faceCount() == 0)
+            break;
+    }
+    return result;
+}
+
+std::vector<EditableMesh> subtractEditableMeshesConvex(const EditableMesh& target, const EditableMesh& cutter)
+{
+    std::vector<EditableMesh> pieces;
+    EditableMesh remaining = target;
+    for (const MeshPlane& plane : buildConvexClipPlanes(cutter))
+    {
+        const EditableMesh outside = clipEditableMeshAgainstPlane(remaining, plane, true, true);
+        if (outside.faceCount() > 0)
+            pieces.push_back(outside);
+
+        remaining = clipEditableMeshAgainstPlane(remaining, plane, false, true);
+        if (remaining.faceCount() == 0)
+            break;
+    }
+    return pieces;
 }
 
 }
@@ -1249,6 +1716,85 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         }
     }
 
+    if (draggingFaceInView_)
+    {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+            leftDragging &&
+            hovered->type == dragViewType_ &&
+            selectedMeshIndex_ >= 0 &&
+            selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
+        {
+            LevelMeshObject& object = scene_.meshObjects()[selectedMeshIndex_];
+            const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
+            const glm::mat4 inverseModel = glm::inverse(modelMatrix);
+            const glm::vec3 hoveredWorld = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen);
+            const glm::vec3 objectDelta = ApplyViewDelta(hoveredWorld - dragStartWorld_, dragViewType_);
+            for (std::size_t i = 0; i < dragFaceVertexIndices_.size() && i < dragStartVertexPositions_.size(); ++i)
+            {
+                const int vertexIndex = dragFaceVertexIndices_[i];
+                if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                    continue;
+                const glm::vec3 startLocal = dragStartVertexPositions_[i];
+                const glm::vec3 startWorld = glm::vec3(modelMatrix * glm::vec4(startLocal, 1.0f));
+                const glm::vec3 movedWorld = startWorld + objectDelta;
+                object.mesh.verticesMutable()[(size_t)vertexIndex].position = glm::vec3(inverseModel * glm::vec4(movedWorld, 1.0f));
+            }
+            sceneDirty_ = true;
+        }
+        else
+        {
+            draggingFaceInView_ = false;
+            dragUndoPushed_ = false;
+            dragFaceVertexIndices_.clear();
+            dragStartVertexPositions_.clear();
+        }
+    }
+
+    if (draggingFaceExtrudeInView_)
+    {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+            leftDragging &&
+            hovered->type == dragViewType_ &&
+            selectedMeshIndex_ >= 0 &&
+            selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
+        {
+            LevelMeshObject& object = scene_.meshObjects()[selectedMeshIndex_];
+            const glm::vec3 hoveredWorld = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen);
+            const glm::vec3 visibleWorldDelta = ApplyViewDelta(hoveredWorld - dragStartWorld_, dragViewType_);
+            const glm::vec3 worldNormal = worldNormalForLocalDirection(object, dragFaceNormalLocal_);
+            const glm::vec3 visibleWorldNormal = worldNormal * orthoVisibleAxisMask(dragViewType_);
+            float worldDistance = glm::dot(visibleWorldDelta, worldNormal);
+
+            if (glm::length2(visibleWorldNormal) <= 1e-6f)
+            {
+                const float pixelsToWorld = (hovered->rect.h > 0)
+                    ? ((hovered->orthoSize * 2.0f) / static_cast<float>(hovered->rect.h))
+                    : 1.0f;
+                worldDistance = -dragMouseDelta.y * pixelsToWorld;
+            }
+
+            const glm::vec3 worldUnitDirection = glm::vec3(meshObjectModelMatrix(object) * glm::vec4(dragFaceNormalLocal_, 0.0f));
+            const float worldUnitLength = std::max(1e-4f, glm::length(worldUnitDirection));
+            const float localDistance = worldDistance / worldUnitLength;
+
+            for (std::size_t i = 0; i < dragFaceVertexIndices_.size() && i < dragStartVertexPositions_.size(); ++i)
+            {
+                const int vertexIndex = dragFaceVertexIndices_[i];
+                if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                    continue;
+                object.mesh.verticesMutable()[(size_t)vertexIndex].position = dragStartVertexPositions_[i] + dragFaceNormalLocal_ * localDistance;
+            }
+            sceneDirty_ = true;
+        }
+        else
+        {
+            draggingFaceExtrudeInView_ = false;
+            dragUndoPushed_ = false;
+            dragFaceVertexIndices_.clear();
+            dragStartVertexPositions_.clear();
+        }
+    }
+
     if (draggingObjectInView_)
     {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
@@ -1386,6 +1932,8 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
     }
 
     if (!draggingVerticesInView_ &&
+        !draggingFaceInView_ &&
+        !draggingFaceExtrudeInView_ &&
         !draggingObjectInView_ &&
         !boxSelecting_ &&
         selectionMode_ == SelectionMode::Vertex &&
@@ -1416,8 +1964,115 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         }
     }
 
+    if (!draggingFaceInView_ &&
+        !draggingVerticesInView_ &&
+        !draggingFaceExtrudeInView_ &&
+        !draggingObjectInView_ &&
+        !boxSelecting_ &&
+        selectionMode_ == SelectionMode::Face &&
+        currentTool_ == Tool::Move &&
+        hovered->type != ViewType::Perspective &&
+        selectedMeshIndex_ >= 0 &&
+        selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
+        selectedFaceIndex_ >= 0 &&
+        selectedFaceIndex_ < static_cast<int>(scene_.meshObjects()[selectedMeshIndex_].mesh.faces().size()) &&
+        !ctrlDown &&
+        !shiftDown &&
+        leftDragging)
+    {
+        const LevelMeshObject& object = scene_.meshObjects()[selectedMeshIndex_];
+        const EditableFace& face = object.mesh.faces()[(size_t)selectedFaceIndex_];
+        if (!face.indices.empty())
+        {
+            if (!dragUndoPushed_)
+            {
+                PushUndoState();
+                dragUndoPushed_ = true;
+            }
+            draggingFaceInView_ = true;
+            dragViewType_ = hovered->type;
+            dragStartMouse_ = mouseScreen - delta;
+            dragStartWorld_ = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen - delta);
+            dragFaceVertexIndices_.clear();
+            dragStartVertexPositions_.clear();
+            for (int vertexIndex : face.indices)
+            {
+                if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                    continue;
+                if (std::find(dragFaceVertexIndices_.begin(), dragFaceVertexIndices_.end(), vertexIndex) != dragFaceVertexIndices_.end())
+                    continue;
+                dragFaceVertexIndices_.push_back(vertexIndex);
+                dragStartVertexPositions_.push_back(object.mesh.vertices()[(size_t)vertexIndex].position);
+            }
+            if (dragFaceVertexIndices_.empty())
+            {
+                draggingFaceInView_ = false;
+                dragUndoPushed_ = false;
+            }
+        }
+    }
+
+    if (!draggingFaceExtrudeInView_ &&
+        !draggingFaceInView_ &&
+        !draggingVerticesInView_ &&
+        !draggingObjectInView_ &&
+        !boxSelecting_ &&
+        selectionMode_ == SelectionMode::Face &&
+        currentTool_ == Tool::Scale &&
+        hovered->type != ViewType::Perspective &&
+        selectedMeshIndex_ >= 0 &&
+        selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
+        selectedFaceIndex_ >= 0 &&
+        selectedFaceIndex_ < static_cast<int>(scene_.meshObjects()[selectedMeshIndex_].mesh.faces().size()) &&
+        !ctrlDown &&
+        !shiftDown &&
+        leftDragging)
+    {
+        LevelMeshObject& object = scene_.meshObjects()[selectedMeshIndex_];
+        const EditableFace& selectedFace = object.mesh.faces()[(size_t)selectedFaceIndex_];
+        if (selectedFace.indices.size() >= 3)
+        {
+            if (!dragUndoPushed_)
+            {
+                PushUndoState();
+                dragUndoPushed_ = true;
+            }
+            dragFaceNormalLocal_ = editableFaceNormal(object.mesh, selectedFace);
+            if (extrudeMeshFace(object, selectedFaceIndex_, 0.0f))
+            {
+                draggingFaceExtrudeInView_ = true;
+                dragViewType_ = hovered->type;
+                dragStartMouse_ = mouseScreen - delta;
+                dragStartWorld_ = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen - delta);
+                dragFaceVertexIndices_.clear();
+                dragStartVertexPositions_.clear();
+
+                const EditableFace& extrudedFace = object.mesh.faces()[(size_t)selectedFaceIndex_];
+                for (int vertexIndex : extrudedFace.indices)
+                {
+                    if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                        continue;
+                    dragFaceVertexIndices_.push_back(vertexIndex);
+                    dragStartVertexPositions_.push_back(object.mesh.vertices()[(size_t)vertexIndex].position);
+                }
+
+                if (dragFaceVertexIndices_.empty())
+                {
+                    draggingFaceExtrudeInView_ = false;
+                    dragUndoPushed_ = false;
+                }
+                else
+                {
+                    sceneDirty_ = true;
+                }
+            }
+        }
+    }
+
     if (!draggingObjectInView_ &&
         !draggingVerticesInView_ &&
+        !draggingFaceInView_ &&
+        !draggingFaceExtrudeInView_ &&
         !boxSelecting_ &&
         (currentTool_ == Tool::Move || currentTool_ == Tool::Scale || currentTool_ == Tool::Rotate) &&
         selectionMode_ == SelectionMode::Object &&
@@ -1669,7 +2324,7 @@ void LevelEditorApp::DrawTransformGizmo()
     }
 
     LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
-    glm::mat4 model = meshObjectModelMatrix(meshObject);
+    glm::mat4 gizmoMatrix = meshObjectPivotFrameMatrix(meshObject);
 
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     if (currentTool_ == Tool::Rotate)
@@ -1696,7 +2351,7 @@ void LevelEditorApp::DrawTransformGizmo()
                          glm::value_ptr(view.camera.projection),
                          operation,
                          ImGuizmo::WORLD,
-                         glm::value_ptr(model),
+                         glm::value_ptr(gizmoMatrix),
                          glm::value_ptr(deltaMatrix),
                          snapEnabled_ ? snap : nullptr);
 
@@ -1709,8 +2364,9 @@ void LevelEditorApp::DrawTransformGizmo()
         float t[3] = {0.0f, 0.0f, 0.0f};
         float r[3] = {0.0f, 0.0f, 0.0f};
         float s[3] = {1.0f, 1.0f, 1.0f};
-        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, s);
-        const glm::vec3 newPosition(t[0], t[1], t[2]);
+        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(gizmoMatrix), t, r, s);
+        const glm::vec3 newPivotWorld(t[0], t[1], t[2]);
+        const glm::vec3 newPosition = newPivotWorld - meshObject.pivot;
         const glm::vec3 newScale(s[0], s[1], s[2]);
         glm::vec3 newRotation = meshObject.rotationEuler;
 
@@ -2053,6 +2709,31 @@ void LevelEditorApp::DrawViewTile(const LevelEditorView& view, ImDrawList* drawL
                 drawList->AddLine(poly[i], poly[next], edgeColor, edgeThickness);
             }
         }
+    }
+
+    for (std::size_t objectIndex = 0; objectIndex < scene_.meshObjects().size(); ++objectIndex)
+    {
+        if (!IsMeshSelected(static_cast<int>(objectIndex)))
+            continue;
+
+        const LevelMeshObject& object = scene_.meshObjects()[objectIndex];
+        ImVec2 pivotPoint;
+        float pivotDepth = 0.0f;
+        const glm::vec3 pivotWorld = object.position + object.pivot;
+        if (!projectWorld(pivotWorld, pivotPoint, pivotDepth))
+            continue;
+
+        const bool primarySelected = static_cast<int>(objectIndex) == selectedMeshIndex_;
+        const float outerRadius = primarySelected ? 8.0f : 6.5f;
+        const float innerRadius = std::max(2.0f, outerRadius - 3.0f);
+        const float armLength = outerRadius + 4.0f;
+        const ImU32 ringColor = primarySelected ? IM_COL32(255, 210, 80, 255) : IM_COL32(255, 235, 170, 240);
+        const ImU32 crossColor = IM_COL32(255, 250, 230, 255);
+
+        drawList->AddCircleFilled(pivotPoint, innerRadius, IM_COL32(24, 28, 34, 230), 16);
+        drawList->AddCircle(pivotPoint, outerRadius, ringColor, 16, 2.0f);
+        drawList->AddLine(ImVec2(pivotPoint.x - armLength, pivotPoint.y), ImVec2(pivotPoint.x + armLength, pivotPoint.y), crossColor, 1.4f);
+        drawList->AddLine(ImVec2(pivotPoint.x, pivotPoint.y - armLength), ImVec2(pivotPoint.x, pivotPoint.y + armLength), crossColor, 1.4f);
     }
 
     if (boxSelecting_ &&
@@ -2437,6 +3118,7 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::CollapsingHeader("Selected Mesh", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::PushID("SelectedMeshSection");
+        bool closeInspectorAfterRebuild = false;
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
         if (selectedMeshIndices_.size() > 1)
             ImGui::Text("Primary selection: %d of %d", selectedMeshIndex_ + 1, static_cast<int>(selectedMeshIndices_.size()));
@@ -2464,9 +3146,333 @@ void LevelEditorApp::ShowRightPanel()
             PushUndoState();
             meshObject.scale = editedMeshScale;
         }
+        glm::vec3 editedMeshPivot = meshObject.pivot;
+        if (ImGui::DragFloat3("Pivot##MeshPivot", &editedMeshPivot.x, 0.5f) && editedMeshPivot != meshObject.pivot)
+        {
+            PushUndoState();
+            setMeshPivotPreserveWorld(meshObject, editedMeshPivot);
+        }
+        if (ImGui::Button("Pivot To Bounds Center"))
+        {
+            const glm::vec3 pivotCenter = editableMeshBoundsCenter(meshObject.mesh);
+            if (pivotCenter != meshObject.pivot)
+            {
+                PushUndoState();
+                setMeshPivotPreserveWorld(meshObject, pivotCenter);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Pivot To Bottom"))
+        {
+            const glm::vec3 pivotBottom = editableMeshBoundsBottomCenter(meshObject.mesh);
+            if (pivotBottom != meshObject.pivot)
+            {
+                PushUndoState();
+                setMeshPivotPreserveWorld(meshObject, pivotBottom);
+            }
+        }
+        if (ImGui::Button("Reset Pivot"))
+        {
+            if (meshObject.pivot != glm::vec3(0.0f))
+            {
+                PushUndoState();
+                setMeshPivotPreserveWorld(meshObject, glm::vec3(0.0f));
+            }
+        }
+        if (ImGui::Button("Bake Pivot Into Vertices"))
+        {
+            if (meshObject.pivot != glm::vec3(0.0f))
+            {
+                PushUndoState();
+                bakeMeshPivotIntoVertices(meshObject);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Bake Rotation/Scale"))
+        {
+            const glm::vec3 normalizedRotation = normalizeEulerDegrees(meshObject.rotationEuler);
+            if (!nearlyEqualVec3(normalizedRotation, glm::vec3(0.0f)) || !nearlyEqualVec3(meshObject.scale, glm::vec3(1.0f)))
+            {
+                PushUndoState();
+                bakeMeshRotationScaleIntoVertices(meshObject);
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextUnformatted("Transform Vertices");
+        ImGui::DragFloat3("Move##VertexBakeMove", &vertexBakeTranslate_.x, 0.5f);
+        ImGui::DragFloat3("Rotate##VertexBakeRotate", &vertexBakeRotate_.x, 0.5f, -360.0f, 360.0f);
+        ImGui::DragFloat3("Scale##VertexBakeScale", &vertexBakeScale_.x, 0.01f, 0.01f, 128.0f);
+        if (ImGui::Button("Apply To Vertices"))
+        {
+            const glm::vec3 normalizedBakeRotation = normalizeEulerDegrees(vertexBakeRotate_);
+            if (!nearlyEqualVec3(vertexBakeTranslate_, glm::vec3(0.0f)) ||
+                !nearlyEqualVec3(normalizedBakeRotation, glm::vec3(0.0f)) ||
+                !nearlyEqualVec3(vertexBakeScale_, glm::vec3(1.0f)))
+            {
+                PushUndoState();
+                bakeMeshVertexTransform(meshObject, vertexBakeTranslate_, vertexBakeRotate_, vertexBakeScale_);
+                vertexBakeTranslate_ = glm::vec3(0.0f);
+                vertexBakeRotate_ = glm::vec3(0.0f);
+                vertexBakeScale_ = glm::vec3(1.0f);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset Fields"))
+        {
+            vertexBakeTranslate_ = glm::vec3(0.0f);
+            vertexBakeRotate_ = glm::vec3(0.0f);
+            vertexBakeScale_ = glm::vec3(1.0f);
+        }
+        ImGui::TextDisabled("Pivot agora desloca sem mexer no visual. Este painel transforma a mesh local nos vertices.");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Hollow");
+        ImGui::DragFloat("Wall Thickness##HollowWallThickness", &hollowWallThickness_, 0.5f, 0.5f, 4096.0f);
+        if (ImGui::Button("Hollow Box"))
+        {
+            const BoundingBox bounds = editableMeshLocalBounds(meshObject.mesh);
+            const glm::vec3 size = bounds.max - bounds.min;
+            const float maxThickness = std::min(std::min(size.x, size.y), size.z) * 0.5f - 0.001f;
+            if (maxThickness > 0.001f)
+            {
+                PushUndoState();
+                meshObject.mesh = EditableMesh::MakeHollowBox(bounds.min, bounds.max, hollowWallThickness_);
+                selectedFaceIndex_ = -1;
+                selectedVertexIndices_.clear();
+                sceneDirty_ = true;
+            }
+        }
+        ImGui::TextDisabled("Cria uma casca fechada para ver a box por dentro e por fora.");
         ImGui::Text("Vertices: %d", static_cast<int>(meshObject.mesh.vertexCount()));
         ImGui::Text("Selected Vertices: %d", static_cast<int>(selectedVertexIndices_.size()));
         ImGui::Text("Faces: %d", static_cast<int>(meshObject.mesh.faceCount()));
+
+        if (selectedFaceIndex_ >= 0 && selectedFaceIndex_ < static_cast<int>(meshObject.mesh.faceCount()))
+        {
+            ImGui::Separator();
+            ImGui::Text("Selected Face: %d", selectedFaceIndex_);
+            ImGui::DragFloat("Extrude Distance##FaceExtrudeDistance", &faceExtrudeDistance_, 0.5f, -1024.0f, 1024.0f);
+            if (ImGui::Button("Extrude Face"))
+            {
+                if (std::fabs(faceExtrudeDistance_) > 1e-4f)
+                {
+                    PushUndoState();
+                    if (extrudeMeshFace(meshObject, selectedFaceIndex_, faceExtrudeDistance_))
+                        sceneDirty_ = true;
+                }
+            }
+            ImGui::TextDisabled("Extrude empurra a face ao longo da normal local e cria as faces laterais.");
+        }
+
+        if (ImGui::CollapsingHeader("CSG", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            if (selectedMeshIndices_.size() >= 2)
+            {
+                const int cutterIndex = selectedMeshIndices_[0] == selectedMeshIndex_
+                    ? selectedMeshIndices_[1]
+                    : selectedMeshIndices_[0];
+                if (cutterIndex >= 0 && cutterIndex < static_cast<int>(scene_.meshObjects().size()))
+                {
+                    ImGui::Text("CSG Between Meshes");
+                    ImGui::TextDisabled("Primary = target, secondary = cutter. Usa box CSG estavel para blockout.");
+
+                    if (ImGui::Button("Subtract"))
+                    {
+                        PushUndoState();
+
+                        std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
+                        LevelMeshObject targetTemplate = meshObjects[(size_t)selectedMeshIndex_];
+                        const LevelMeshObject cutterObject = meshObjects[(size_t)cutterIndex];
+                        const LevelCSGBox targetBox = editableMeshWorldBox(targetTemplate);
+                        const LevelCSGBox cutterBox = editableMeshWorldBox(cutterObject);
+                        const std::vector<LevelCSGBox> pieces = subtractCSGBoxes(targetBox, cutterBox);
+
+                        if (!pieces.empty())
+                        {
+                            meshObjects[(size_t)selectedMeshIndex_] = makeLevelObjectFromCSGBox(targetTemplate, pieces[0], targetTemplate.name);
+
+                            for (std::size_t i = 1; i < pieces.size(); ++i)
+                            {
+                                LevelMeshObject pieceObject = makeLevelObjectFromCSGBox(
+                                    targetTemplate,
+                                    pieces[i],
+                                    targetTemplate.name + " part " + std::to_string(i + 1));
+                                meshObjects.insert(meshObjects.begin() + selectedMeshIndex_ + static_cast<int>(i), pieceObject);
+                            }
+
+                            selectedFaceIndex_ = -1;
+                            selectedVertexIndices_.clear();
+                            sceneDirty_ = true;
+                            SyncSelectedMeshes();
+                            closeInspectorAfterRebuild = true;
+                        }
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Intersect"))
+                    {
+                        PushUndoState();
+
+                        LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
+                        const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                        const std::vector<LevelCSGBox> pieces = intersectCSGBoxes(
+                            editableMeshWorldBox(targetObject),
+                            editableMeshWorldBox(cutterObject));
+
+                        if (!pieces.empty())
+                        {
+                            targetObject = makeLevelObjectFromCSGBox(targetObject, pieces[0], targetObject.name);
+                            selectedFaceIndex_ = -1;
+                            selectedVertexIndices_.clear();
+                            sceneDirty_ = true;
+                        }
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Add"))
+                    {
+                        PushUndoState();
+
+                        const LevelMeshObject duplicate = scene_.meshObjects()[cutterIndex];
+                        scene_.meshObjects().push_back(duplicate);
+                        sceneDirty_ = true;
+                        SyncSelectedMeshes();
+                        closeInspectorAfterRebuild = true;
+                    }
+
+                    if (ImGui::CollapsingHeader("Experimental Mesh CSG", ImGuiTreeNodeFlags_None))
+                    {
+                        if (ImGui::Button("Union Root CSG"))
+                        {
+                            PushUndoState();
+
+                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
+                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            Mesh targetMesh;
+                            Mesh cutterMesh;
+                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
+                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            Mesh* resultMesh = CSG::makeUnion(targetMesh, cutterMesh,
+                                                              meshObjectModelMatrix(targetObject),
+                                                              meshObjectModelMatrix(cutterObject));
+
+                            if (resultMesh)
+                            {
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
+                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                delete resultMesh;
+                                selectedFaceIndex_ = -1;
+                                selectedVertexIndices_.clear();
+                                sceneDirty_ = true;
+                            }
+                        }
+
+                        ImGui::SameLine();
+                        if (ImGui::Button("Difference Root CSG"))
+                        {
+                            PushUndoState();
+
+                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
+                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            Mesh targetMesh;
+                            Mesh cutterMesh;
+                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
+                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            Mesh* resultMesh = CSG::makeDifference(targetMesh, cutterMesh,
+                                                                   meshObjectModelMatrix(targetObject),
+                                                                   meshObjectModelMatrix(cutterObject));
+
+                            if (resultMesh)
+                            {
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
+                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                delete resultMesh;
+                                selectedFaceIndex_ = -1;
+                                selectedVertexIndices_.clear();
+                                sceneDirty_ = true;
+                            }
+                        }
+
+                        ImGui::SameLine();
+                        if (ImGui::Button("Intersect Root CSG"))
+                        {
+                            PushUndoState();
+
+                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
+                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            Mesh targetMesh;
+                            Mesh cutterMesh;
+                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
+                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            Mesh* resultMesh = CSG::makeIntersection(targetMesh, cutterMesh,
+                                                                     meshObjectModelMatrix(targetObject),
+                                                                     meshObjectModelMatrix(cutterObject));
+
+                            if (resultMesh)
+                            {
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
+                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                delete resultMesh;
+                                selectedFaceIndex_ = -1;
+                                selectedVertexIndices_.clear();
+                                sceneDirty_ = true;
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("Seleciona pelo menos 2 meshes para usar Union / Difference / Intersection.");
+            }
+
+            if (ImGui::CollapsingHeader("Plane Clip", ImGuiTreeNodeFlags_None))
+            {
+                ImGui::TextDisabled("Opcao util para cortar uma mesh por plano local.");
+                if (ImGui::BeginCombo("Clip Axis##CSGClipAxis", csgAxisName(csgClipAxis_)))
+                {
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        const bool selectedAxis = axis == csgClipAxis_;
+                        if (ImGui::Selectable(csgAxisName(axis), selectedAxis))
+                            csgClipAxis_ = axis;
+                        if (selectedAxis)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::DragFloat("Clip Offset##CSGClipOffset", &csgClipOffset_, 0.5f, -4096.0f, 4096.0f);
+                ImGui::Checkbox("Keep Front Half-Space##CSGKeepFront", &csgClipKeepFront_);
+                if (ImGui::Button("Apply Plane Clip"))
+                {
+                    glm::vec3 normal(0.0f);
+                    normal[(size_t)glm::clamp(csgClipAxis_, 0, 2)] = 1.0f;
+                    glm::vec3 point(0.0f);
+                    point[(size_t)glm::clamp(csgClipAxis_, 0, 2)] = csgClipOffset_;
+
+                    const EditableMesh clipped = clipEditableMeshAgainstPlane(
+                        meshObject.mesh,
+                        MeshPlane::FromPointNormal(point, normal),
+                        csgClipKeepFront_);
+
+                    if (clipped.faceCount() > 0)
+                    {
+                        PushUndoState();
+                        meshObject.mesh = clipped;
+                        selectedFaceIndex_ = -1;
+                        selectedVertexIndices_.clear();
+                        sceneDirty_ = true;
+                    }
+                }
+                ImGui::TextDisabled("Base de CSG: clip por plano local com cap simples para loops de corte principais.");
+            }
+        }
+
+        if (closeInspectorAfterRebuild)
+        {
+            ImGui::PopID();
+            ImGui::End();
+            return;
+        }
 
         if (ImGui::BeginTable("FacesTable##Mesh", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
         {

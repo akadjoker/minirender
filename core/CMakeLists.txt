@@ -36,6 +36,7 @@ set(SOURCES
     src/Camera.cpp
     src/Collision.cpp
     src/Color.cpp
+    src/CSG.cpp
     src/DebugDraw.cpp
     src/Device.cpp
     src/Effects.cpp

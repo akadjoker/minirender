@@ -52,7 +52,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
                           std::string& error)
 {
     nlohmann::json root;
-    root["version"] = 1;
+    root["version"] = 2;
     root["mesh_objects"] = nlohmann::json::array();
     root["entities"] = nlohmann::json::array();
 
@@ -63,6 +63,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
         meshJson["position"] = object.position;
         meshJson["rotation"] = object.rotationEuler;
         meshJson["scale"] = object.scale;
+        meshJson["pivot"] = object.pivot;
         meshJson["vertices"] = nlohmann::json::array();
         meshJson["faces"] = nlohmann::json::array();
 
@@ -135,6 +136,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
             object.position = meshJson.value("position", glm::vec3(0.0f));
             object.rotationEuler = meshJson.value("rotation", glm::vec3(0.0f));
             object.scale = meshJson.value("scale", glm::vec3(1.0f, 1.0f, 1.0f));
+            object.pivot = meshJson.value("pivot", glm::vec3(0.0f));
 
             std::vector<EditableVertex> vertices;
             for (const auto& vertexJson : meshJson.value("vertices", nlohmann::json::array()))

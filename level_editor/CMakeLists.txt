@@ -31,6 +31,7 @@ add_executable(level_editor
     src/LevelEditorScene.cpp
     src/LevelEditorSceneIO.cpp
     src/LevelEditorTheme.cpp
+    src/MeshCSG.cpp
     src/main.cpp
 )
 
@@ -39,6 +40,7 @@ if (WIN32)
     target_include_directories(level_editor PUBLIC "${LIBS_DIR}/include" include src)
 else()
     target_include_directories(level_editor PUBLIC
+        ${CMAKE_SOURCE_DIR}
         include
         src
         ${CMAKE_SOURCE_DIR}/vendor/imgui

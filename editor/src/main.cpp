@@ -28,9 +28,11 @@
 #include "ImGuiFontAwesome.h"
 #include "ImGuiPropertyGrid.h"
 #include "ImGuiSplitter.h"
+#include "CSG.hpp"
 #include "Manager.hpp"
 #include "Material.hpp"
 #include "imgui.h"
+#include "CSG.hpp"
 #include "imgui_stdlib.h"
 #include <json.hpp>
 
@@ -85,6 +87,7 @@ namespace nlohmann {
                 {"mins", brush.mins},
                 {"maxs", brush.maxs},
                 {"color", brush.color},
+                {"name", brush.name},
                 {"hidden", brush.hidden},
                 {"texturePath", brush.texturePath},
                 {"faceTextures", brush.faceTextures},
@@ -99,6 +102,7 @@ namespace nlohmann {
             brush.mins = j.value("mins", glm::vec3(0.0f));
             brush.maxs = j.value("maxs", glm::vec3(0.0f));
             brush.color = j.value("color", glm::vec3(0.47f, 0.82f, 1.0f));
+            brush.name = j.value("name", std::string());
             brush.hidden = j.value("hidden", false);
             brush.texturePath = j.value("texturePath", std::string());
             brush.faceTextures = j.value("faceTextures", std::array<std::string, 6>{});
@@ -106,6 +110,7 @@ namespace nlohmann {
             brush.uvOffset = j.value("uvOffset", glm::vec2(0.0f));
             brush.uvScale = j.value("uvScale", glm::vec2(1.0f));
             brush.uvRotation = j.value("uvRotation", 0.0f);
+            brush.dirty = true;
         }
     };
 
@@ -156,6 +161,10 @@ struct EditorSettings
     bool assetViewAsGrid = false;
     EditorRenderingMode renderingMode = EditorRenderingMode::Solid;
 
+    // Transparency settings
+    bool enableTransparency = false;
+    float transparency = 1.0f;
+
     // View settings
     struct ViewSettings
     {
@@ -167,14 +176,66 @@ struct EditorSettings
     std::array<ViewSettings, 4> views;
 };
 
+static std::string resolveTexturePathForLoad(const std::string &rawPath);
+static std::string defaultBrushName(int index);
+
+enum class EditorTheme
+{
+    Dark,
+    Light,
+    Classic,
+    Studio
+};
+
+// Tool Icons structure
+struct ToolIcons
+{
+    Texture *select = nullptr;
+    Texture *move = nullptr;
+    Texture *scale = nullptr;
+    Texture *rotate = nullptr;
+    Texture *face = nullptr;
+    Texture *brush = nullptr;
+
+    bool loadIcons()
+    {
+        // Configure for ImGui: flip vertical for ImGui compatibility
+        TextureManager::instance().setFlipVertical(true);
+
+        select = TextureManager::instance().load("icon_select", resolveTexturePathForLoad("assets/res/select24.png"));
+        move = TextureManager::instance().load("icon_move", resolveTexturePathForLoad("assets/res/move24.png"));
+        scale = TextureManager::instance().load("icon_scale", resolveTexturePathForLoad("assets/res/scale24.png"));
+        rotate = TextureManager::instance().load("icon_rotate", resolveTexturePathForLoad("assets/res/rotate24.png"));
+        face = TextureManager::instance().load("icon_face", resolveTexturePathForLoad("assets/res/face24.png"));
+        brush = TextureManager::instance().load("icon_brush", resolveTexturePathForLoad("assets/res/brush24.png"));
+
+        TextureManager::instance().resetDefaults();
+        return select && move && scale && rotate && face && brush;
+    }
+
+    Texture *getIcon(EditorTool tool) const
+    {
+        switch (tool)
+        {
+        case EditorTool::Select: return select;
+        case EditorTool::Move: return move;
+        case EditorTool::Scale: return scale;
+        case EditorTool::Rotate: return rotate;
+        case EditorTool::Face: return face;
+        case EditorTool::Brush: return brush;
+        }
+        return nullptr;
+    }
+};
+
 // Serialization for ViewSettings
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EditorSettings::ViewSettings, orthoSize, perspectiveDistance, perspectiveYaw, perspectivePitch)
 
 // Serialization for EditorSettings
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EditorSettings, assetRoot, currentTexturePath, focus, gridStep, snapSize,
                                    layoutMode, defaultBrushThickness, defaultBrushHeight, showGrid, showAxes,
-                                   snapEnabled, sidebarTopHeight, assetPanelHeight, sidebarWidth, assetViewAsGrid, 
-                                   renderingMode, views)
+                                   snapEnabled, sidebarTopHeight, assetPanelHeight, sidebarWidth, assetViewAsGrid,
+                                   renderingMode, enableTransparency, transparency, views)
 
 // Save/Load functions
 void saveEditorSettings(const EditorSettings& settings, const std::string& filename = "editor_settings.json")
@@ -454,8 +515,9 @@ static const char *toolName(EditorTool tool)
     case EditorTool::Select: return "Select";
     case EditorTool::Move: return "Move";
     case EditorTool::Scale: return "Scale";
+    case EditorTool::Rotate: return "Rotate";
     case EditorTool::Face: return "Face";
-    case EditorTool::Brush: return "Brush";
+    case EditorTool::Brush: return "Create";
     }
     return "Tool";
 }
@@ -467,26 +529,16 @@ static const char *toolShortcut(EditorTool tool)
     case EditorTool::Select: return "1";
     case EditorTool::Move: return "2";
     case EditorTool::Scale: return "3";
-    case EditorTool::Face: return "4";
-    case EditorTool::Brush: return "5";
+    case EditorTool::Rotate: return "4";
+    case EditorTool::Face: return "5";
+    case EditorTool::Brush: return "6";
     }
     return "";
 }
 
-static const char *toolIcon(EditorTool tool)
-{
-    switch (tool)
-    {
-    case EditorTool::Select: return ImGuiFontAwesome::kCode;
-    case EditorTool::Move: return ImGuiFontAwesome::kTerminal;
-    case EditorTool::Scale: return ImGuiFontAwesome::kChevronUp;
-    case EditorTool::Face: return ImGuiFontAwesome::kFileCode;
-    case EditorTool::Brush: return ImGuiFontAwesome::kGears;
-    }
-    return "?";
-}
-
-static bool drawToolIconButton(EditorTool tool, EditorTool currentTool)
+static bool drawToolIconButton(EditorTool tool,
+                               EditorTool currentTool,
+                               const ToolIcons &toolIcons)
 {
     const bool active = (tool == currentTool);
     if (active)
@@ -496,7 +548,14 @@ static bool drawToolIconButton(EditorTool tool, EditorTool currentTool)
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.40f, 0.80f, 1.0f));
     }
 
-    const bool clicked = ImGui::SmallButton(toolIcon(tool));
+    Texture *icon = toolIcons.getIcon(tool);
+    bool clicked = false;
+    if (icon && icon->id != 0)
+        clicked = ImGui::ImageButton(("##tool_icon_" + std::to_string((int)tool)).c_str(),
+                                     (ImTextureID)(intptr_t)icon->id,
+                                     ImVec2(18.0f, 18.0f));
+    else
+        clicked = ImGui::SmallButton(toolName(tool));
 
     if (active)
         ImGui::PopStyleColor(3);
@@ -509,12 +568,14 @@ static bool drawToolIconButton(EditorTool tool, EditorTool currentTool)
 
 static void drawViewToolPalettes(const std::array<EditorView, 4> &views,
                                  int activeViews,
-                                 EditorTool &currentTool)
+                                 EditorTool &currentTool,
+                                 const ToolIcons &toolIcons)
 {
     static const EditorTool kTools[] = {
         EditorTool::Select,
         EditorTool::Move,
         EditorTool::Scale,
+        EditorTool::Rotate,
         EditorTool::Face,
         EditorTool::Brush,
     };
@@ -541,7 +602,7 @@ static void drawViewToolPalettes(const std::array<EditorView, 4> &views,
                 if (t > 0)
                     ImGui::SameLine();
                 ImGui::PushID(t);
-                if (drawToolIconButton(kTools[t], currentTool))
+                if (drawToolIconButton(kTools[t], currentTool, toolIcons))
                     currentTool = kTools[t];
                 ImGui::PopID();
             }
@@ -663,6 +724,10 @@ static std::vector<int> cloneSelectedBrushes(std::vector<BrushVolume> &brushes,
         BrushVolume copy = brushes[(size_t)index];
         copy.mins += delta;
         copy.maxs += delta;
+        if (!copy.name.empty())
+            copy.name += " Copy";
+        else
+            copy.name = defaultBrushName((int)brushes.size());
         brushes.push_back(copy);
         newSelection.push_back((int)brushes.size() - 1);
     }
@@ -695,6 +760,10 @@ static std::vector<int> pasteBrushClipboard(std::vector<BrushVolume> &brushes,
         BrushVolume copy = source;
         copy.mins += delta;
         copy.maxs += delta;
+        if (!copy.name.empty())
+            copy.name += " Copy";
+        else
+            copy.name = defaultBrushName((int)brushes.size());
         brushes.push_back(copy);
         newSelection.push_back((int)brushes.size() - 1);
     }
@@ -719,6 +788,46 @@ static void swapBrushFaces(BrushVolume &brush, int a, int b)
         return;
     std::swap(brush.faceTextures[(size_t)a], brush.faceTextures[(size_t)b]);
     std::swap(brush.faceUV[(size_t)a], brush.faceUV[(size_t)b]);
+    brush.dirty = true;
+}
+
+static int rotateFaceX90Once(int faceIndex)
+{
+    switch (faceIndex)
+    {
+    case 2: return 4;
+    case 4: return 3;
+    case 3: return 5;
+    case 5: return 2;
+    default: break;
+    }
+    return faceIndex;
+}
+
+static int rotateFaceY90Once(int faceIndex)
+{
+    switch (faceIndex)
+    {
+    case 0: return 5;
+    case 5: return 1;
+    case 1: return 4;
+    case 4: return 0;
+    default: break;
+    }
+    return faceIndex;
+}
+
+static int rotateFaceZ90Once(int faceIndex)
+{
+    switch (faceIndex)
+    {
+    case 0: return 2;
+    case 2: return 1;
+    case 1: return 3;
+    case 3: return 0;
+    default: break;
+    }
+    return faceIndex;
 }
 
 static void rotateBrushY90(BrushVolume &brush, int turns)
@@ -752,6 +861,226 @@ static void rotateBrushY90(BrushVolume &brush, int turns)
         brush.faceUV[(size_t)faceBack()] = oldUvPX;
         brush.faceUV[(size_t)faceLeft()] = oldUvNZ;
         brush.faceUV[(size_t)faceFront()] = oldUvNX;
+    }
+    brush.dirty = true;
+}
+
+static void rotateBrushX90(BrushVolume &brush, int turns)
+{
+    int steps = turns % 4;
+    if (steps < 0)
+        steps += 4;
+    for (int i = 0; i < steps; ++i)
+    {
+        const glm::vec3 center = (brush.mins + brush.maxs) * 0.5f;
+        glm::vec3 half = (brush.maxs - brush.mins) * 0.5f;
+        std::swap(half.y, half.z);
+        brush.mins = center - half;
+        brush.maxs = center + half;
+
+        const std::string oldPY = brush.faceTextures[(size_t)faceTop()];
+        const std::string oldNY = brush.faceTextures[(size_t)faceBottom()];
+        const std::string oldPZ = brush.faceTextures[(size_t)faceFront()];
+        const std::string oldNZ = brush.faceTextures[(size_t)faceBack()];
+        brush.faceTextures[(size_t)faceTop()] = oldNZ;
+        brush.faceTextures[(size_t)faceFront()] = oldPY;
+        brush.faceTextures[(size_t)faceBottom()] = oldPZ;
+        brush.faceTextures[(size_t)faceBack()] = oldNY;
+
+        const BrushVolume::FaceUV oldUvPY = brush.faceUV[(size_t)faceTop()];
+        const BrushVolume::FaceUV oldUvNY = brush.faceUV[(size_t)faceBottom()];
+        const BrushVolume::FaceUV oldUvPZ = brush.faceUV[(size_t)faceFront()];
+        const BrushVolume::FaceUV oldUvNZ = brush.faceUV[(size_t)faceBack()];
+        brush.faceUV[(size_t)faceTop()] = oldUvNZ;
+        brush.faceUV[(size_t)faceFront()] = oldUvPY;
+        brush.faceUV[(size_t)faceBottom()] = oldUvPZ;
+        brush.faceUV[(size_t)faceBack()] = oldUvNY;
+    }
+    brush.dirty = true;
+}
+
+static void rotateBrushZ90(BrushVolume &brush, int turns)
+{
+    int steps = turns % 4;
+    if (steps < 0)
+        steps += 4;
+    for (int i = 0; i < steps; ++i)
+    {
+        const glm::vec3 center = (brush.mins + brush.maxs) * 0.5f;
+        glm::vec3 half = (brush.maxs - brush.mins) * 0.5f;
+        std::swap(half.x, half.y);
+        brush.mins = center - half;
+        brush.maxs = center + half;
+
+        const std::string oldPX = brush.faceTextures[(size_t)faceRight()];
+        const std::string oldNX = brush.faceTextures[(size_t)faceLeft()];
+        const std::string oldPY = brush.faceTextures[(size_t)faceTop()];
+        const std::string oldNY = brush.faceTextures[(size_t)faceBottom()];
+        brush.faceTextures[(size_t)faceRight()] = oldNY;
+        brush.faceTextures[(size_t)faceTop()] = oldPX;
+        brush.faceTextures[(size_t)faceLeft()] = oldPY;
+        brush.faceTextures[(size_t)faceBottom()] = oldNX;
+
+        const BrushVolume::FaceUV oldUvPX = brush.faceUV[(size_t)faceRight()];
+        const BrushVolume::FaceUV oldUvNX = brush.faceUV[(size_t)faceLeft()];
+        const BrushVolume::FaceUV oldUvPY = brush.faceUV[(size_t)faceTop()];
+        const BrushVolume::FaceUV oldUvNY = brush.faceUV[(size_t)faceBottom()];
+        brush.faceUV[(size_t)faceRight()] = oldUvNY;
+        brush.faceUV[(size_t)faceTop()] = oldUvPX;
+        brush.faceUV[(size_t)faceLeft()] = oldUvPY;
+        brush.faceUV[(size_t)faceBottom()] = oldUvNX;
+    }
+    brush.dirty = true;
+}
+
+static void rotateBrushForView90(BrushVolume &brush, EditorViewType viewType, int turns)
+{
+    switch (viewType)
+    {
+    case EditorViewType::Top:
+    case EditorViewType::Bottom:
+        rotateBrushY90(brush, turns);
+        break;
+    case EditorViewType::Front:
+    case EditorViewType::Back:
+        rotateBrushZ90(brush, turns);
+        break;
+    case EditorViewType::Left:
+    case EditorViewType::Right:
+        rotateBrushX90(brush, turns);
+        break;
+    case EditorViewType::Perspective:
+        break;
+    }
+}
+
+static int rotateFaceForView90(int faceIndex, EditorViewType viewType, int turns)
+{
+    int steps = turns % 4;
+    if (steps < 0)
+        steps += 4;
+    for (int i = 0; i < steps; ++i)
+    {
+        switch (viewType)
+        {
+        case EditorViewType::Top:
+        case EditorViewType::Bottom:
+            faceIndex = rotateFaceY90Once(faceIndex);
+            break;
+        case EditorViewType::Front:
+        case EditorViewType::Back:
+            faceIndex = rotateFaceZ90Once(faceIndex);
+            break;
+        case EditorViewType::Left:
+        case EditorViewType::Right:
+            faceIndex = rotateFaceX90Once(faceIndex);
+            break;
+        case EditorViewType::Perspective:
+            break;
+        }
+    }
+    return faceIndex;
+}
+
+static int rotationDirectionForView(EditorViewType viewType)
+{
+    switch (viewType)
+    {
+    case EditorViewType::Bottom:
+    case EditorViewType::Back:
+    case EditorViewType::Left:
+        return -1;
+    case EditorViewType::Top:
+    case EditorViewType::Front:
+    case EditorViewType::Right:
+    case EditorViewType::Perspective:
+        break;
+    }
+    return 1;
+}
+
+static std::string defaultBrushName(int index)
+{
+    return "Brush " + std::to_string(index + 1);
+}
+
+static const std::string &brushDisplayName(const BrushVolume &brush, std::string &fallback, int index)
+{
+    if (!brush.name.empty())
+        return brush.name;
+    fallback = defaultBrushName(index);
+    return fallback;
+}
+
+static int rotationTurnsFromMouseDrag(EditorViewType viewType, const glm::vec2 &mouseDelta)
+{
+    constexpr float pixelsPerStep = 42.0f;
+    const float primaryDelta = (std::fabs(mouseDelta.x) >= std::fabs(mouseDelta.y))
+        ? mouseDelta.x
+        : -mouseDelta.y;
+    const int steps = (int)std::floor(std::fabs(primaryDelta) / pixelsPerStep);
+    if (steps <= 0)
+        return 0;
+    const int sign = primaryDelta < 0.0f ? -1 : 1;
+    return steps * sign * rotationDirectionForView(viewType);
+}
+
+static const char *themeName(EditorTheme theme)
+{
+    switch (theme)
+    {
+    case EditorTheme::Dark: return "Dark";
+    case EditorTheme::Light: return "Light";
+    case EditorTheme::Classic: return "Classic";
+    case EditorTheme::Studio: return "Studio";
+    }
+    return "Dark";
+}
+
+static void applyEditorTheme(EditorTheme theme)
+{
+    ImGuiStyle &style = ImGui::GetStyle();
+    switch (theme)
+    {
+    case EditorTheme::Dark:
+        ImGui::StyleColorsDark();
+        break;
+    case EditorTheme::Light:
+        ImGui::StyleColorsLight();
+        break;
+    case EditorTheme::Classic:
+        ImGui::StyleColorsClassic();
+        break;
+    case EditorTheme::Studio:
+        ImGui::StyleColorsDark();
+        style.WindowRounding = 7.0f;
+        style.ChildRounding = 6.0f;
+        style.FrameRounding = 5.0f;
+        style.PopupRounding = 6.0f;
+        style.ScrollbarRounding = 8.0f;
+        style.GrabRounding = 6.0f;
+        style.TabRounding = 5.0f;
+        style.FrameBorderSize = 1.0f;
+        style.WindowBorderSize = 1.0f;
+        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.10f, 0.11f, 0.13f, 1.00f);
+        style.Colors[ImGuiCol_ChildBg] = ImVec4(0.12f, 0.13f, 0.16f, 1.00f);
+        style.Colors[ImGuiCol_PopupBg] = ImVec4(0.11f, 0.12f, 0.15f, 0.98f);
+        style.Colors[ImGuiCol_TitleBg] = ImVec4(0.14f, 0.17f, 0.22f, 1.00f);
+        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.18f, 0.23f, 0.31f, 1.00f);
+        style.Colors[ImGuiCol_Header] = ImVec4(0.20f, 0.29f, 0.41f, 0.85f);
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.28f, 0.40f, 0.56f, 0.85f);
+        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.22f, 0.35f, 0.51f, 1.00f);
+        style.Colors[ImGuiCol_Button] = ImVec4(0.20f, 0.28f, 0.39f, 0.90f);
+        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.28f, 0.39f, 0.53f, 1.00f);
+        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.17f, 0.30f, 0.46f, 1.00f);
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.15f, 0.17f, 0.21f, 1.00f);
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.22f, 0.28f, 0.36f, 1.00f);
+        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.24f, 0.33f, 0.44f, 1.00f);
+        style.Colors[ImGuiCol_Tab] = ImVec4(0.16f, 0.20f, 0.27f, 0.95f);
+        style.Colors[ImGuiCol_TabHovered] = ImVec4(0.25f, 0.34f, 0.48f, 1.00f);
+        style.Colors[ImGuiCol_TabActive] = ImVec4(0.22f, 0.31f, 0.43f, 1.00f);
+        style.Colors[ImGuiCol_CheckMark] = ImVec4(0.55f, 0.78f, 1.00f, 1.00f);
+        break;
     }
 }
 
@@ -950,33 +1279,6 @@ static glm::vec3 snapPoint(const glm::vec3 &p, float snapSize, bool enabled)
 static glm::mat4 screenOrthoMatrix(int width, int height)
 {
     return glm::ortho(0.0f, (float)width, (float)height, 0.0f, -1.0f, 1.0f);
-}
-
-static void seedTestBrushes(std::vector<BrushVolume> &brushes)
-{
-    brushes.clear();
-
-    // Add some test brushes
-    BrushVolume brush1;
-    brush1.mins = glm::vec3(-50.0f, 0.0f, -50.0f);
-    brush1.maxs = glm::vec3(50.0f, 100.0f, 50.0f);
-    brush1.color = randomBrushColor();
-    brush1.texturePath = "textures/default.png";
-    brushes.push_back(brush1);
-
-    BrushVolume brush2;
-    brush2.mins = glm::vec3(-20.0f, 100.0f, -20.0f);
-    brush2.maxs = glm::vec3(20.0f, 150.0f, 20.0f);
-    brush2.color = randomBrushColor();
-    brush2.texturePath = "textures/default.png";
-    brushes.push_back(brush2);
-
-    BrushVolume brush3;
-    brush3.mins = glm::vec3(60.0f, 0.0f, 60.0f);
-    brush3.maxs = glm::vec3(120.0f, 80.0f, 120.0f);
-    brush3.color = randomBrushColor();
-    brush3.texturePath = "textures/default.png";
-    brushes.push_back(brush3);
 }
 
 static void appendConsoleLine(ImGuiConsole &console, const std::string &line)
@@ -1489,6 +1791,7 @@ static void updateCameras(std::array<EditorView, 4> &views,
 
         if (view.type == EditorViewType::Perspective)
         {
+            view.focus = focus;
             view.camera.setProjectionType(ProjectionType::Perspective);
             view.camera.setFov(60.0f);
 
@@ -1503,34 +1806,35 @@ static void updateCameras(std::array<EditorView, 4> &views,
         }
         else
         {
+            const glm::vec3 viewFocus = view.focus;
             view.camera.setProjectionType(ProjectionType::Orthographic);
             view.camera.orthoSize = view.orthoSize;
 
             switch (view.type)
             {
             case EditorViewType::Top:
-                view.camera.setPosition(focus + glm::vec3(0.0f, orthoDistance, 0.0f));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 0.0f, -1.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(0.0f, orthoDistance, 0.0f));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 0.0f, -1.0f));
                 break;
             case EditorViewType::Bottom:
-                view.camera.setPosition(focus + glm::vec3(0.0f, -orthoDistance, 0.0f));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 0.0f, 1.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(0.0f, -orthoDistance, 0.0f));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 0.0f, 1.0f));
                 break;
             case EditorViewType::Front:
-                view.camera.setPosition(focus + glm::vec3(0.0f, 0.0f, orthoDistance));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 1.0f, 0.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(0.0f, 0.0f, orthoDistance));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 1.0f, 0.0f));
                 break;
             case EditorViewType::Back:
-                view.camera.setPosition(focus + glm::vec3(0.0f, 0.0f, -orthoDistance));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 1.0f, 0.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(0.0f, 0.0f, -orthoDistance));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 1.0f, 0.0f));
                 break;
             case EditorViewType::Left:
-                view.camera.setPosition(focus + glm::vec3(-orthoDistance, 0.0f, 0.0f));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 1.0f, 0.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(-orthoDistance, 0.0f, 0.0f));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 1.0f, 0.0f));
                 break;
             case EditorViewType::Right:
-                view.camera.setPosition(focus + glm::vec3(orthoDistance, 0.0f, 0.0f));
-                view.camera.lookAt(focus, glm::vec3(0.0f, 1.0f, 0.0f));
+                view.camera.setPosition(viewFocus + glm::vec3(orthoDistance, 0.0f, 0.0f));
+                view.camera.lookAt(viewFocus, glm::vec3(0.0f, 1.0f, 0.0f));
                 break;
             case EditorViewType::Perspective:
                 break;
@@ -1938,8 +2242,14 @@ static void drawBrushes(RenderBatch &batch,
                         float defaultBrushHeight,
                         const glm::vec3 &focus,
                         const std::string &currentTexturePath,
-                        EditorRenderingMode renderingMode)
+                        EditorRenderingMode renderingMode,
+                        bool enableTransparency = false,
+                        float transparency = 1.0f)
 {
+    // Apply transparency only in 3D view
+        const bool useTransparency = enableTransparency && (view.type == EditorViewType::Perspective);
+        const u8 alphaValue = useTransparency ? (u8)glm::clamp(transparency * 255.0f, 0.0f, 255.0f) : 255;
+
     for (int i = 0; i < (int)brushes.size(); ++i)
     {
         const BrushVolume &brush = brushes[i];
@@ -1953,7 +2263,7 @@ static void drawBrushes(RenderBatch &batch,
                 if (!brushInFrustum(brush, view.camera))
                     continue;
             }
-            else if (!brushVisibleInOrthoView(brush, view, focus))
+            else if (!brushVisibleInOrthoView(brush, view, view.focus))
             {
                 continue;
             }
@@ -1962,44 +2272,44 @@ static void drawBrushes(RenderBatch &batch,
         if (renderingMode == EditorRenderingMode::Wireframe)
         {
             if (isSelected)
-                batch.SetColor(255, 170, 70, 255);
+                batch.SetColor(255, 170, 70, alphaValue);
             else
                 batch.SetColor((u8)glm::clamp(brush.color.x * 255.0f, 0.0f, 255.0f),
                                (u8)glm::clamp(brush.color.y * 255.0f, 0.0f, 255.0f),
                                (u8)glm::clamp(brush.color.z * 255.0f, 0.0f, 255.0f),
-                               255);
+                               alphaValue);
             drawBrushWireframe(batch, brush);
         }
         else if (renderingMode == EditorRenderingMode::Textured)
         {
-            batch.SetColor(255, 255, 255, 255);
+            batch.SetColor(255, 255, 255, alphaValue);
             drawBrushTextured(batch, brush);
             if (isSelected)
             {
-                batch.SetColor(255, 180, 70, 255);
+                batch.SetColor(255, 180, 70, alphaValue);
                 drawBrushWireframe(batch, brush);
             }
         }
         else
         {
             if (isSelected)
-                batch.SetColor(255, 180, 70, 255);
+                batch.SetColor(255, 180, 70, alphaValue);
             else
                 batch.SetColor((u8)glm::clamp(brush.color.x * 255.0f, 0.0f, 255.0f),
                                (u8)glm::clamp(brush.color.y * 255.0f, 0.0f, 255.0f),
                                (u8)glm::clamp(brush.color.z * 255.0f, 0.0f, 255.0f),
-                               255);
+                               alphaValue);
             drawBrushSolid(batch, brush);
             if (isSelected)
             {
-                batch.SetColor(255, 185, 80, 255);
+                batch.SetColor(255, 185, 80, alphaValue);
                 drawBrushWireframe(batch, brush);
             }
         }
 
         if (isSelected && i == primarySelectedBrush)
         {
-            batch.SetColor(255, 235, 80, 255);
+            batch.SetColor(255, 235, 80, alphaValue);
             drawBrushFaceOutline(batch, brush, selectedFace);
         }
     }
@@ -2012,24 +2322,24 @@ static void drawBrushes(RenderBatch &batch,
             previewEnd,
             defaultBrushThickness,
             defaultBrushHeight,
-            focus,
-            currentTexturePath);
-        batch.SetColor(255, 210, 80, 255);
+                view.focus,
+                currentTexturePath);
+        batch.SetColor(255, 210, 80, alphaValue);
         if (renderingMode == EditorRenderingMode::Wireframe)
         {
             drawBrushWireframe(batch, preview);
         }
         else if (renderingMode == EditorRenderingMode::Textured)
         {
-            batch.SetColor(255, 255, 255, 255);
+            batch.SetColor(255, 255, 255, alphaValue);
             drawBrushTextured(batch, preview);
-            batch.SetColor(255, 210, 80, 255);
+            batch.SetColor(255, 210, 80, alphaValue);
             drawBrushWireframe(batch, preview);
         }
         else
         {
             drawBrushSolid(batch, preview);
-            batch.SetColor(255, 210, 80, 255);
+            batch.SetColor(255, 210, 80, alphaValue);
             drawBrushWireframe(batch, preview);
         }
     }
@@ -2051,8 +2361,11 @@ static void renderEditorView(RenderBatch &batch,
                              const glm::vec3 &focus,
                              const glm::vec3 &hoverWorld,
                              const std::string &currentTexturePath,
-                             EditorRenderingMode renderingMode)
+                             EditorRenderingMode renderingMode,
+                             bool enableTransparency = false,
+                             float transparency = 1.0f)
 {
+    const glm::vec3 viewFocus = (view.type == EditorViewType::Perspective) ? focus : view.focus;
     EditorRenderingMode effectiveMode = renderingMode;
     if (view.type != EditorViewType::Perspective)
         effectiveMode = EditorRenderingMode::Wireframe;
@@ -2066,6 +2379,14 @@ static void renderEditorView(RenderBatch &batch,
     glClearColor(view.clearColor.r, view.clearColor.g, view.clearColor.b, view.clearColor.a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // Enable transparency only for 3D view
+    bool useTransparency = enableTransparency && (view.type == EditorViewType::Perspective);
+    if (useTransparency)
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+
     Material::applyDefaultStates();
     batch.SetMatrix(view.camera.viewProjection);
 
@@ -2074,7 +2395,7 @@ static void renderEditorView(RenderBatch &batch,
         const float extent = (view.type == EditorViewType::Perspective)
                                  ? glm::max(512.0f, view.perspectiveDistance)
                                  : glm::max(view.orthoSize * 1.5f, 128.0f);
-        drawGridForView(batch, view.type, focus, extent, gridStep);
+        drawGridForView(batch, view.type, viewFocus, extent, gridStep);
     }
 
     if (showAxes)
@@ -2091,11 +2412,16 @@ static void renderEditorView(RenderBatch &batch,
                 hoverWorld,
                 defaultBrushThickness,
                 defaultBrushHeight,
-                focus,
+                viewFocus,
                 currentTexturePath,
-                effectiveMode);
+                effectiveMode,
+                enableTransparency,
+                transparency);
 
     batch.Render();
+
+    if (enableTransparency && (view.type == EditorViewType::Perspective))
+        glDisable(GL_BLEND);
 
     glDisable(GL_SCISSOR_TEST);
     glViewport(0, 0, 0, 0);
@@ -2121,6 +2447,201 @@ static void drawScreenOverlay(RenderBatch &batch,
     }
 
     batch.Render();
+}
+
+static void pushUndo(std::vector<std::vector<BrushVolume>>& undoStack,
+                     const std::vector<BrushVolume>&        scene,
+                     std::vector<std::vector<BrushVolume>>& redoStack,
+                     int                                     maxUndo = 32)
+{
+    undoStack.push_back(scene);
+    redoStack.clear();
+    if ((int)undoStack.size() > maxUndo)
+        undoStack.erase(undoStack.begin());
+}
+
+static bool popUndo(std::vector<std::vector<BrushVolume>>& undoStack,
+                    std::vector<BrushVolume>&               scene,
+                    std::vector<std::vector<BrushVolume>>& redoStack)
+{
+    if (undoStack.empty())
+        return false;
+    redoStack.push_back(scene);
+    scene = undoStack.back();
+    undoStack.pop_back();
+    return true;
+}
+
+static bool popRedo(std::vector<std::vector<BrushVolume>>& redoStack,
+                    std::vector<BrushVolume>&               scene,
+                    std::vector<std::vector<BrushVolume>>& undoStack)
+{
+    if (redoStack.empty())
+        return false;
+    undoStack.push_back(scene);
+    scene = redoStack.back();
+    redoStack.pop_back();
+    return true;
+}
+
+static void drawCSGPanel(std::vector<BrushVolume>&              brushes,
+                         int&                                    selectedBrush,
+                         std::vector<int>&                       selectedBrushes,
+                         CSGOperation&                           csgOp,
+                         float&                                  hollowThickness,
+                         float&                                  splitPosition,
+                         int&                                    splitAxis,
+                         std::vector<std::vector<BrushVolume>>& undoStack,
+                         std::vector<std::vector<BrushVolume>>& redoStack)
+{
+    ImGui::Spacing();
+
+    const char* opNames[] = { "Add", "Subtract", "Intersect", "Hollow" };
+    int opIdx = (int)csgOp;
+    if (ImGui::Combo("Operation##csg", &opIdx, opNames, 4))
+        csgOp = (CSGOperation)opIdx;
+
+    ImGui::Spacing();
+
+    if (csgOp == CSGOperation::Hollow)
+    {
+        ImGui::DragFloat("Wall Thickness", &hollowThickness, 1.0f, 1.0f, 128.0f, "%.1f");
+        ImGui::TextDisabled("Cria paredes ocas a partir do brush seleccionado");
+    }
+
+    bool hasSel = selectedBrush >= 0 && selectedBrush < (int)brushes.size();
+
+    if (csgOp == CSGOperation::Hollow)
+    {
+        ImGui::BeginDisabled(!hasSel);
+        if (ImGui::Button("Apply Hollow##csg", ImVec2(-1, 0)))
+        {
+            pushUndo(undoStack, brushes, redoStack);
+            BrushVolume tool = brushes[selectedBrush];
+            brushes.erase(brushes.begin() + selectedBrush);
+            auto walls = CSG::hollow(tool, hollowThickness);
+            for (auto& w : walls) brushes.push_back(w);
+            selectedBrush = -1;
+            selectedBrushes.clear();
+            hasSel = false;
+        }
+        ImGui::EndDisabled();
+    }
+
+    if (csgOp == CSGOperation::Subtract)
+    {
+        ImGui::BeginDisabled(!hasSel);
+        if (ImGui::Button("Subtract Selected from Scene##csg", ImVec2(-1, 0)))
+        {
+            pushUndo(undoStack, brushes, redoStack);
+            BrushVolume tool = brushes[selectedBrush];
+            brushes.erase(brushes.begin() + selectedBrush);
+            selectedBrush = -1;
+            selectedBrushes.clear();
+            hasSel = false;
+            CSG::applyToScene(brushes, tool, CSGOperation::Subtract);
+        }
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Selecciona o brush 'ferramenta' e clica para\ncortar todos os outros com ele.");
+    }
+
+    if (csgOp == CSGOperation::Intersect)
+    {
+        ImGui::BeginDisabled(!hasSel);
+        if (ImGui::Button("Intersect Selected with Scene##csg", ImVec2(-1, 0)))
+        {
+            pushUndo(undoStack, brushes, redoStack);
+            BrushVolume tool = brushes[selectedBrush];
+            brushes.erase(brushes.begin() + selectedBrush);
+            selectedBrush = -1;
+            selectedBrushes.clear();
+            hasSel = false;
+            CSG::applyToScene(brushes, tool, CSGOperation::Intersect);
+        }
+        ImGui::EndDisabled();
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Split");
+    ImGui::Spacing();
+
+    const char* axisNames[] = { "X", "Y", "Z" };
+    ImGui::Combo("Axis##split", &splitAxis, axisNames, 3);
+
+    ImGui::BeginDisabled(!hasSel);
+    if (ImGui::Button("Split Middle##split", ImVec2(-1, 0)))
+    {
+        pushUndo(undoStack, brushes, redoStack);
+        BrushVolume original = brushes[selectedBrush];
+        brushes.erase(brushes.begin() + selectedBrush);
+        selectedBrush = -1;
+        selectedBrushes.clear();
+        hasSel = false;
+        auto pieces = CSG::splitMiddle(original, splitAxis);
+        for (auto& p : pieces) brushes.push_back(p);
+    }
+
+    if (hasSel)
+    {
+        const float mn = brushes[selectedBrush].mins[splitAxis];
+        const float mx = brushes[selectedBrush].maxs[splitAxis];
+        splitPosition = glm::clamp(splitPosition, mn + 1.0f, mx - 1.0f);
+        ImGui::DragFloat("Position##split", &splitPosition, 1.0f);
+    }
+
+    if (ImGui::Button("Split at Position##split", ImVec2(-1, 0)))
+    {
+        pushUndo(undoStack, brushes, redoStack);
+        BrushVolume original = brushes[selectedBrush];
+        brushes.erase(brushes.begin() + selectedBrush);
+        selectedBrush = -1;
+        selectedBrushes.clear();
+        hasSel = false;
+        auto pieces = CSG::split(original, splitAxis, splitPosition);
+        for (auto& p : pieces) brushes.push_back(p);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    const float buttonSpacing = ImGui::GetStyle().ItemSpacing.x;
+    const float halfWidth = (ImGui::GetContentRegionAvail().x - buttonSpacing) * 0.5f;
+
+    ImGui::BeginDisabled(undoStack.empty());
+    if (ImGui::Button("Undo##csg", ImVec2(halfWidth, 0)))
+    {
+        popUndo(undoStack, brushes, redoStack);
+        selectedBrush = -1;
+        selectedBrushes.clear();
+        hasSel = false;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    ImGui::BeginDisabled(redoStack.empty());
+    if (ImGui::Button("Redo##csg", ImVec2(halfWidth, 0)))
+    {
+        popRedo(redoStack, brushes, undoStack);
+        selectedBrush = -1;
+        selectedBrushes.clear();
+        hasSel = false;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Undo: %d | Redo: %d", (int)undoStack.size(), (int)redoStack.size());
+
+    ImGui::Separator();
+    ImGui::Text("Scene: %d brushes", (int)brushes.size());
+    if (hasSel)
+    {
+        const BrushVolume& b = brushes[selectedBrush];
+        const glm::vec3 sz   = b.maxs - b.mins;
+        std::string fallbackName;
+        ImGui::Text("Selected #%d", selectedBrush);
+        ImGui::Text("  Name: %s", brushDisplayName(b, fallbackName, selectedBrush).c_str());
+        ImGui::Text("  Size: %.0fx%.0fx%.0f", sz.x, sz.y, sz.z);
+        ImGui::Text("  Center: %.0f, %.0f, %.0f",
+                    b.center().x, b.center().y, b.center().z);
+    }
 }
 
 int main()
@@ -2182,22 +2703,43 @@ int main()
     int orthoPopupViewIndex = -1;
     glm::vec3 orthoPopupWorld(0.0f);
     EditorTool currentTool = EditorTool::Select;
+    EditorTheme currentTheme = EditorTheme::Dark;
     bool draggingSelection = false;
     EditorTool dragTool = EditorTool::Move;
     EditorViewType dragView = EditorViewType::Top;
     BrushScaleAxis dragScaleAxis = BrushScaleAxis::None;
     bool dragScalePositiveFace = true;
     glm::vec3 dragStartWorld(0.0f);
+    glm::vec2 dragStartMouse(0.0f);
     BrushVolume dragOriginalBrush;
+    int dragOriginalFace = 2;
+    int dragRotateTurns = 0;
+    bool dragRotateCommitted = false;
+
+    CSGOperation csgOp = CSGOperation::Add;
+    float hollowThickness = 16.0f;
+    float splitPosition = 0.0f;
+    int splitAxis = 1;
+    std::vector<std::vector<BrushVolume>> undoStack;
+    std::vector<std::vector<BrushVolume>> redoStack;
 
     // Apply view settings
     for (int i = 0; i < 4; ++i)
     {
+        views[i].focus = focus;
         views[i].orthoSize = settings.views[i].orthoSize;
         views[i].perspectiveDistance = settings.views[i].perspectiveDistance;
         views[i].perspectiveYaw = settings.views[i].perspectiveYaw;
         views[i].perspectivePitch = settings.views[i].perspectivePitch;
     }
+
+    // Load tool icons
+    ToolIcons toolIcons;
+    applyEditorTheme(currentTheme);
+    if (toolIcons.loadIcons())
+        appendConsoleLine(console, "[editor] loaded tool icons");
+    else
+        appendConsoleLine(console, "[editor] WARNING: failed to load some tool icons");
 
     const int margin = 12;
     const int gap = 8;
@@ -2263,6 +2805,30 @@ int main()
                 if (ImGui::MenuItem("4 Views", nullptr, fourViews))
                     settings.layoutMode = EditorLayoutMode::FourViews;
                 ImGui::Separator();
+
+                // Camera/View presets
+                if (ImGui::MenuItem("Front Face View"))
+                {
+                    for (int i = 0; i < layoutViewCount(settings.layoutMode); ++i)
+                        views[i].type = EditorViewType::Front;
+                    syncViewLabels(views);
+                }
+                if (ImGui::MenuItem("Back Face View"))
+                {
+                    for (int i = 0; i < layoutViewCount(settings.layoutMode); ++i)
+                        views[i].type = EditorViewType::Back;
+                    syncViewLabels(views);
+                }
+                if (ImGui::MenuItem("All"))
+                {
+                    views[0].type = EditorViewType::Top;
+                    views[1].type = EditorViewType::Front;
+                    views[2].type = EditorViewType::Right;
+                    views[3].type = EditorViewType::Perspective;
+                    settings.layoutMode = EditorLayoutMode::FourViews;
+                    syncViewLabels(views);
+                }
+                ImGui::Separator();
                 ImGui::MenuItem("Show Grid", nullptr, &settings.showGrid);
                 ImGui::MenuItem("Show Axes", nullptr, &settings.showAxes);
                 ImGui::MenuItem("Snap", nullptr, &settings.snapEnabled);
@@ -2278,16 +2844,47 @@ int main()
 
             if (ImGui::BeginMenu("Tools"))
             {
-                if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kCode) + " Select").c_str(), "1", currentTool == EditorTool::Select))
+                if (ImGui::MenuItem("Select", "1", currentTool == EditorTool::Select))
                     currentTool = EditorTool::Select;
-                if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kTerminal) + " Move").c_str(), "2", currentTool == EditorTool::Move))
+                if (ImGui::MenuItem("Move", "2", currentTool == EditorTool::Move))
                     currentTool = EditorTool::Move;
-                if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kChevronUp) + " Scale").c_str(), "3", currentTool == EditorTool::Scale))
+                if (ImGui::MenuItem("Scale", "3", currentTool == EditorTool::Scale))
                     currentTool = EditorTool::Scale;
-                if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kFileCode) + " Face").c_str(), "4", currentTool == EditorTool::Face))
+                if (ImGui::MenuItem("Rotate", "4", currentTool == EditorTool::Rotate))
+                    currentTool = EditorTool::Rotate;
+                if (ImGui::MenuItem("Face", "5", currentTool == EditorTool::Face))
                     currentTool = EditorTool::Face;
-                if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kGears) + " Brush").c_str(), "5", currentTool == EditorTool::Brush))
+                if (ImGui::MenuItem("Create", "6", currentTool == EditorTool::Brush))
                     currentTool = EditorTool::Brush;
+                ImGui::EndMenu();
+            }
+
+            if (ImGui::BeginMenu("Theme"))
+            {
+                if (ImGui::MenuItem("Dark", nullptr, currentTheme == EditorTheme::Dark))
+                {
+                    currentTheme = EditorTheme::Dark;
+                    applyEditorTheme(currentTheme);
+                    appendConsoleLine(console, "[ui] theme " + std::string(themeName(currentTheme)));
+                }
+                if (ImGui::MenuItem("Light", nullptr, currentTheme == EditorTheme::Light))
+                {
+                    currentTheme = EditorTheme::Light;
+                    applyEditorTheme(currentTheme);
+                    appendConsoleLine(console, "[ui] theme " + std::string(themeName(currentTheme)));
+                }
+                if (ImGui::MenuItem("Classic", nullptr, currentTheme == EditorTheme::Classic))
+                {
+                    currentTheme = EditorTheme::Classic;
+                    applyEditorTheme(currentTheme);
+                    appendConsoleLine(console, "[ui] theme " + std::string(themeName(currentTheme)));
+                }
+                if (ImGui::MenuItem("Studio", nullptr, currentTheme == EditorTheme::Studio))
+                {
+                    currentTheme = EditorTheme::Studio;
+                    applyEditorTheme(currentTheme);
+                    appendConsoleLine(console, "[ui] theme " + std::string(themeName(currentTheme)));
+                }
                 ImGui::EndMenu();
             }
 
@@ -2324,24 +2921,15 @@ int main()
         ImGui::SetNextWindowSize(ImVec2((float)settings.sidebarWidth - 12.0f, (float)device.GetHeight() - (float)topInset - 24.0f), ImGuiCond_Always);
         if (ImGui::Begin("Editor"))
         {
-            ImGui::TextWrapped("Editor de brushes com 4 views. Use Select/Move/Scale/Face/Brush nas vistas ortograficas e 3D.");
+            ImGui::TextWrapped("Editor de brushes com 4 views. As tools vivem nas views ortograficas e no menu de contexto.");
             ImGui::Separator();
 
-            if (ImGui::Button((std::string(ImGuiFontAwesome::kCode) + " Select").c_str()))
-                currentTool = EditorTool::Select;
-            ImGui::SameLine();
-            if (ImGui::Button((std::string(ImGuiFontAwesome::kTerminal) + " Move").c_str()))
-                currentTool = EditorTool::Move;
-            ImGui::SameLine();
-            if (ImGui::Button((std::string(ImGuiFontAwesome::kChevronUp) + " Scale").c_str()))
-                currentTool = EditorTool::Scale;
-            ImGui::SameLine();
-            if (ImGui::Button((std::string(ImGuiFontAwesome::kFileCode) + " Face").c_str()))
-                currentTool = EditorTool::Face;
-            ImGui::SameLine();
-            if (ImGui::Button((std::string(ImGuiFontAwesome::kGears) + " Brush").c_str()))
-                currentTool = EditorTool::Brush;
-            ImGui::Text("Current Tool: %s", toolName(currentTool));
+            // Transparency settings
+            ImGui::Checkbox("Enable Transparency", &settings.enableTransparency);
+            if (settings.enableTransparency)
+            {
+                ImGui::SliderFloat("Opacity", &settings.transparency, 0.0f, 1.0f, "%.2f");
+            }
             ImGui::Separator();
 
             const float panelWidth = ImGui::GetContentRegionAvail().x;
@@ -2354,18 +2942,9 @@ int main()
                 settings.sidebarTopHeight = minTop;
 
             ImGui::BeginChild("##editor_properties", ImVec2(-1.0f, settings.sidebarTopHeight), false);
-            if (ImGui::Button("Seed Test Brushes"))
-            {
-                seedTestBrushes(brushes);
-                selectedBrushes.clear();
-                selectedBrush = brushes.empty() ? -1 : 0;
-                if (selectedBrush >= 0)
-                    selectionAddUnique(selectedBrushes, selectedBrush);
-                appendConsoleLine(console, "[editor] reseeded test brushes");
-            }
-            ImGui::SameLine();
             if (ImGui::Button("Clear Brushes"))
             {
+                pushUndo(undoStack, brushes, redoStack);
                 brushes.clear();
                 selectedBrushes.clear();
                 selectedBrush = -1;
@@ -2379,6 +2958,7 @@ int main()
                 focus = glm::vec3(0.0f);
                 for (EditorView &view : views)
                 {
+                    view.focus = glm::vec3(0.0f);
                     view.orthoSize = 256.0f;
                     view.perspectiveDistance = 720.0f;
                     view.perspectiveYaw = 45.0f;
@@ -2431,13 +3011,16 @@ int main()
                 ImGui::TextWrapped("%s", currentTexturePath.empty() ? "(none)" : currentTexturePath.c_str());
                 ImGuiPropertyGrid::Label("Scene");
                 ImGui::TextWrapped("%s", scenePath.c_str());
-                ImGuiPropertyGrid::Label("Tool");
-                ImGui::TextUnformatted(toolName(currentTool));
                 ImGuiPropertyGrid::Label("Selected Brush");
                 ImGui::Text("%d", selectedBrush);
                 ImGuiPropertyGrid::Label("Selection");
                 ImGui::Text("%d", (int)selectedBrushes.size());
                 ImGuiPropertyGrid::End();
+            }
+
+            if (ImGuiPropertyGrid::Section("CSG Tools", true))
+            {
+                drawCSGPanel(brushes, selectedBrush, selectedBrushes, csgOp, hollowThickness, splitPosition, splitAxis, undoStack, redoStack);
             }
 
             if (ImGuiPropertyGrid::Section("Brush List", true))
@@ -2447,9 +3030,12 @@ int main()
                 {
                     const BrushVolume &b = brushes[i];
                     const glm::vec3 size = b.maxs - b.mins;
+                    std::string fallbackName;
+                    const std::string &displayName = brushDisplayName(b, fallbackName, i);
                     char label[160];
-                    std::snprintf(label, sizeof(label), "%s#%d  (%.0f %.0f %.0f)",
+                    std::snprintf(label, sizeof(label), "%s%s (#%d)  (%.0f %.0f %.0f)",
                                   b.hidden ? "[H] " : "",
+                                  displayName.c_str(),
                                   i, size.x, size.y, size.z);
                     const bool rowSelected = selectionContains(selectedBrushes, i);
                     if (ImGui::Selectable(label, rowSelected))
@@ -2474,6 +3060,7 @@ int main()
                 {
                     if (ImGui::Button((std::string(ImGuiFontAwesome::kFile) + " Duplicate Brush").c_str()))
                     {
+                        pushUndo(undoStack, brushes, redoStack);
                         const float offset = glm::max(settings.snapEnabled ? settings.snapSize : settings.gridStep, 1.0f);
                         std::vector<int> newSelection = cloneSelectedBrushes(brushes, selectedBrushes, offset);
                         selectedBrushes = newSelection;
@@ -2483,6 +3070,7 @@ int main()
                     ImGui::SameLine();
                     if (ImGui::Button("Delete Brush"))
                     {
+                        pushUndo(undoStack, brushes, redoStack);
                         std::vector<int> source = selectedBrushes;
                         std::sort(source.begin(), source.end());
                         source.erase(std::unique(source.begin(), source.end()), source.end());
@@ -2500,6 +3088,7 @@ int main()
                     ImGui::SameLine();
                     if (ImGui::Button("Randomize Colors"))
                     {
+                        pushUndo(undoStack, brushes, redoStack);
                         for (BrushVolume &b : brushes)
                             b.color = randomBrushColor();
                     }
@@ -2534,9 +3123,12 @@ int main()
 
             if (!currentTexturePath.empty() && ImGuiPropertyGrid::Section("Current Texture", true))
             {
-                // Load and display current texture
-                std::string texName = "current_texture_preview";
-                Texture *tex = TextureManager::instance().load(texName, currentTexturePath);
+                // Load current texture preview once per unique texture path.
+                const std::string texName = "current_texture_preview_" + currentTexturePath;
+                TextureManager &textureManager = TextureManager::instance();
+                Texture *tex = textureManager.get(texName);
+                if (!tex)
+                    tex = textureManager.load(texName, currentTexturePath);
                 
                 if (tex)
                 {
@@ -2559,6 +3151,8 @@ int main()
                 ImGuiPropertyGrid::Begin("brush_grid"))
             {
                 BrushVolume &brush = brushes[selectedBrush];
+                if (brush.name.empty())
+                    brush.name = defaultBrushName(selectedBrush);
                 float mins[3] = {brush.mins.x, brush.mins.y, brush.mins.z};
                 float maxs[3] = {brush.maxs.x, brush.maxs.y, brush.maxs.z};
                 float color[3] = {brush.color.x, brush.color.y, brush.color.z};
@@ -2575,6 +3169,8 @@ int main()
                 if (!faceTexturePath.empty())
                     faceTexture = loadEditorTexture(faceTexturePath);
 
+                ImGuiPropertyGrid::Label("Name");
+                ImGui::InputText("##brush_name", &brush.name);
                 ImGuiPropertyGrid::Label("Texture");
                 ImGui::TextWrapped("%s", brush.texturePath.empty() ? "(none)" : brush.texturePath.c_str());
                 if (ImGui::Button("Use Current For Brush"))
@@ -2704,7 +3300,7 @@ int main()
                 ImGuiPropertyGrid::End();
             }
 
-            if (ImGuiPropertyGrid::Section("Focus", true) && ImGuiPropertyGrid::Begin("focus_grid"))
+            if (ImGuiPropertyGrid::Section("3D Focus", true) && ImGuiPropertyGrid::Begin("focus_grid"))
             {
                 float focusValues[3] = {focus.x, focus.y, focus.z};
                 ImGuiPropertyGrid::Label("Position");
@@ -2720,16 +3316,17 @@ int main()
                 ImGuiPropertyGrid::End();
             }
 
-            if (ImGuiPropertyGrid::Section("Controls", true))
+            if (ImGuiPropertyGrid::Section("Help", true))
             {
-                ImGui::BulletText("1 Select, 2 Move, 3 Scale, 4 Face, 5 Brush");
+                ImGui::BulletText("1 Select, 2 Move, 3 Scale, 4 Rotate, 5 Face, 6 Create");
                 ImGui::BulletText("LMB ortho com Select: seleciona brush");
                 ImGui::BulletText("Drag retangulo em Select: multi-selecao (Ctrl para adicionar)");
                 ImGui::BulletText("Ctrl + clique: adiciona/remove da selecao");
                 ImGui::BulletText("LMB ortho com Move: arrasta brush selecionado");
                 ImGui::BulletText("LMB ortho com Scale: brush escala por eixo dominante (face)");
+                ImGui::BulletText("LMB ortho com Rotate: roda em passos de 90 graus com drag");
                 ImGui::BulletText("Mouse wheel sobre uma view: zoom");
-                ImGui::BulletText("RMB na view 2D: popup de centrar/reset");
+                ImGui::BulletText("RMB na view 2D: popup de tools + view/edit");
                 ImGui::BulletText("LMB na view 3D: orbit");
                 ImGui::BulletText("MMB drag: pan (2D e 3D)");
                 ImGui::BulletText("Ctrl+S guarda cena, Ctrl+Shift+S guarda como, Ctrl+O abre");
@@ -2789,6 +3386,7 @@ int main()
                 const float thumbnailSize = 64.0f;
                 const float padding = 4.0f;
                 const int itemsPerRow = (int)((ImGui::GetContentRegionAvail().x - padding) / (thumbnailSize + padding));
+                TextureManager &textureManager = TextureManager::instance();
                 
                 int itemIndex = 0;
                 for (const AssetEntry &asset : assets)
@@ -2797,9 +3395,11 @@ int main()
                         !containsInsensitive(asset.name, assetFilter))
                         continue;
 
-                    // Load texture for thumbnail
-                    std::string texName = "asset_thumb_" + asset.path;
-                    Texture *tex = TextureManager::instance().load(texName, asset.path);
+                    // Load texture thumbnail once and reuse cached handle.
+                    const std::string texName = "asset_thumb_" + asset.path;
+                    Texture *tex = textureManager.get(texName);
+                    if (!tex)
+                        tex = textureManager.load(texName, asset.path);
                     
                     if (itemIndex > 0 && itemIndex % itemsPerRow != 0)
                         ImGui::SameLine();
@@ -2810,7 +3410,7 @@ int main()
                         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.4f, 0.6f, 1.0f, 1.0f));
                     
                     // Use a placeholder texture if loading failed
-                    ImTextureID textureId = (ImTextureID)(intptr_t)(tex ? tex->id : TextureManager::instance().getWhite()->id);
+                    ImTextureID textureId = (ImTextureID)(intptr_t)(tex ? tex->id : textureManager.getWhite()->id);
                     
                     if (ImGui::ImageButton(("##" + std::to_string(itemIndex)).c_str(), textureId, ImVec2(thumbnailSize, thumbnailSize)))
                     {
@@ -2886,6 +3486,8 @@ int main()
                     std::string error;
                     if (loadEditorScene(result.path, brushes, focus, currentTexturePath, error))
                     {
+                        for (EditorView &view : views)
+                            view.focus = focus;
                         scenePath = result.path.string();
                         selectedBrushes.clear();
                         selectedBrush = -1;
@@ -2917,7 +3519,7 @@ int main()
         sceneDialog.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
 
         const int activeViews = layoutViewCount(settings.layoutMode);
-        drawViewToolPalettes(views, activeViews, currentTool);
+        drawViewToolPalettes(views, activeViews, currentTool, toolIcons);
 
         const glm::vec2 mousePos = Input::GetMousePosition();
         EditorViewType hoveredView = EditorViewType::Top;
@@ -2940,7 +3542,7 @@ int main()
         if (hoveredViewPtr && hoveredViewPtr->type != EditorViewType::Perspective)
         {
             hoveredWorld = snapPoint(
-                orthoPointFromScreen(*hoveredViewPtr, focus, mousePos),
+                orthoPointFromScreen(*hoveredViewPtr, hoveredViewPtr->focus, mousePos),
                 settings.snapSize,
                 settings.snapEnabled);
         }
@@ -2953,8 +3555,40 @@ int main()
             if (Input::IsKeyPressed(KEY_ONE)) currentTool = EditorTool::Select;
             if (Input::IsKeyPressed(KEY_TWO)) currentTool = EditorTool::Move;
             if (Input::IsKeyPressed(KEY_THREE)) currentTool = EditorTool::Scale;
-            if (Input::IsKeyPressed(KEY_FOUR)) currentTool = EditorTool::Face;
-            if (Input::IsKeyPressed(KEY_FIVE)) currentTool = EditorTool::Brush;
+            if (Input::IsKeyPressed(KEY_FOUR)) currentTool = EditorTool::Rotate;
+            if (Input::IsKeyPressed(KEY_FIVE)) currentTool = EditorTool::Face;
+            if (Input::IsKeyPressed(KEY_SIX)) currentTool = EditorTool::Brush;
+
+            if (ctrlDown && Input::IsKeyPressed(KEY_Z))
+            {
+                if (popUndo(undoStack, brushes, redoStack))
+                {
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[edit] Undo");
+                }
+            }
+
+            if (ctrlDown && Input::IsKeyPressed(KEY_Y))
+            {
+                if (popRedo(redoStack, brushes, undoStack))
+                {
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[edit] Redo");
+                }
+            }
+
+            if (Input::IsKeyPressed(KEY_X) && selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+            {
+                pushUndo(undoStack, brushes, redoStack);
+                auto pieces = CSG::splitMiddle(brushes[selectedBrush], splitAxis);
+                brushes.erase(brushes.begin() + selectedBrush);
+                for (auto& p : pieces) brushes.push_back(p);
+                selectedBrushes.clear();
+                selectedBrush = -1;
+                appendConsoleLine(console, "[csg] Split middle");
+            }
 
             if (ctrlDown && Input::IsKeyPressed(KEY_S))
             {
@@ -2993,6 +3627,7 @@ int main()
 
             if (ctrlDown && Input::IsKeyPressed(KEY_V) && !brushClipboard.empty())
             {
+                pushUndo(undoStack, brushes, redoStack);
                 const float offset = glm::max(settings.snapEnabled ? settings.snapSize : settings.gridStep, 1.0f);
                 std::vector<int> newSelection = pasteBrushClipboard(brushes, brushClipboard, offset);
                 selectedBrushes = newSelection;
@@ -3002,6 +3637,7 @@ int main()
 
             if (ctrlDown && Input::IsKeyPressed(KEY_D) && !selectedBrushes.empty())
             {
+                pushUndo(undoStack, brushes, redoStack);
                 const float offset = glm::max(settings.snapEnabled ? settings.snapSize : settings.gridStep, 1.0f);
                 std::vector<int> newSelection = cloneSelectedBrushes(brushes, selectedBrushes, offset);
                 selectedBrushes = newSelection;
@@ -3019,6 +3655,7 @@ int main()
 
             if (!selectedBrushes.empty() && Input::IsKeyPressed(KEY_DELETE))
             {
+                pushUndo(undoStack, brushes, redoStack);
                 std::vector<int> source = selectedBrushes;
                 std::sort(source.begin(), source.end());
                 source.erase(std::unique(source.begin(), source.end()), source.end());
@@ -3044,7 +3681,7 @@ int main()
                 if (hoveredViewPtr->type == EditorViewType::Perspective)
                     panFocusInPerspective(focus, *hoveredViewPtr, delta);
                 else
-                    panFocusInOrthoView(focus, *hoveredViewPtr, delta);
+                    panFocusInOrthoView(hoveredViewPtr->focus, *hoveredViewPtr, delta);
             }
 
             const float wheel = Input::GetMouseWheelMoveV();
@@ -3135,16 +3772,18 @@ int main()
                             hoveredWorld,
                             settings.defaultBrushThickness,
                             settings.defaultBrushHeight,
-                            focus,
+                            hoveredViewPtr->focus,
                             currentTexturePath);
-                        brushes.push_back(brush);
-                        selectedBrush = (int)brushes.size() - 1;
+                        brush.name = defaultBrushName((int)brushes.size());
+                        pushUndo(undoStack, brushes, redoStack);
+
+                    brushes.push_back(brush);
+                    selectedBrush = (int)brushes.size() - 1;
                         selectedBrushes.clear();
-                        selectionAddUnique(selectedBrushes, selectedBrush);
+                    selectionAddUnique(selectedBrushes, selectedBrush);
                         pendingBrush.active = false;
                         appendConsoleLine(console,
-                                          "[brush] created brush " + std::to_string(selectedBrush) +
-                                          " tex=" + currentTexturePath);
+                                      "[brush] created brush tex=" + currentTexturePath);
                     }
                 }
                 else if (currentTool == EditorTool::Face)
@@ -3185,6 +3824,22 @@ int main()
                         dragStartWorld = hoveredWorld;
                         dragOriginalBrush = brushes[selectedBrush];
                         appendConsoleLine(console, "[scale] begin brush " + std::to_string(selectedBrush));
+                    }
+                }
+                else if (currentTool == EditorTool::Rotate)
+                {
+                    if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    {
+                        draggingSelection = true;
+                        dragTool = EditorTool::Rotate;
+                        dragView = hoveredViewPtr->type;
+                        dragStartWorld = hoveredWorld;
+                        dragStartMouse = mousePos;
+                        dragOriginalBrush = brushes[selectedBrush];
+                        dragOriginalFace = selectedBrushFace;
+                        dragRotateTurns = 0;
+                        dragRotateCommitted = false;
+                        appendConsoleLine(console, "[rotate] begin brush " + std::to_string(selectedBrush));
                     }
                 }
             }
@@ -3237,6 +3892,27 @@ int main()
                         }
                     }
                 }
+                else if (dragTool == EditorTool::Rotate)
+                {
+                    if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    {
+                        const int turns = rotationTurnsFromMouseDrag(dragView, mousePos - dragStartMouse);
+                        if (turns != 0 && !dragRotateCommitted)
+                        {
+                            pushUndo(undoStack, brushes, redoStack);
+                            dragRotateCommitted = true;
+                        }
+
+                        if (turns != dragRotateTurns || (!dragRotateCommitted && dragRotateTurns != 0))
+                        {
+                            dragRotateTurns = turns;
+                            BrushVolume rotated = dragOriginalBrush;
+                            rotateBrushForView90(rotated, dragView, dragRotateTurns);
+                            brushes[selectedBrush] = rotated;
+                            selectedBrushFace = rotateFaceForView90(dragOriginalFace, dragView, dragRotateTurns);
+                        }
+                    }
+                }
             }
         }
 
@@ -3248,14 +3924,14 @@ int main()
             {
                 const EditorView &selView = views[(size_t)selectionRect.viewIndex];
                 selectionRect.endWorld = snapPoint(
-                    orthoPointFromScreen(selView, focus, mousePos),
+                    orthoPointFromScreen(selView, selView.focus, mousePos),
                     settings.snapSize,
                     settings.snapEnabled);
             }
 
             if (Input::IsMouseReleased(MouseButton::LEFT))
             {
-                const float dragPixels = glm::length(selectionRect.endMouse - selectionRect.startMouse);
+                    const float dragPixels = glm::length(selectionRect.endMouse - selectionRect.startMouse);
                 if (!selectionRect.additive)
                     selectedBrushes.clear();
 
@@ -3304,10 +3980,17 @@ int main()
         {
             draggingSelection = false;
             dragScaleAxis = BrushScaleAxis::None;
+            dragRotateTurns = 0;
+            dragRotateCommitted = false;
             if (selectedBrush >= 0)
-                appendConsoleLine(console,
-                                  std::string(dragTool == EditorTool::Scale ? "[scale] end brush " : "[move] end drag brush ") +
-                                  std::to_string(selectedBrush));
+            {
+                std::string action = "[move] end drag brush ";
+                if (dragTool == EditorTool::Scale)
+                    action = "[scale] end brush ";
+                else if (dragTool == EditorTool::Rotate)
+                    action = "[rotate] end brush ";
+                appendConsoleLine(console, action + std::to_string(selectedBrush));
+            }
         }
 
         ImDrawList *overlay = ImGui::GetBackgroundDrawList();
@@ -3320,8 +4003,15 @@ int main()
                              0.0f,
                              0,
                              1.0f);
-            overlay->AddText(ImVec2((float)view.rect.x + 8.0f, (float)view.rect.y + 8.0f),
-                             IM_COL32(235, 235, 235, 255),
+
+            // Header bar for view label
+            overlay->AddRectFilled(ImVec2((float)view.rect.x, (float)view.rect.y),
+                             ImVec2((float)(view.rect.x + view.rect.w), (float)(view.rect.y + 28.0f)),
+                             IM_COL32(45, 45, 45, 200),
+                             0.0f);
+
+            overlay->AddText(ImVec2((float)view.rect.x + 8.0f, (float)view.rect.y + 6.0f),
+                             IM_COL32(255, 255, 255, 255),
                              view.label);
         }
 
@@ -3358,18 +4048,75 @@ int main()
             if (orthoPopupViewIndex >= 0 && orthoPopupViewIndex < activeViews)
             {
                 EditorView &popupView = views[(size_t)orthoPopupViewIndex];
+                const ImVec2 iconSizeMenu(16, 16);
+
                 ImGui::Text("%s", popupView.label);
+                ImGui::Separator();
+
+                ImGui::TextDisabled("TOOLS:");
+                ImGui::Separator();
+
+                if (toolIcons.select && toolIcons.select->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.select->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("SELECT (1)", nullptr, currentTool == EditorTool::Select))
+                    currentTool = EditorTool::Select;
+
+                if (toolIcons.move && toolIcons.move->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.move->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("MOVE (2)", nullptr, currentTool == EditorTool::Move))
+                    currentTool = EditorTool::Move;
+
+                if (toolIcons.scale && toolIcons.scale->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.scale->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("SCALE (3)", nullptr, currentTool == EditorTool::Scale))
+                    currentTool = EditorTool::Scale;
+
+                if (toolIcons.rotate && toolIcons.rotate->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.rotate->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("ROTATE (4)", nullptr, currentTool == EditorTool::Rotate))
+                    currentTool = EditorTool::Rotate;
+
+                if (toolIcons.face && toolIcons.face->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.face->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("FACE (5)", nullptr, currentTool == EditorTool::Face))
+                    currentTool = EditorTool::Face;
+
+                if (toolIcons.brush && toolIcons.brush->id != 0)
+                {
+                    ImGui::Image((ImTextureID)(intptr_t)toolIcons.brush->id, iconSizeMenu);
+                    ImGui::SameLine();
+                }
+                if (ImGui::MenuItem("CREATE (6)", nullptr, currentTool == EditorTool::Brush))
+                    currentTool = EditorTool::Brush;
+
+                ImGui::Separator();
+                ImGui::TextDisabled("VIEW:");
                 ImGui::Separator();
 
                 if (ImGui::MenuItem("Center Here"))
                 {
-                    centerFocusForView(focus, popupView.type, orthoPopupWorld);
+                    centerFocusForView(popupView.focus, popupView.type, orthoPopupWorld);
                     appendConsoleLine(console, std::string("[view] centered ") + popupView.label + " at mouse");
                 }
 
                 if (ImGui::MenuItem("Center Origin"))
                 {
-                    centerFocusForView(focus, popupView.type, glm::vec3(0.0f));
+                    centerFocusForView(popupView.focus, popupView.type, glm::vec3(0.0f));
                     appendConsoleLine(console, std::string("[view] centered ") + popupView.label + " at origin");
                 }
 
@@ -3381,14 +4128,17 @@ int main()
 
                 if (ImGui::MenuItem("Reset 2D View"))
                 {
-                    centerFocusForView(focus, popupView.type, glm::vec3(0.0f));
+                    centerFocusForView(popupView.focus, popupView.type, glm::vec3(0.0f));
                     popupView.orthoSize = 256.0f;
                     appendConsoleLine(console, std::string("[view] reset 2D view ") + popupView.label);
                 }
 
+                ImGui::Separator();
+                ImGui::TextDisabled("EDIT:");
+                ImGui::Separator();
+
                 if (!selectedBrushes.empty())
                 {
-                    ImGui::Separator();
                     if (ImGui::MenuItem("Clone Selected", "Ctrl+D"))
                     {
                         const float offset = glm::max(settings.snapEnabled ? settings.snapSize : settings.gridStep, 1.0f);
@@ -3428,6 +4178,29 @@ int main()
                         selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
                         appendConsoleLine(console, "[edit] pasted " + std::to_string((int)newSelection.size()) + " brush(es)");
                     }
+                }
+
+                ImGui::Separator();
+                if (ImGui::MenuItem("Clear All Brushes"))
+                {
+                    pushUndo(undoStack, brushes, redoStack);
+                    brushes.clear();
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    pendingBrush.active = false;
+                    appendConsoleLine(console, "[view] cleared all brushes");
+                }
+                if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undoStack.empty()))
+                {
+                    popUndo(undoStack, brushes, redoStack);
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                }
+                if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack.empty()))
+                {
+                    popRedo(redoStack, brushes, undoStack);
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
                 }
             }
             ImGui::EndPopup();
@@ -3508,7 +4281,9 @@ int main()
                              focus,
                              previewEnd,
                              currentTexturePath,
-                             settings.renderingMode);
+                             settings.renderingMode,
+                             settings.enableTransparency,
+                             settings.transparency);
         }
 
         drawScreenOverlay(overlayBatch,

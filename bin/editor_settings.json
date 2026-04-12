@@ -1,48 +1,50 @@
 {
     "assetPanelHeight": 200,
-    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures",
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/b3d/castel/textures",
     "assetViewAsGrid": true,
-    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/b3d/castel/textures/Wall01.jpg",
     "defaultBrushHeight": 128.0,
-    "defaultBrushThickness": 67.0,
+    "defaultBrushThickness": 128.0,
+    "enableTransparency": false,
     "focus": [
-        -294.0057067871094,
-        144.58914184570313,
-        -159.3665008544922
+        0.0,
+        0.0,
+        0.0
     ],
     "gridStep": 32.0,
     "layoutMode": 4,
     "renderingMode": 2,
     "showAxes": true,
     "showGrid": true,
-    "sidebarTopHeight": 553.0,
+    "sidebarTopHeight": 323.0,
     "sidebarWidth": 340,
     "snapEnabled": true,
     "snapSize": 16.0,
+    "transparency": 0.36000001430511475,
     "views": [
         {
-            "orthoSize": 1648.0,
+            "orthoSize": 192.0,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0
         },
         {
-            "orthoSize": 1072.0,
-            "perspectiveDistance": 720.0,
-            "perspectivePitch": 28.0,
-            "perspectiveYaw": 45.0
-        },
-        {
-            "orthoSize": 720.0,
+            "orthoSize": 224.0,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0
         },
         {
             "orthoSize": 256.0,
-            "perspectiveDistance": 1282.0,
-            "perspectivePitch": -2.0,
-            "perspectiveYaw": 85.5
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0
+        },
+        {
+            "orthoSize": 256.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 35.5,
+            "perspectiveYaw": 224.25
         }
     ]
 }

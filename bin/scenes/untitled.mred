@@ -82,6 +82,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1456.0,
         1.0,
@@ -185,6 +186,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1488.75048828125,
         592.0,
@@ -288,6 +290,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1472.75048828125,
         592.0,
@@ -391,6 +394,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         -1144.74951171875,
         592.0,
@@ -494,6 +498,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1463.25048828125,
         592.0,
@@ -597,6 +602,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1447.25048828125,
         592.0,
@@ -700,6 +706,7 @@
           ]
         }
       ],
+      "hidden": false,
       "maxs": [
         1424.0,
         577.0,
@@ -709,6 +716,734 @@
         -1200.0,
         576.0,
         -944.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -260.5057067871094,
+        -304.0,
+        576.0
+      ],
+      "mins": [
+        -294.0057067871094,
+        -512.0,
+        368.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -311.5057067871094,
+        -272.0,
+        208.0
+      ],
+      "mins": [
+        -327.5057067871094,
+        -480.0,
+        0.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -294.0057067871094,
+        -272.0,
+        208.0
+      ],
+      "mins": [
+        -310.0057067871094,
+        -480.0,
+        0.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -310.0057067871094,
+        -464.0,
+        208.0
+      ],
+      "mins": [
+        -311.5057067871094,
+        -480.0,
+        0.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -310.0057067871094,
+        -272.0,
+        208.0
+      ],
+      "mins": [
+        -311.5057067871094,
+        -288.0,
+        0.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -310.0057067871094,
+        -288.0,
+        16.0
+      ],
+      "mins": [
+        -311.5057067871094,
+        -464.0,
+        0.0
+      ],
+      "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
+      "uvOffset": [
+        0.0,
+        0.0
+      ],
+      "uvRotation": 0.0,
+      "uvScale": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "color": [
+        0.5309799313545227,
+        0.5224999785423279,
+        0.949999988079071
+      ],
+      "faceTextures": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "faceUV": [
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "offset": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "hidden": false,
+      "maxs": [
+        -310.0057067871094,
+        -288.0,
+        208.0
+      ],
+      "mins": [
+        -311.5057067871094,
+        -464.0,
+        192.0
       ],
       "texturePath": "/media/projectos/projects/cpp/minirender/assets/maps/oa_rpg3dm/textures/base_wall/bluemetalsupport2e.jpg",
       "uvOffset": [

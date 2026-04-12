@@ -51,6 +51,7 @@ enum class EditorTool
     Select,
     Move,
     Scale,
+    Rotate,
     Face,
     Brush
 };
@@ -67,6 +68,7 @@ struct BrushVolume
     glm::vec3 mins = glm::vec3(0.0f);
     glm::vec3 maxs = glm::vec3(0.0f);
     glm::vec3 color = glm::vec3(0.47f, 0.82f, 1.0f);
+    std::string name;
     bool hidden = false;
     std::string texturePath; // Default texture for all faces
     std::array<std::string, 6> faceTextures = {}; // Textures for each face: +X, -X, +Y, -Y, +Z, -Z
@@ -74,6 +76,17 @@ struct BrushVolume
     glm::vec2 uvOffset = glm::vec2(0.0f);
     glm::vec2 uvScale = glm::vec2(1.0f);
     float uvRotation = 0.0f;
+    bool dirty = false; // Whether the volume has been modified and needs to be reprocessed
+
+    bool isValid() const
+    {
+        return (maxs.x - mins.x) > 1e-4f &&
+               (maxs.y - mins.y) > 1e-4f &&
+               (maxs.z - mins.z) > 1e-4f;
+    }
+
+    glm::vec3 center() const { return (mins + maxs) * 0.5f; }
+    glm::vec3 size()   const { return maxs - mins; }
 };
 
 struct PendingBrush
@@ -89,6 +102,7 @@ struct EditorView
     const char *label = "";
     RectI rect = {};
     Camera camera;
+    glm::vec3 focus = glm::vec3(0.0f);
     glm::vec4 clearColor = glm::vec4(0.12f, 0.12f, 0.14f, 1.0f);
     float orthoSize = 256.0f;
     float perspectiveDistance = 720.0f;

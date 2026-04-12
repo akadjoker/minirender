@@ -1,11 +1,16 @@
 #pragma once
 
 #include <string>
+#include <filesystem>
+
+#include "imgui.h"
 
 #include "ImGuiFileDialog.h"
 #include "SpritePreviewRenderer.hpp"
 #include "SpriteProject.hpp"
 #include "SpriteTheme.hpp"
+
+struct Texture;
 
 class SpriteGeneratorApp
 {
@@ -16,16 +21,30 @@ public:
 
 private:
     void ShowMenuBar();
-    void ShowProjectPanel();
-    void ShowViewsPanel();
-    void ShowAnimationPanel();
-    void ShowSurfacesPanel();
-    void ShowAttachmentsPanel();
-    void ShowExportPanel();
+    void ShowLeftPanel();
+    void ShowRightPanel();
     void ShowPreviewPanel();
     void ShowLogPanel();
     void ShowFileDialog();
-    void ShowRenderPanel();
+
+    void DrawProjectSection();
+    void DrawViewsSection();
+    void DrawAnimationSection();
+    void DrawRenderSection();
+    void DrawSurfacesSection();
+    void DrawAttachmentsSection();
+    void DrawExportSection();
+    void ExportSprites();
+    void CaptureCurrentFrame();
+    void BuildAtlasPreview();
+
+    enum class FileDialogAction
+    {
+        None,
+        LoadModel,
+        LoadTexture,
+        LoadWeapon
+    };
 
     void AppendLog(const std::string& line);
     void SaveProjectSettings();
@@ -41,6 +60,19 @@ private:
     bool showLogPanelWindow = true;
     bool showRenderPanel = true;
     bool previewQuadView = false;
+    bool showAtlasPreview = false;
+    int atlasPreviewWidth = 0;
+    int atlasPreviewHeight = 0;
+    Texture* atlasPreviewTexture = nullptr;
+    int textureTargetSurface = -1;
+    FileDialogAction fileDialogAction = FileDialogAction::None;
+    std::filesystem::path lastModelDirectory;
+    std::filesystem::path lastTextureDirectory;
+    std::filesystem::path lastWeaponDirectory;
+    int attachmentBoneIndex = 0;
+    glm::vec3 attachmentPosition = glm::vec3(0.0f);
+    glm::vec3 attachmentRotation = glm::vec3(0.0f);
+    glm::vec3 attachmentScale = glm::vec3(1.0f);
     int selectedSurface = 0;
     int selectedAttachment = 0;
     bool surfaceVisible = true;

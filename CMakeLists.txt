@@ -14,6 +14,7 @@ add_subdirectory(editor)
 add_subdirectory(mapload_demo)
 add_subdirectory(gridmap_demo)
 add_subdirectory(spritegen)
+add_subdirectory(level_editor)
 
  
  

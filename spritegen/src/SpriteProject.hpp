@@ -11,6 +11,24 @@ enum class SpritePreviewViewMode
     Custom
 };
 
+enum class SpriteFrontDirection
+{
+    Front,
+    Back
+};
+
+enum class SpriteSideDirection
+{
+    Left,
+    Right
+};
+
+enum class SpriteTopDirection
+{
+    Top,
+    Bottom
+};
+
 struct SpriteProject
 {
     std::string projectName = "untitled_sprite_project";
@@ -33,9 +51,13 @@ struct SpriteProject
     int spriteWidth = 128;
     int spriteHeight = 128;
 
-    float previewYaw = 20.0f;
-    float previewPitch = -10.0f;
-    float previewZoom = 1.0f;
+    float customPreviewYaw = 20.0f;
+    float customPreviewPitch = -10.0f;
+    float customPreviewZoom = 1.0f;
+    float orthoPreviewZoom = 1.0f;
+    SpriteFrontDirection frontDirection = SpriteFrontDirection::Front;
+    SpriteSideDirection sideDirection = SpriteSideDirection::Right;
+    SpriteTopDirection topDirection = SpriteTopDirection::Top;
 
     // Background and model transform
     glm::vec4 clearColor = glm::vec4(0.09f, 0.10f, 0.12f, 1.0f);
@@ -54,4 +76,5 @@ struct SpriteProject
     bool exportFrames = true;
     bool exportJson = true;
     bool trimOutput = false;
+    std::string exportPrefix = "";
 };

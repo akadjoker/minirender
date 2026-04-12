@@ -9,21 +9,37 @@
         0.11999999731779099,
         1.0
     ],
-    "currentFrame": 0.0,
+    "currentFrame": 299.0,
+    "customPreviewPitch": -10.0,
+    "customPreviewYaw": 20.0,
+    "customPreviewZoom": 1.0,
     "frameEnd": 299,
     "frameStart": 0,
+    "frontDirection": 0,
+    "lastModelDirectory": "/media/projectos/projects/cpp/minirender/assets/b3d",
+    "lastTextureDirectory": "/media/projectos/projects/cpp/minirender/bin",
+    "lastWeaponDirectory": "/media/projectos/projects/cpp/minirender/bin",
     "modelPath": "/media/projectos/projects/cpp/minirender/assets/b3d/ninja.b3d",
     "modelPosition": [
         0.0,
         0.0,
         0.0
     ],
-    "modelScale": 1.0,
+    "modelRotation": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "modelScale": [
+        1.0,
+        1.0,
+        1.0
+    ],
+    "orthoPreviewZoom": 1.0,
     "outputPath": "bin/sprites",
-    "previewPitch": -10.0,
-    "previewYaw": 20.0,
-    "previewZoom": 1.0,
     "projectName": "untitled_sprite_project",
+    "sideDirection": 1,
     "spriteHeight": 128,
-    "spriteWidth": 128
+    "spriteWidth": 128,
+    "topDirection": 0
 }

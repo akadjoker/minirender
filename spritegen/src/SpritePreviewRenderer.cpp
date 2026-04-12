@@ -6,12 +6,16 @@
 
 #include <SDL2/SDL.h>
 #include <glm/gtc/constants.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include "Animation.hpp"
 #include "Animator.hpp"
 #include "Camera.hpp"
 #include "Manager.hpp"
 #include "Material.hpp"
+#include "Node.hpp"
+#include "Opengl.hpp"
 #include "RenderState.hpp"
 
 namespace
@@ -168,7 +172,13 @@ void SpritePreviewRenderer::clearSceneModel()
     }
 
     mesh_ = nullptr;
+    weaponMesh_ = nullptr;
+    weaponNode_ = nullptr;
     animationNames_.clear();
+    surfaceLabels_.clear();
+    boneLabels_.clear();
+    attachmentBoneName_.clear();
+    activeSocketBone_.clear();
 }
 
 bool SpritePreviewRenderer::loadModel(SpriteProject& project, std::string* errorMessage)
@@ -222,7 +232,14 @@ bool SpritePreviewRenderer::loadModel(SpriteProject& project, std::string* error
 
     loadedModelPath_ = resolvedPath;
     refreshAnimationList();
+    applyDefaultSurfaceTextures();
+    rebuildSurfaceLabels();
+    rebuildBoneLabels();
     syncProjectAnimation(project);
+    if (!animationNames_.empty())
+        project.animationPlaying = true;
+
+    updateAttachmentSocket();
 
     statusText_ = "Loaded " + fsPath.filename().string();
     if (errorMessage)
@@ -248,6 +265,41 @@ void SpritePreviewRenderer::refreshAnimationList()
     }
 }
 
+void SpritePreviewRenderer::rebuildBoneLabels()
+{
+    boneLabels_.clear();
+    if (!mesh_)
+        return;
+
+    boneLabels_.reserve(mesh_->bones.size());
+    for (size_t i = 0; i < mesh_->bones.size(); ++i)
+    {
+        const Bone& bone = mesh_->bones[i];
+        std::string label = bone.name.empty() ? ("Bone " + std::to_string(i)) : bone.name;
+        label += " (#" + std::to_string(i) + ")";
+        boneLabels_.push_back(label);
+    }
+}
+void SpritePreviewRenderer::rebuildSurfaceLabels()
+{
+    surfaceLabels_.clear();
+    if (!mesh_)
+        return;
+
+    surfaceLabels_.reserve(mesh_->surfaces.size());
+    for (size_t i = 0; i < mesh_->surfaces.size(); ++i)
+    {
+        const Surface& surface = mesh_->surfaces[i];
+        std::string label = "Surface " + std::to_string(i);
+        Material* mat = node_ ? node_->getMaterial(surface.material_index) : nullptr;
+        if (mat && !mat->name.empty())
+            label += " (" + mat->name + ")";
+        else
+            label += " (mat " + std::to_string(surface.material_index) + ")";
+        surfaceLabels_.push_back(label);
+    }
+}
+
 int SpritePreviewRenderer::animationFrameMax(const std::string& animationName) const
 {
     if (!mesh_ || animationName.empty())
@@ -261,18 +313,110 @@ int SpritePreviewRenderer::animationFrameMax(const std::string& animationName) c
     return 0;
 }
 
+Material* SpritePreviewRenderer::getOrCreateMaterial(int slot)
+{
+    if (!node_)
+        return nullptr;
+
+    Material* mat = node_->getMaterial(slot);
+    if (!mat)
+    {
+        mat = new Material();
+        mat->name = "spritegen_material_" + std::to_string(slot);
+        node_->setMaterial(slot, mat);
+    }
+    return mat;
+}
+
+void SpritePreviewRenderer::applyDefaultSurfaceTextures()
+{
+    if (!mesh_ || !node_)
+        return;
+
+    Texture* pattern = TextureManager::instance().getPattern();
+    if (!pattern)
+        pattern = TextureManager::instance().getWhite();
+
+    for (const Surface& surface : mesh_->surfaces)
+    {
+        const int slot = surface.material_index;
+        Material* mat = getOrCreateMaterial(slot);
+        if (!mat)
+            continue;
+        if (!mat->hasTexture("u_albedo"))
+            mat->setTexture("u_albedo", pattern);
+    }
+}
+
+bool SpritePreviewRenderer::setSurfaceTexture(int surfaceIndex, const std::string& path, std::string* errorMessage)
+{
+    if (!mesh_ || !node_)
+    {
+        if (errorMessage)
+            *errorMessage = "No model loaded";
+        return false;
+    }
+
+    if (surfaceIndex < 0 || surfaceIndex >= static_cast<int>(mesh_->surfaces.size()))
+    {
+        if (errorMessage)
+            *errorMessage = "Invalid surface index";
+        return false;
+    }
+
+    const Surface& surface = mesh_->surfaces[surfaceIndex];
+    Material* mat = getOrCreateMaterial(surface.material_index);
+    if (!mat)
+    {
+        if (errorMessage)
+            *errorMessage = "Material not available";
+        return false;
+    }
+
+    Texture* texture = nullptr;
+    if (!path.empty())
+    {
+        const std::string name = "spritegen_surface_tex::" + path;
+        texture = TextureManager::instance().load(name, path);
+    }
+    else
+    {
+        texture = TextureManager::instance().getPattern();
+    }
+
+    if (!texture)
+    {
+        if (errorMessage)
+            *errorMessage = "Failed to load texture";
+        return false;
+    }
+
+    mat->setTexture("u_albedo", texture);
+    rebuildSurfaceLabels();
+    return true;
+}
+
+bool SpritePreviewRenderer::resetSurfaceTexture(int surfaceIndex, std::string* errorMessage)
+{
+    return setSurfaceTexture(surfaceIndex, "", errorMessage);
+}
+
 void SpritePreviewRenderer::syncProjectAnimation(SpriteProject& project)
 {
     if (!node_ || !mesh_ || !node_->animator || node_->animator->layerCount() <= 0)
         return;
 
-    if (project.animationName.empty() && !animationNames_.empty())
+    if (!animationNames_.empty())
     {
-        auto idle = std::find(animationNames_.begin(), animationNames_.end(), "idle");
-        project.animationName = (idle != animationNames_.end()) ? *idle : animationNames_.front();
-        project.frameStart = 0;
-        project.frameEnd = animationFrameMax(project.animationName);
-        project.currentFrame = 0.0f;
+        const bool found = std::find(animationNames_.begin(), animationNames_.end(), project.animationName) != animationNames_.end();
+        if (project.animationName.empty() || !found)
+        {
+            auto idle = std::find(animationNames_.begin(), animationNames_.end(), "idle");
+            project.animationName = (idle != animationNames_.end()) ? *idle : animationNames_.front();
+            project.frameStart = 0;
+            project.frameEnd = animationFrameMax(project.animationName);
+            project.currentFrame = 0.0f;
+        }
     }
 
     AnimationLayer* layer = node_->animator->getLayer(0);
@@ -318,6 +462,7 @@ void SpritePreviewRenderer::update(SpriteProject& project, float dt)
 
     syncProjectAnimation(project);
     applyTransformChannels(project);
+    updateAttachmentSocket();
 
     AnimationLayer* layer = node_->animator->getLayer(0);
     if (!layer || project.animationName.empty())
@@ -342,6 +487,115 @@ void SpritePreviewRenderer::update(SpriteProject& project, float dt)
     project.currentFrame = std::clamp(project.currentFrame, start, end);
     layer->setNormalizedTime(std::clamp(project.currentFrame / static_cast<float>(clipMaxFrame), 0.0f, 1.0f));
     scene_.update(0.0f);
+}
+
+glm::mat4 SpritePreviewRenderer::buildAttachmentOffset() const
+{
+    glm::mat4 offset(1.0f);
+    offset = glm::translate(offset, attachmentPosition_);
+    offset *= glm::toMat4(glm::quat(glm::radians(attachmentRotation_)));
+    offset = glm::scale(offset, attachmentScale_);
+    return offset;
+}
+
+void SpritePreviewRenderer::updateAttachmentSocket()
+{
+    if (!node_)
+        return;
+
+    if (!attachmentEnabled_ || !weaponNode_)
+    {
+        if (!activeSocketBone_.empty())
+        {
+            node_->removeSocket(activeSocketBone_);
+            activeSocketBone_.clear();
+        }
+        return;
+    }
+
+    if (attachmentBoneName_.empty())
+        return;
+
+    if (activeSocketBone_ != attachmentBoneName_)
+    {
+        if (!activeSocketBone_.empty())
+            node_->removeSocket(activeSocketBone_);
+        node_->addSocket(attachmentBoneName_, weaponNode_, buildAttachmentOffset());
+        activeSocketBone_ = attachmentBoneName_;
+    }
+    else if (auto* socket = node_->getSocket(activeSocketBone_))
+    {
+        socket->localOffset = buildAttachmentOffset();
+    }
+}
+
+bool SpritePreviewRenderer::loadWeapon(const std::string& path, std::string* errorMessage)
+{
+    if (!node_)
+    {
+        if (errorMessage)
+            *errorMessage = "Load a model first";
+        return false;
+    }
+
+    if (path.empty())
+    {
+        if (weaponNode_)
+            scene_.remove(weaponNode_);
+        weaponNode_ = nullptr;
+        weaponMesh_ = nullptr;
+        updateAttachmentSocket();
+        return true;
+    }
+
+    const std::filesystem::path fsPath(path);
+    if (!std::filesystem::exists(fsPath))
+    {
+        if (errorMessage)
+            *errorMessage = "Weapon path not found";
+        return false;
+    }
+
+    const std::string resourceName = "spritegen_weapon_mesh";
+    AnimatedMeshManager::instance().unload(resourceName);
+    weaponMesh_ = AnimatedMeshManager::instance().load(resourceName, path, fsPath.parent_path().string());
+    if (!weaponMesh_)
+    {
+        if (errorMessage)
+            *errorMessage = "Failed to load weapon mesh";
+        return false;
+    }
+
+    if (weaponNode_)
+        scene_.remove(weaponNode_);
+    weaponNode_ = scene_.createAnimatedMeshNode("spritegen_weapon_node", weaponMesh_);
+    weaponNode_->renderType = RenderType::Skinning;
+    weaponNode_->setScale(glm::vec3(1.0f));
+
+    updateAttachmentSocket();
+    return true;
+}
+
+void SpritePreviewRenderer::setAttachmentBoneName(const std::string& boneName)
+{
+    attachmentBoneName_ = boneName;
+    updateAttachmentSocket();
+}
+
+void SpritePreviewRenderer::setAttachmentTransform(const glm::vec3& position,
+                                                   const glm::vec3& rotation,
+                                                   const glm::vec3& scale)
+{
+    attachmentPosition_ = position;
+    attachmentRotation_ = rotation;
+    attachmentScale_ = scale;
+    updateAttachmentSocket();
+}
+
+void SpritePreviewRenderer::setAttachmentEnabled(bool enabled)
+{
+    attachmentEnabled_ = enabled;
+    updateAttachmentSocket();
 }
 
 bool SpritePreviewRenderer::ensureRenderTarget(SpritePreviewViewMode mode, int width, int height)
@@ -373,7 +627,9 @@ void SpritePreviewRenderer::configureCamera(const SpriteProject& project, Sprite
     camera_->setViewport(0, 0, width, height);
     camera_->clearColorVal = project.clearColor;
 
-    BoundingBox bounds = mesh_ ? mesh_->computeSkinnedAABB() : BoundingBox{};
+    // Use the mesh rest bounds for stable framing so the camera and gizmo
+    // don't drift with per-frame animation changes.
+    BoundingBox bounds = mesh_ ? mesh_->aabb : BoundingBox{};
     glm::vec3 center(0.0f);
     glm::vec3 extents(1.0f);
     if (bounds.is_valid())
@@ -383,7 +639,9 @@ void SpritePreviewRenderer::configureCamera(const SpriteProject& project, Sprite
     }
 
     const float halfMax = std::max(std::max(extents.x, extents.y), extents.z) * 0.5f;
-    const float framedRadius = std::max(halfMax, 0.5f) / std::max(project.previewZoom, 0.1f);
+    const float customZoom = std::max(project.customPreviewZoom, 0.1f);
+    const float orthoZoom = std::max(project.orthoPreviewZoom, 0.1f);
+    const float framedRadius = std::max(halfMax, 0.5f) / (mode == SpritePreviewViewMode::Custom ? customZoom : orthoZoom);
 
     if (mode == SpritePreviewViewMode::Custom)
     {
@@ -391,8 +649,8 @@ void SpritePreviewRenderer::configureCamera(const SpriteProject& project, Sprite
         camera_->setFov(40.0f);
         camera_->setViewPlanes(0.05f, 1000.0f);
 
-        const float yawRad = glm::radians(project.previewYaw);
-        const float pitchRad = glm::radians(project.previewPitch);
+        const float yawRad = glm::radians(project.customPreviewYaw);
+        const float pitchRad = glm::radians(project.customPreviewPitch);
         const float distance = framedRadius * 3.4f + 1.0f;
 
         // Clamp pitch to avoid gimbal lock
@@ -409,23 +667,29 @@ void SpritePreviewRenderer::configureCamera(const SpriteProject& project, Sprite
     {
         camera_->projectionType = ProjectionType::Orthographic;
         camera_->setViewPlanes(-1000.0f, 1000.0f);
-        camera_->orthoSize = std::max(extents.y, std::max(extents.x, extents.z)) * 0.75f / std::max(project.previewZoom, 0.1f);
+        camera_->orthoSize = std::max(extents.y, std::max(extents.x, extents.z)) * 0.75f / orthoZoom;
         const float distance = framedRadius * 6.0f;
 
         if (mode == SpritePreviewViewMode::Front)
         {
-            camera_->setPosition(center + glm::vec3(0.0f, 0.0f, distance));
+            const float dir = project.frontDirection == SpriteFrontDirection::Front ? 1.0f : -1.0f;
+            camera_->setPosition(center + glm::vec3(0.0f, 0.0f, distance * dir));
             camera_->lookAt(center);
         }
         else if (mode == SpritePreviewViewMode::Side)
         {
-            camera_->setPosition(center + glm::vec3(distance, 0.0f, 0.0f));
+            const float dir = project.sideDirection == SpriteSideDirection::Right ? 1.0f : -1.0f;
+            camera_->setPosition(center + glm::vec3(distance * dir, 0.0f, 0.0f));
             camera_->lookAt(center);
         }
         else
         {
-            camera_->setPosition(center + glm::vec3(0.0f, distance, 0.0f));
-            camera_->lookAt(center, glm::vec3(0.0f, 0.0f, -1.0f));
+            const float dir = project.topDirection == SpriteTopDirection::Top ? 1.0f : -1.0f;
+            camera_->setPosition(center + glm::vec3(0.0f, distance * dir, 0.0f));
+            camera_->lookAt(center,
+                            project.topDirection == SpriteTopDirection::Top
+                                ? glm::vec3(0.0f, 0.0f, -1.0f)
+                                : glm::vec3(0.0f, 0.0f, 1.0f));
         }
     }
 
@@ -441,6 +705,7 @@ void SpritePreviewRenderer::renderSceneToTarget(const SpriteProject& project, Sp
     configureCamera(project, mode, target.width, target.height);
 
     scene_.setCamera(camera_);
+    scene_.update(0.0f);
     scene_.beginPass();
     scene_.setShader(skinnedShader_);
 
@@ -471,4 +736,69 @@ Texture* SpritePreviewRenderer::renderView(const SpriteProject& project, SpriteP
 
     renderSceneToTarget(project, mode, slot);
     return slot.target->colorTex();
+}
+
+bool SpritePreviewRenderer::prepareCamera(const SpriteProject& project,
+                                          SpritePreviewViewMode mode,
+                                          int width,
+                                          int height)
+{
+    if (!camera_)
+        return false;
+    configureCamera(project, mode, width, height);
+    return true;
+}
+
+const glm::mat4& SpritePreviewRenderer::cameraView() const
+{
+    static glm::mat4 identity(1.0f);
+    return camera_ ? camera_->view : identity;
+}
+
+const glm::mat4& SpritePreviewRenderer::cameraProj() const
+{
+    static glm::mat4 identity(1.0f);
+    return camera_ ? camera_->projection : identity;
+}
+
+std::unique_ptr<Pixmap> SpritePreviewRenderer::renderToPixmap(const SpriteProject& project,
+                                                              SpritePreviewViewMode mode,
+                                                              int width,
+                                                              int height,
+                                                              std::string* errorMessage)
+{
+    if (!ensureRenderTarget(mode, width, height))
+    {
+        if (errorMessage)
+            *errorMessage = "Render target not ready";
+        return nullptr;
+    }
+
+    ViewTarget& slot = viewTargets_[viewIndex(mode)];
+    if (!mesh_ || !node_)
+    {
+        if (errorMessage)
+            *errorMessage = "No model loaded";
+        return nullptr;
+    }
+
+    renderSceneToTarget(project, mode, slot);
+
+    auto out = std::make_unique<Pixmap>(width, height, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, slot.target->fbo());
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, out->pixels);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    out->FlipVertical();
+
+    if (!project.transparentBackground && out->pixels)
+    {
+        const int pixelCount = out->width * out->height;
+        for (int i = 0; i < pixelCount; ++i)
+            out->pixels[i * out->components + 3] = 255;
+    }
+
+    return out;
 }

@@ -1,4 +1,4 @@
-project(editor)
+project(spritegen)
 cmake_policy(SET CMP0072 NEW)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -25,21 +25,18 @@ add_compile_options(
     -funsigned-char
 )
 
-add_executable(editor
-    src/EditorConvexBrushOps.cpp
-    src/EditorBrushGeometryOps.cpp
-    src/EditorBrushOps.cpp
+add_executable(spritegen
+    src/SpriteGeneratorApp.cpp
+    src/SpritePreviewRenderer.cpp
+    src/SpriteTheme.cpp
     src/main.cpp
-    src/EditorSceneIO.cpp
-    src/EditorTheme.cpp
-    src/EditorViewOps.cpp
 )
 
 if (WIN32)
     set(LIBS_DIR "E:/windows/libs")
-    target_include_directories(editor PUBLIC "${LIBS_DIR}/include" include src)
+    target_include_directories(spritegen PUBLIC "${LIBS_DIR}/include" include src)
 else()
-    target_include_directories(editor PUBLIC
+    target_include_directories(spritegen PUBLIC
         include
         src
         ${CMAKE_SOURCE_DIR}/vendor/imgui
@@ -49,18 +46,18 @@ endif()
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
     if (UNIX)
-        target_compile_options(editor PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
-        target_link_options(editor PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
+        target_compile_options(spritegen PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
+        target_link_options(spritegen PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
     endif()
 elseif(CMAKE_BUILD_TYPE MATCHES Release)
-    target_compile_options(editor PRIVATE -O3 -DNDEBUG)
-    target_link_options(editor PRIVATE -O3 -DNDEBUG)
+    target_compile_options(spritegen PRIVATE -O3 -DNDEBUG)
+    target_link_options(spritegen PRIVATE -O3 -DNDEBUG)
 endif()
 
 if (WIN32)
-    target_link_libraries(editor core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib" Winmm.lib opengl32.lib)
+    target_link_libraries(spritegen core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib" Winmm.lib opengl32.lib)
 endif()
 
 if (UNIX)
-    target_link_libraries(editor core imgui m SDL2 GL)
+    target_link_libraries(spritegen core imgui m SDL2 GL)
 endif()

@@ -1,0 +1,29 @@
+{
+    "animationFps": 12.0,
+    "animationLoop": true,
+    "animationName": "default",
+    "animationPlaying": true,
+    "clearColor": [
+        0.09000000357627869,
+        0.10000000149011612,
+        0.11999999731779099,
+        1.0
+    ],
+    "currentFrame": 0.0,
+    "frameEnd": 299,
+    "frameStart": 0,
+    "modelPath": "/media/projectos/projects/cpp/minirender/assets/b3d/ninja.b3d",
+    "modelPosition": [
+        0.0,
+        0.0,
+        0.0
+    ],
+    "modelScale": 1.0,
+    "outputPath": "bin/sprites",
+    "previewPitch": -10.0,
+    "previewYaw": 20.0,
+    "previewZoom": 1.0,
+    "projectName": "untitled_sprite_project",
+    "spriteHeight": 128,
+    "spriteWidth": 128
+}

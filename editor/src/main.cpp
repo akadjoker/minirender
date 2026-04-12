@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include "Camera.hpp"
 #include "CSG.hpp"
 #include "Device.hpp"
+#include "EditorConvexBrushOps.hpp"
 #include "EditorBrushGeometryOps.hpp"
 #include "EditorBrushOps.hpp"
 #include "EditorData.hpp"
@@ -75,6 +77,7 @@ struct ToolIcons
         case EditorTool::Scale: return scale;
         case EditorTool::Rotate: return rotate;
         case EditorTool::Face: return face;
+        case EditorTool::Clip: return nullptr;
         case EditorTool::Brush: return brush;
         }
         return nullptr;
@@ -96,6 +99,7 @@ static const char *toolName(EditorTool tool)
     case EditorTool::Scale: return "Scale";
     case EditorTool::Rotate: return "Rotate";
     case EditorTool::Face: return "Face";
+    case EditorTool::Clip: return "Clip";
     case EditorTool::Brush: return "Create";
     }
     return "Tool";
@@ -110,7 +114,8 @@ static const char *toolShortcut(EditorTool tool)
     case EditorTool::Scale: return "3";
     case EditorTool::Rotate: return "4";
     case EditorTool::Face: return "5";
-    case EditorTool::Brush: return "6";
+    case EditorTool::Clip: return "6";
+    case EditorTool::Brush: return "7";
     }
     return "";
 }
@@ -156,6 +161,7 @@ static void drawViewToolPalettes(const std::array<EditorView, 4> &views,
         EditorTool::Scale,
         EditorTool::Rotate,
         EditorTool::Face,
+        EditorTool::Clip,
         EditorTool::Brush,
     };
 
@@ -453,6 +459,270 @@ static void applyLoadedSceneEntities(const std::vector<EditorEntity> &loadedEnti
     ensureWorldspawnEntity(worldspawnEntity);
 }
 
+static int countConvexBrushesInScene(const EditorEntity &worldspawnEntity,
+                                     const std::vector<EditorEntity> &sceneEntities)
+{
+    int total = (int)worldspawnEntity.convexBrushes.size();
+    for (const EditorEntity &entity : sceneEntities)
+        total += (int)entity.convexBrushes.size();
+    return total;
+}
+
+static size_t extraConvexBrushStartIndex(const EditorEntity &entity)
+{
+    return std::min(entity.convexBrushes.size(), entity.brushes.size());
+}
+
+static size_t extraConvexBrushCount(const EditorEntity &entity)
+{
+    return entity.convexBrushes.size() - extraConvexBrushStartIndex(entity);
+}
+
+static void syncEntityConvexBrushes(EditorEntity &entity)
+{
+    const size_t legacyCount = entity.brushes.size();
+    if (entity.convexBrushes.size() < legacyCount)
+        entity.convexBrushes.reserve(legacyCount);
+
+    for (size_t i = 0; i < legacyCount; ++i)
+    {
+        const EditorBrush convex = makeConvexBrushFromVolume(entity.brushes[i]);
+        if (i < entity.convexBrushes.size())
+            entity.convexBrushes[i] = convex;
+        else
+            entity.convexBrushes.push_back(convex);
+    }
+}
+
+static void syncSceneConvexBrushes(EditorEntity &worldspawnEntity,
+                                   std::vector<EditorEntity> &sceneEntities)
+{
+    syncEntityConvexBrushes(worldspawnEntity);
+    for (EditorEntity &entity : sceneEntities)
+        syncEntityConvexBrushes(entity);
+}
+
+static int extraConvexBrushActualIndex(const EditorEntity &entity, int extraIndex)
+{
+    if (extraIndex < 0)
+        return -1;
+    const size_t start = extraConvexBrushStartIndex(entity);
+    const size_t actual = start + (size_t)extraIndex;
+    if (actual >= entity.convexBrushes.size())
+        return -1;
+    return (int)actual;
+}
+
+static EditorBrush *getExtraConvexBrush(EditorEntity &entity, int extraIndex)
+{
+    const int actualIndex = extraConvexBrushActualIndex(entity, extraIndex);
+    if (actualIndex < 0)
+        return nullptr;
+    return &entity.convexBrushes[(size_t)actualIndex];
+}
+
+static const char *convexBrushPrimitiveName(EditorBrushPrimitive primitive)
+{
+    switch (primitive)
+    {
+    case EditorBrushPrimitive::Box: return "Box";
+    case EditorBrushPrimitive::Wedge: return "Ramp";
+    case EditorBrushPrimitive::Cylinder: return "Cylinder";
+    case EditorBrushPrimitive::Custom: break;
+    }
+    return "Brush";
+}
+
+static std::string convexBrushDisplayName(const EditorBrush &brush, int index)
+{
+    if (!brush.name.empty())
+        return brush.name;
+    return std::string(convexBrushPrimitiveName(brush.primitive)) + " " + std::to_string(index + 1);
+}
+
+static bool convexBrushBounds(const EditorBrush &brush,
+                              glm::vec3 &outMins,
+                              glm::vec3 &outMaxs)
+{
+    const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+    bool foundVertex = false;
+
+    for (const EditorConvexFacePolygon &polygon : polygons)
+    {
+        for (const glm::vec3 &vertex : polygon.vertices)
+        {
+            if (!foundVertex)
+            {
+                outMins = vertex;
+                outMaxs = vertex;
+                foundVertex = true;
+            }
+            else
+            {
+                outMins = glm::min(outMins, vertex);
+                outMaxs = glm::max(outMaxs, vertex);
+            }
+        }
+    }
+
+    return foundVertex;
+}
+
+static void translateConvexBrush(EditorBrush &brush, const glm::vec3 &delta)
+{
+    if (glm::length2(delta) <= 1e-8f)
+        return;
+
+    for (EditorBrushFace &face : brush.faces)
+    {
+        for (glm::vec3 &point : face.planePoints)
+            point += delta;
+    }
+    brush.dirty = true;
+}
+
+static bool pointInScreenPolygon(const std::vector<glm::vec2> &polygon, const glm::vec2 &point)
+{
+    if (polygon.size() < 3)
+        return false;
+
+    bool inside = false;
+    for (size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++)
+    {
+        const glm::vec2 &a = polygon[i];
+        const glm::vec2 &b = polygon[j];
+        const bool crosses = ((a.y > point.y) != (b.y > point.y)) &&
+                             (point.x < (b.x - a.x) * (point.y - a.y) / ((b.y - a.y) + 1e-6f) + a.x);
+        if (crosses)
+            inside = !inside;
+    }
+    return inside;
+}
+
+struct PendingClip
+{
+    bool active = false;
+    EditorViewType view = EditorViewType::Top;
+    glm::vec3 start = glm::vec3(0.0f);
+};
+
+static glm::vec3 convexFaceNormal(const EditorBrushFace &face)
+{
+    const glm::vec3 normal = glm::cross(face.planePoints[1] - face.planePoints[0],
+                                        face.planePoints[2] - face.planePoints[0]);
+    if (glm::length2(normal) <= 1e-8f)
+        return glm::vec3(0.0f);
+    return glm::normalize(normal);
+}
+
+static bool buildClipPlaneFromView(EditorViewType view,
+                                   const glm::vec3 &start,
+                                   const glm::vec3 &end,
+                                   glm::vec3 &planePoint,
+                                   glm::vec3 &planeNormal)
+{
+    glm::vec3 lineDir(0.0f);
+    glm::vec3 viewAxis(0.0f);
+
+    switch (view)
+    {
+    case EditorViewType::Top:
+    case EditorViewType::Bottom:
+        lineDir = glm::vec3(end.x - start.x, 0.0f, end.z - start.z);
+        viewAxis = glm::vec3(0.0f, 1.0f, 0.0f);
+        break;
+    case EditorViewType::Front:
+    case EditorViewType::Back:
+        lineDir = glm::vec3(end.x - start.x, end.y - start.y, 0.0f);
+        viewAxis = glm::vec3(0.0f, 0.0f, 1.0f);
+        break;
+    case EditorViewType::Left:
+    case EditorViewType::Right:
+        lineDir = glm::vec3(0.0f, end.y - start.y, end.z - start.z);
+        viewAxis = glm::vec3(1.0f, 0.0f, 0.0f);
+        break;
+    case EditorViewType::Perspective:
+        return false;
+    }
+
+    if (glm::length2(lineDir) <= 1e-8f)
+        return false;
+
+    planePoint = start;
+    planeNormal = glm::cross(viewAxis, glm::normalize(lineDir));
+    return glm::length2(planeNormal) > 1e-8f;
+}
+
+static bool findConvexFaceAtScreenPos(const EditorBrush &brush,
+                                      const EditorView &view,
+                                      const glm::vec2 &mousePos,
+                                      int &outFaceIndex)
+{
+    outFaceIndex = -1;
+    float bestDepth = 1e30f;
+    float bestDistance2 = 1e30f;
+
+    for (const EditorConvexFacePolygon &polygon : buildConvexFacePolygons(brush))
+    {
+        if (polygon.vertices.size() < 3)
+            continue;
+
+        std::vector<glm::vec2> screenPolygon;
+        screenPolygon.reserve(polygon.vertices.size());
+        float depthSum = 0.0f;
+        bool validProjection = true;
+        for (const glm::vec3 &vertex : polygon.vertices)
+        {
+            const glm::vec4 clip = view.camera.viewProjection * glm::vec4(vertex, 1.0f);
+            if (std::fabs(clip.w) <= 1e-6f)
+            {
+                validProjection = false;
+                break;
+            }
+
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            if (view.type == EditorViewType::Perspective && (ndc.z < -1.0f || ndc.z > 1.0f))
+            {
+                validProjection = false;
+                break;
+            }
+
+            screenPolygon.push_back(glm::vec2(
+                (float)view.rect.x + ((ndc.x * 0.5f) + 0.5f) * (float)view.rect.w,
+                (float)view.rect.y + (1.0f - ((ndc.y * 0.5f) + 0.5f)) * (float)view.rect.h));
+            depthSum += ndc.z;
+        }
+
+        if (!validProjection || !pointInScreenPolygon(screenPolygon, mousePos))
+            continue;
+
+        glm::vec2 center(0.0f);
+        for (const glm::vec2 &screenPoint : screenPolygon)
+            center += screenPoint;
+        center /= (float)screenPolygon.size();
+
+        const float depth = depthSum / (float)screenPolygon.size();
+        const float distance2 = glm::length2(mousePos - center);
+        if (view.type == EditorViewType::Perspective)
+        {
+            if (depth < bestDepth - 1e-4f ||
+                (std::fabs(depth - bestDepth) <= 1e-4f && distance2 < bestDistance2))
+            {
+                bestDepth = depth;
+                bestDistance2 = distance2;
+                outFaceIndex = polygon.faceIndex;
+            }
+        }
+        else if (distance2 < bestDistance2)
+        {
+            bestDistance2 = distance2;
+            outFaceIndex = polygon.faceIndex;
+        }
+    }
+
+    return outFaceIndex >= 0;
+}
+
 static void drawGridForView(RenderBatch &batch,
                             EditorViewType type,
                             const glm::vec3 &focus,
@@ -605,6 +875,7 @@ static Texture *loadEditorTexture(const std::string &path)
 static glm::vec2 computeBrushUV(const BrushVolume &brush,
                                 const BrushFaceGeometry &face,
                                 const glm::vec3 &p,
+                                bool textureLock,
                                 float texWidth,
                                 float texHeight)
 {
@@ -655,10 +926,11 @@ static glm::vec2 computeBrushUV(const BrushVolume &brush,
     const float safeTexH = glm::max(texHeight, 1.0f);
     const float safeScaleU = std::fabs(combinedScale.x) > 1e-6f ? combinedScale.x : 1.0f;
     const float safeScaleV = std::fabs(combinedScale.y) > 1e-6f ? combinedScale.y : 1.0f;
+    const glm::vec3 samplePoint = textureLock ? (p - face.p0) : p;
 
     return glm::vec2(
-        glm::dot(p, uRot) / (safeTexW * safeScaleU) + combinedOffset.x,
-        glm::dot(p, vRot) / (safeTexH * safeScaleV) + combinedOffset.y);
+        glm::dot(samplePoint, uRot) / (safeTexW * safeScaleU) + combinedOffset.x,
+        glm::dot(samplePoint, vRot) / (safeTexH * safeScaleV) + combinedOffset.y);
 }
 
 static glm::vec2 brushFaceWorldSize(const BrushVolume &brush, int faceIndex)
@@ -762,7 +1034,7 @@ static void drawBrushSolid(RenderBatch &batch, const BrushVolume &brush)
     }
 }
 
-static void drawBrushTextured(RenderBatch &batch, const BrushVolume &brush)
+static void drawBrushTextured(RenderBatch &batch, const BrushVolume &brush, bool textureLock)
 {
     const auto faces = buildBrushFaces(brush);
     for (const BrushFaceGeometry &face : faces)
@@ -773,10 +1045,10 @@ static void drawBrushTextured(RenderBatch &batch, const BrushVolume &brush)
         const float texW = (texture && texture->width > 0) ? (float)texture->width : 1.0f;
         const float texH = (texture && texture->height > 0) ? (float)texture->height : 1.0f;
 
-        const glm::vec2 uv0 = computeBrushUV(brush, face, face.p0, texW, texH);
-        const glm::vec2 uv1 = computeBrushUV(brush, face, face.p1, texW, texH);
-        const glm::vec2 uv2 = computeBrushUV(brush, face, face.p2, texW, texH);
-        const glm::vec2 uv3 = computeBrushUV(brush, face, face.p3, texW, texH);
+        const glm::vec2 uv0 = computeBrushUV(brush, face, face.p0, textureLock, texW, texH);
+        const glm::vec2 uv1 = computeBrushUV(brush, face, face.p1, textureLock, texW, texH);
+        const glm::vec2 uv2 = computeBrushUV(brush, face, face.p2, textureLock, texW, texH);
+        const glm::vec2 uv3 = computeBrushUV(brush, face, face.p3, textureLock, texW, texH);
 
         batch.Triangle(face.p0, face.p1, face.p2, uv0, uv1, uv2);
         batch.Triangle(face.p0, face.p2, face.p3, uv0, uv2, uv3);
@@ -850,6 +1122,7 @@ static void drawBrushes(RenderBatch &batch,
                         float defaultBrushHeight,
                         const glm::vec3 &focus,
                         const std::string &currentTexturePath,
+                        bool textureLock,
                         EditorRenderingMode renderingMode,
                         bool enableTransparency = false,
                         float transparency = 1.0f)
@@ -891,7 +1164,7 @@ static void drawBrushes(RenderBatch &batch,
         else if (renderingMode == EditorRenderingMode::Textured)
         {
             batch.SetColor(255, 255, 255, alphaValue);
-            drawBrushTextured(batch, brush);
+            drawBrushTextured(batch, brush, textureLock);
             if (isSelected)
             {
                 batch.SetColor(255, 180, 70, alphaValue);
@@ -940,7 +1213,7 @@ static void drawBrushes(RenderBatch &batch,
         else if (renderingMode == EditorRenderingMode::Textured)
         {
             batch.SetColor(255, 255, 255, alphaValue);
-            drawBrushTextured(batch, preview);
+            drawBrushTextured(batch, preview, textureLock);
             batch.SetColor(255, 210, 80, alphaValue);
             drawBrushWireframe(batch, preview);
         }
@@ -1024,6 +1297,277 @@ static void drawEntities(RenderBatch &batch,
             continue;
         drawEntityMarker(batch, entity, i == selectedEntity, markerSize, alphaValue);
     }
+}
+
+static glm::vec2 computeConvexFaceUv(const EditorBrushFace &face,
+                                     const glm::vec3 &p,
+                                     bool textureLock,
+                                     float texWidth,
+                                     float texHeight)
+{
+    glm::vec3 normal = glm::cross(face.planePoints[1] - face.planePoints[0],
+                                  face.planePoints[2] - face.planePoints[0]);
+    if (glm::length2(normal) <= 1e-8f)
+        normal = glm::vec3(0.0f, 1.0f, 0.0f);
+    else
+        normal = glm::normalize(normal);
+
+    glm::vec3 tangent = face.planePoints[1] - face.planePoints[0];
+    if (glm::length2(tangent) <= 1e-8f)
+        tangent = glm::cross(normal, glm::vec3(0.0f, 1.0f, 0.0f));
+    if (glm::length2(tangent) <= 1e-8f)
+        tangent = glm::cross(normal, glm::vec3(1.0f, 0.0f, 0.0f));
+    tangent = glm::normalize(tangent);
+    const glm::vec3 bitangent = glm::normalize(glm::cross(normal, tangent));
+
+    const float angle = glm::radians(face.uvRotation);
+    const float c = std::cos(angle);
+    const float s = std::sin(angle);
+    const glm::vec3 uAxis = tangent * c - bitangent * s;
+    const glm::vec3 vAxis = tangent * s + bitangent * c;
+
+    const float safeTexW = glm::max(texWidth, 1.0f);
+    const float safeTexH = glm::max(texHeight, 1.0f);
+    const float safeScaleU = std::fabs(face.uvScale.x) > 1e-6f ? face.uvScale.x : 1.0f;
+    const float safeScaleV = std::fabs(face.uvScale.y) > 1e-6f ? face.uvScale.y : 1.0f;
+    const glm::vec3 localPoint = textureLock ? (p - face.planePoints[0]) : p;
+
+    return glm::vec2(
+        glm::dot(localPoint, uAxis) / (safeTexW * safeScaleU) + face.uvOffset.x,
+        glm::dot(localPoint, vAxis) / (safeTexH * safeScaleV) + face.uvOffset.y);
+}
+
+static void drawConvexBrushWireframe(RenderBatch &batch, const EditorBrush &brush)
+{
+    const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+    for (const EditorConvexFacePolygon &polygon : polygons)
+    {
+        if (polygon.vertices.size() < 2)
+            continue;
+        for (size_t i = 0; i < polygon.vertices.size(); ++i)
+        {
+            const glm::vec3 &a = polygon.vertices[i];
+            const glm::vec3 &b = polygon.vertices[(i + 1) % polygon.vertices.size()];
+            batch.Line3D(a, b);
+        }
+    }
+}
+
+static void drawConvexBrushSolid(RenderBatch &batch, const EditorBrush &brush)
+{
+    const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+    for (const EditorConvexFacePolygon &polygon : polygons)
+    {
+        if (polygon.vertices.size() < 3)
+            continue;
+        for (size_t i = 1; i + 1 < polygon.vertices.size(); ++i)
+            batch.Triangle(polygon.vertices[0], polygon.vertices[i], polygon.vertices[i + 1]);
+    }
+}
+
+static void drawConvexBrushTextured(RenderBatch &batch, const EditorBrush &brush, bool textureLock)
+{
+    const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+    for (const EditorConvexFacePolygon &polygon : polygons)
+    {
+        if (polygon.faceIndex < 0 || polygon.faceIndex >= (int)brush.faces.size() || polygon.vertices.size() < 3)
+            continue;
+
+        const EditorBrushFace &face = brush.faces[(size_t)polygon.faceIndex];
+        Texture *texture = face.texturePath.empty() ? TextureManager::instance().getWhite()
+                                                    : loadEditorTexture(face.texturePath);
+        batch.SetTexture(texture ? texture->id : 0u);
+        const float texW = (texture && texture->width > 0) ? (float)texture->width : 1.0f;
+        const float texH = (texture && texture->height > 0) ? (float)texture->height : 1.0f;
+
+        for (size_t i = 1; i + 1 < polygon.vertices.size(); ++i)
+        {
+            const glm::vec3 &p0 = polygon.vertices[0];
+            const glm::vec3 &p1 = polygon.vertices[i];
+            const glm::vec3 &p2 = polygon.vertices[i + 1];
+            batch.Triangle(p0,
+                           p1,
+                           p2,
+                           computeConvexFaceUv(face, p0, textureLock, texW, texH),
+                           computeConvexFaceUv(face, p1, textureLock, texW, texH),
+                           computeConvexFaceUv(face, p2, textureLock, texW, texH));
+        }
+    }
+}
+
+static void drawExtraConvexBrushes(RenderBatch &batch,
+                                   const EditorView &view,
+                                   const EditorEntity &worldspawnEntity,
+                                   const std::vector<EditorEntity> &entities,
+                                   int selectedConvexBrush,
+                                   int selectedConvexFace,
+                                   bool textureLock,
+                                   EditorRenderingMode renderingMode,
+                                   bool enableTransparency,
+                                   float transparency)
+{
+    const bool useTransparency = enableTransparency && (view.type == EditorViewType::Perspective);
+    const u8 alphaValue = useTransparency ? (u8)glm::clamp(transparency * 255.0f, 0.0f, 255.0f) : 255;
+
+    auto drawEntityConvex = [&](const EditorEntity &entity)
+    {
+        const size_t start = extraConvexBrushStartIndex(entity);
+        for (size_t i = start; i < entity.convexBrushes.size(); ++i)
+        {
+            const EditorBrush &brush = entity.convexBrushes[i];
+            if (brush.hidden)
+                continue;
+            const bool isSelected = entity.isWorldspawn() && ((int)(i - start) == selectedConvexBrush);
+
+            if (renderingMode == EditorRenderingMode::Wireframe)
+            {
+                if (isSelected)
+                    batch.SetColor(255, 170, 70, alphaValue);
+                else
+                    batch.SetColor((u8)glm::clamp(brush.color.x * 255.0f, 0.0f, 255.0f),
+                                   (u8)glm::clamp(brush.color.y * 255.0f, 0.0f, 255.0f),
+                                   (u8)glm::clamp(brush.color.z * 255.0f, 0.0f, 255.0f),
+                                   alphaValue);
+                drawConvexBrushWireframe(batch, brush);
+            }
+            else if (renderingMode == EditorRenderingMode::Textured)
+            {
+                batch.SetColor(255, 255, 255, alphaValue);
+                drawConvexBrushTextured(batch, brush, textureLock);
+                if (isSelected)
+                {
+                    batch.SetColor(255, 190, 90, alphaValue);
+                    drawConvexBrushWireframe(batch, brush);
+                }
+            }
+            else
+            {
+                if (isSelected)
+                    batch.SetColor(255, 180, 70, alphaValue);
+                else
+                    batch.SetColor((u8)glm::clamp(brush.color.x * 255.0f, 0.0f, 255.0f),
+                                   (u8)glm::clamp(brush.color.y * 255.0f, 0.0f, 255.0f),
+                                   (u8)glm::clamp(brush.color.z * 255.0f, 0.0f, 255.0f),
+                                   alphaValue);
+                drawConvexBrushSolid(batch, brush);
+                if (isSelected)
+                {
+                    batch.SetColor(255, 190, 90, alphaValue);
+                    drawConvexBrushWireframe(batch, brush);
+                }
+            }
+
+            if (isSelected && selectedConvexFace >= 0)
+            {
+                const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+                batch.SetColor(255, 235, 90, 255);
+                for (const EditorConvexFacePolygon &polygon : polygons)
+                {
+                    if (polygon.faceIndex != selectedConvexFace || polygon.vertices.size() < 2)
+                        continue;
+                    for (size_t edgeIndex = 0; edgeIndex < polygon.vertices.size(); ++edgeIndex)
+                    {
+                        const glm::vec3 &a = polygon.vertices[edgeIndex];
+                        const glm::vec3 &b = polygon.vertices[(edgeIndex + 1) % polygon.vertices.size()];
+                        batch.Line3D(a, b);
+                    }
+                }
+            }
+        }
+    };
+
+    drawEntityConvex(worldspawnEntity);
+    for (const EditorEntity &entity : entities)
+        drawEntityConvex(entity);
+}
+
+static int findExtraConvexBrushAtScreenPos(const EditorEntity &entity,
+                                           const EditorView &view,
+                                           const glm::vec2 &mousePos)
+{
+    int bestIndex = -1;
+    float bestDepth = 1e30f;
+    float bestDistance2 = 1e30f;
+
+    const size_t start = extraConvexBrushStartIndex(entity);
+    for (size_t actualIndex = start; actualIndex < entity.convexBrushes.size(); ++actualIndex)
+    {
+        const EditorBrush &brush = entity.convexBrushes[actualIndex];
+        if (brush.hidden)
+            continue;
+
+        const std::vector<EditorConvexFacePolygon> polygons = buildConvexFacePolygons(brush);
+        bool hitBrush = false;
+        float brushDepth = 1e30f;
+        float brushDistance2 = 1e30f;
+
+        for (const EditorConvexFacePolygon &polygon : polygons)
+        {
+            if (polygon.vertices.size() < 3)
+                continue;
+
+            std::vector<glm::vec2> screenPolygon;
+            screenPolygon.reserve(polygon.vertices.size());
+
+            float depthSum = 0.0f;
+            bool validProjection = true;
+            for (const glm::vec3 &vertex : polygon.vertices)
+            {
+                const glm::vec4 clip = view.camera.viewProjection * glm::vec4(vertex, 1.0f);
+                if (std::fabs(clip.w) <= 1e-6f)
+                {
+                    validProjection = false;
+                    break;
+                }
+
+                const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+                if (view.type == EditorViewType::Perspective && (ndc.z < -1.0f || ndc.z > 1.0f))
+                {
+                    validProjection = false;
+                    break;
+                }
+
+                screenPolygon.push_back(glm::vec2(
+                    (float)view.rect.x + ((ndc.x * 0.5f) + 0.5f) * (float)view.rect.w,
+                    (float)view.rect.y + (1.0f - ((ndc.y * 0.5f) + 0.5f)) * (float)view.rect.h));
+                depthSum += ndc.z;
+            }
+
+            if (!validProjection || !pointInScreenPolygon(screenPolygon, mousePos))
+                continue;
+
+            glm::vec2 center(0.0f);
+            for (const glm::vec2 &screenPoint : screenPolygon)
+                center += screenPoint;
+            center /= (float)screenPolygon.size();
+
+            hitBrush = true;
+            brushDepth = glm::min(brushDepth, depthSum / (float)screenPolygon.size());
+            brushDistance2 = glm::min(brushDistance2, glm::length2(mousePos - center));
+        }
+
+        if (!hitBrush)
+            continue;
+
+        const int extraIndex = (int)(actualIndex - start);
+        if (view.type == EditorViewType::Perspective)
+        {
+            if (brushDepth < bestDepth - 1e-4f ||
+                (std::fabs(brushDepth - bestDepth) <= 1e-4f && brushDistance2 < bestDistance2))
+            {
+                bestDepth = brushDepth;
+                bestDistance2 = brushDistance2;
+                bestIndex = extraIndex;
+            }
+        }
+        else if (brushDistance2 < bestDistance2)
+        {
+            bestDistance2 = brushDistance2;
+            bestIndex = extraIndex;
+        }
+    }
+
+    return bestIndex;
 }
 
 static bool projectWorldToViewScreen(const EditorView &view,
@@ -1202,9 +1746,12 @@ static void renderEditorView(RenderBatch &batch,
                              const EditorView &view,
                              int screenHeight,
                              const std::vector<BrushVolume> &brushes,
+                             const EditorEntity &worldspawnEntity,
                              const std::vector<EditorEntity> &entities,
                              const std::vector<int> &selectedBrushes,
                              int primarySelectedBrush,
+                             int selectedConvexBrush,
+                             int selectedConvexFace,
                              int selectedEntity,
                              int selectedFace,
                              const PendingBrush &pendingBrush,
@@ -1216,6 +1763,7 @@ static void renderEditorView(RenderBatch &batch,
                              const glm::vec3 &focus,
                              const glm::vec3 &hoverWorld,
                              const std::string &currentTexturePath,
+                             bool textureLock,
                              EditorRenderingMode renderingMode,
                              bool enableTransparency = false,
                              float transparency = 1.0f)
@@ -1269,10 +1817,21 @@ static void renderEditorView(RenderBatch &batch,
                 defaultBrushHeight,
                 viewFocus,
                 currentTexturePath,
+                textureLock,
                 effectiveMode,
                 enableTransparency,
                 transparency);
 
+    drawExtraConvexBrushes(batch,
+                           view,
+                           worldspawnEntity,
+                           entities,
+                           selectedConvexBrush,
+                           selectedConvexFace,
+                           textureLock,
+                           effectiveMode,
+                           enableTransparency,
+                           transparency);
     drawEntities(batch, view, entities, selectedEntity, enableTransparency, transparency);
 
     batch.Render();
@@ -1554,15 +2113,18 @@ int main()
     // Apply loaded settings
     std::string assetRoot = settings.assetRoot;
     std::string assetFilter;
-    std::string currentTexturePath = settings.currentTexturePath;
+    std::string currentTexturePath = resolveTexturePathForLoad(settings.currentTexturePath);
     bool assetViewAsGrid = settings.assetViewAsGrid;
     rescanAssets(assetRoot, assets);
     appendConsoleLine(console, "[editor] scanned assets folder");
 
     glm::vec3 focus = settings.focus;
     PendingBrush pendingBrush;
+    PendingClip pendingClip;
     int selectedBrush = -1;
     std::vector<int> selectedBrushes;
+    int selectedConvexBrush = -1;
+    int selectedConvexFace = -1;
     int selectedEntity = -1;
     int selectedBrushFace = 2; // +Y by default
     BrushSelectionRect selectionRect;
@@ -1578,6 +2140,7 @@ int main()
     glm::vec3 dragStartWorld(0.0f);
     glm::vec2 dragStartMouse(0.0f);
     BrushVolume dragOriginalBrush;
+    EditorBrush dragOriginalConvexBrush;
     glm::vec3 dragOriginalEntityOrigin(0.0f);
     int dragOriginalFace = 2;
     int dragRotateTurns = 0;
@@ -1622,6 +2185,17 @@ int main()
 
         setupViewLayout(views, device.GetWidth(), device.GetHeight(), settings.sidebarWidth, settings.assetPanelHeight, settings.layoutMode, topInset, margin, gap);
         updateCameras(views, focus);
+        syncSceneConvexBrushes(worldspawnEntity, sceneEntities);
+        if (selectedConvexBrush >= (int)extraConvexBrushCount(worldspawnEntity))
+        {
+            selectedConvexBrush = -1;
+            selectedConvexFace = -1;
+        }
+        else if (EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush))
+        {
+            if (selectedConvexFace >= (int)selectedConvex->faces.size())
+                selectedConvexFace = -1;
+        }
 
         if (ImGui::BeginMainMenuBar())
         {
@@ -1703,6 +2277,7 @@ int main()
                 ImGui::MenuItem("Show Grid", nullptr, &settings.showGrid);
                 ImGui::MenuItem("Show Axes", nullptr, &settings.showAxes);
                 ImGui::MenuItem("Snap", nullptr, &settings.snapEnabled);
+                ImGui::MenuItem("Texture Lock", nullptr, &settings.textureLock);
                 ImGui::Separator();
                 if (ImGui::MenuItem("Solid", nullptr, settings.renderingMode == EditorRenderingMode::Solid))
                     settings.renderingMode = EditorRenderingMode::Solid;
@@ -1725,7 +2300,9 @@ int main()
                     currentTool = EditorTool::Rotate;
                 if (ImGui::MenuItem("Face", "5", currentTool == EditorTool::Face))
                     currentTool = EditorTool::Face;
-                if (ImGui::MenuItem("Create", "6", currentTool == EditorTool::Brush))
+                if (ImGui::MenuItem("Clip", "6", currentTool == EditorTool::Clip))
+                    currentTool = EditorTool::Clip;
+                if (ImGui::MenuItem("Create", "7", currentTool == EditorTool::Brush))
                     currentTool = EditorTool::Brush;
                 ImGui::EndMenu();
             }
@@ -1844,6 +2421,7 @@ int main()
                 ImGuiPropertyGrid::Checkbox("Show Grid", &settings.showGrid);
                 ImGuiPropertyGrid::Checkbox("Show Axes", &settings.showAxes);
                 ImGuiPropertyGrid::Checkbox("Snap", &settings.snapEnabled);
+                ImGuiPropertyGrid::Checkbox("Texture Lock", &settings.textureLock);
                 ImGuiPropertyGrid::DragFloat("Grid Step", &settings.gridStep, 1.0f, 4.0f, 256.0f, "%.1f");
                 ImGuiPropertyGrid::DragFloat("Snap Size", &settings.snapSize, 1.0f, 1.0f, 256.0f, "%.1f");
                 const int activeViewsForGrid = layoutViewCount(settings.layoutMode);
@@ -1876,6 +2454,8 @@ int main()
                 ImGui::TextUnformatted(worldspawnEntity.name.c_str());
                 ImGuiPropertyGrid::Label("Brushes");
                 ImGui::Text("%d", (int)brushes.size());
+                ImGuiPropertyGrid::Label("Convex Brushes");
+                ImGui::Text("%d", countConvexBrushesInScene(worldspawnEntity, sceneEntities));
                 ImGuiPropertyGrid::Label("Other Entities");
                 ImGui::Text("%d", (int)sceneEntities.size());
                 ImGuiPropertyGrid::Label("Pending");
@@ -1890,6 +2470,8 @@ int main()
                 ImGui::TextWrapped("%s", scenePath.c_str());
                 ImGuiPropertyGrid::Label("Selected Brush");
                 ImGui::Text("%d", selectedBrush);
+                ImGuiPropertyGrid::Label("Selected Convex");
+                ImGui::Text("%d", selectedConvexBrush);
                 ImGuiPropertyGrid::Label("Selected Entity");
                 ImGui::Text("%d", selectedEntity);
                 ImGuiPropertyGrid::Label("Selection");
@@ -1905,6 +2487,7 @@ int main()
                     selectedEntity = (int)sceneEntities.size() - 1;
                     selectedBrush = -1;
                     selectedBrushes.clear();
+                    selectedConvexBrush = -1;
                     appendConsoleLine(console, "[entity] added info_player_start");
                 }
                 ImGui::SameLine();
@@ -1914,6 +2497,7 @@ int main()
                     selectedEntity = (int)sceneEntities.size() - 1;
                     selectedBrush = -1;
                     selectedBrushes.clear();
+                    selectedConvexBrush = -1;
                     appendConsoleLine(console, "[entity] added light");
                 }
 
@@ -1927,6 +2511,7 @@ int main()
                         selectedEntity = i;
                         selectedBrush = -1;
                         selectedBrushes.clear();
+                        selectedConvexBrush = -1;
                     }
                 }
                 ImGui::EndChild();
@@ -1986,6 +2571,123 @@ int main()
                 drawCSGPanel(brushes, selectedBrush, selectedBrushes, csgOp, hollowThickness, splitPosition, splitAxis, undoStack, redoStack);
             }
 
+            if (ImGuiPropertyGrid::Section("Convex Builders", true))
+            {
+                static int cylinderSides = 8;
+                static int rampDirection = 0;
+                const char *rampDirectionNames[] = {"+X", "-X", "+Z", "-Z"};
+                ImGui::Combo("Ramp Direction", &rampDirection, rampDirectionNames, IM_ARRAYSIZE(rampDirectionNames));
+                ImGui::SliderInt("Cylinder Sides", &cylinderSides, 3, 24);
+
+                if (ImGui::Button("Add Box"))
+                {
+                    const glm::vec3 mins = focus + glm::vec3(-64.0f, 0.0f, -64.0f);
+                    const glm::vec3 maxs = focus + glm::vec3(64.0f, settings.defaultBrushHeight, 64.0f);
+                    EditorBrush brush = makeBoxConvexBrush(mins,
+                                                           maxs,
+                                                           "Convex Box " + std::to_string((int)worldspawnEntity.convexBrushes.size() + 1),
+                                                           currentTexturePath);
+                    brush.color = randomBrushColor();
+                    selectedConvexBrush = (int)extraConvexBrushCount(worldspawnEntity);
+                    selectedConvexFace = -1;
+                    selectedBrush = -1;
+                    selectedBrushes.clear();
+                    selectedEntity = -1;
+                    worldspawnEntity.convexBrushes.push_back(brush);
+                    appendConsoleLine(console, "[convex] added box brush");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Ramp"))
+                {
+                    const glm::vec3 mins = focus + glm::vec3(-64.0f, 0.0f, -64.0f);
+                    const glm::vec3 maxs = focus + glm::vec3(64.0f, settings.defaultBrushHeight, 64.0f);
+                    EditorBrush brush = makeWedgeConvexBrush(mins,
+                                                             maxs,
+                                                             (EditorRampDirection)rampDirection,
+                                                             "Ramp " + std::to_string((int)worldspawnEntity.convexBrushes.size() + 1),
+                                                             currentTexturePath);
+                    brush.color = randomBrushColor();
+                    selectedConvexBrush = (int)extraConvexBrushCount(worldspawnEntity);
+                    selectedConvexFace = -1;
+                    selectedBrush = -1;
+                    selectedBrushes.clear();
+                    selectedEntity = -1;
+                    worldspawnEntity.convexBrushes.push_back(brush);
+                    appendConsoleLine(console, "[convex] added ramp brush");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Cylinder"))
+                {
+                    EditorBrush brush = makeCylinderConvexBrush(focus + glm::vec3(0.0f, settings.defaultBrushHeight * 0.5f, 0.0f),
+                                                                64.0f,
+                                                                settings.defaultBrushHeight,
+                                                                cylinderSides,
+                                                                "Cylinder " + std::to_string((int)worldspawnEntity.convexBrushes.size() + 1),
+                                                                currentTexturePath);
+                    brush.color = randomBrushColor();
+                    selectedConvexBrush = (int)extraConvexBrushCount(worldspawnEntity);
+                    selectedConvexFace = -1;
+                    selectedBrush = -1;
+                    selectedBrushes.clear();
+                    selectedEntity = -1;
+                    worldspawnEntity.convexBrushes.push_back(brush);
+                    appendConsoleLine(console, "[convex] added cylinder brush");
+                }
+                ImGui::TextDisabled("Clip e Face Move trabalham nos convex brushes.");
+            }
+
+            if (ImGuiPropertyGrid::Section("Convex Brush List", true))
+            {
+                const size_t extraStart = extraConvexBrushStartIndex(worldspawnEntity);
+                ImGui::BeginChild("##convex_brush_list", ImVec2(-1.0f, 110.0f), true);
+                for (size_t actualIndex = extraStart; actualIndex < worldspawnEntity.convexBrushes.size(); ++actualIndex)
+                {
+                    const int extraIndex = (int)(actualIndex - extraStart);
+                    const EditorBrush &brush = worldspawnEntity.convexBrushes[actualIndex];
+                    glm::vec3 mins(0.0f);
+                    glm::vec3 maxs(0.0f);
+                    const glm::vec3 size = convexBrushBounds(brush, mins, maxs) ? (maxs - mins) : glm::vec3(0.0f);
+
+                    char label[192];
+                    std::snprintf(label, sizeof(label), "%s%s [%s] (%.0f %.0f %.0f)",
+                                  brush.hidden ? "[H] " : "",
+                                  convexBrushDisplayName(brush, extraIndex).c_str(),
+                                  convexBrushPrimitiveName(brush.primitive),
+                                  size.x, size.y, size.z);
+
+                    if (ImGui::Selectable(label, selectedConvexBrush == extraIndex))
+                    {
+                        selectedConvexBrush = extraIndex;
+                        selectedConvexFace = -1;
+                        selectedBrush = -1;
+                        selectedBrushes.clear();
+                        selectedEntity = -1;
+                    }
+                }
+                ImGui::EndChild();
+
+                EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                if (selectedConvex)
+                {
+                    if (ImGui::Button("Delete Convex Brush"))
+                    {
+                        const int actualIndex = extraConvexBrushActualIndex(worldspawnEntity, selectedConvexBrush);
+                        if (actualIndex >= 0)
+                        {
+                            worldspawnEntity.convexBrushes.erase(worldspawnEntity.convexBrushes.begin() + actualIndex);
+                            selectedConvexBrush = -1;
+                            selectedConvexFace = -1;
+                            appendConsoleLine(console, "[convex] deleted selected brush");
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(selectedConvex->hidden ? "Unhide Convex Brush" : "Hide Convex Brush"))
+                    {
+                        selectedConvex->hidden = !selectedConvex->hidden;
+                    }
+                }
+            }
+
             if (ImGuiPropertyGrid::Section("Brush List", true))
             {
                 ImGui::BeginChild("##brush_list", ImVec2(-1.0f, 130.0f), true);
@@ -2004,6 +2706,7 @@ int main()
                     if (ImGui::Selectable(label, rowSelected))
                     {
                         selectedEntity = -1;
+                        selectedConvexBrush = -1;
                         if (ImGui::GetIO().KeyCtrl)
                         {
                             if (rowSelected)
@@ -2085,14 +2788,73 @@ int main()
                 }
             }
 
+            if (EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                selectedConvex && ImGuiPropertyGrid::Section("Convex Brush", true) &&
+                ImGuiPropertyGrid::Begin("convex_brush_grid"))
+            {
+                float color[3] = {selectedConvex->color.x, selectedConvex->color.y, selectedConvex->color.z};
+                glm::vec3 mins(0.0f);
+                glm::vec3 maxs(0.0f);
+                const bool hasBounds = convexBrushBounds(*selectedConvex, mins, maxs);
+                const glm::vec3 center = hasBounds ? (mins + maxs) * 0.5f : glm::vec3(0.0f);
+                const glm::vec3 size = hasBounds ? (maxs - mins) : glm::vec3(0.0f);
+
+                ImGuiPropertyGrid::Label("Name");
+                ImGui::InputText("##convex_brush_name", &selectedConvex->name);
+                ImGuiPropertyGrid::Label("Primitive");
+                ImGui::TextUnformatted(convexBrushPrimitiveName(selectedConvex->primitive));
+                ImGuiPropertyGrid::Label("Faces");
+                ImGui::Text("%d", (int)selectedConvex->faces.size());
+                ImGuiPropertyGrid::Label("Selected Face");
+                ImGui::Text("%d", selectedConvexFace);
+                ImGuiPropertyGrid::Label("Hidden");
+                ImGui::Checkbox("##convex_brush_hidden", &selectedConvex->hidden);
+                ImGuiPropertyGrid::Label("Color");
+                if (ImGui::ColorEdit3("##convex_brush_color", color))
+                    selectedConvex->color = glm::vec3(color[0], color[1], color[2]);
+                ImGuiPropertyGrid::Label("Center");
+                ImGui::Text("(%.0f %.0f %.0f)", center.x, center.y, center.z);
+                ImGuiPropertyGrid::Label("Size");
+                ImGui::Text("(%.0f %.0f %.0f)", size.x, size.y, size.z);
+                ImGuiPropertyGrid::End();
+
+                if (ImGui::Button("Move Convex To Focus"))
+                {
+                    translateConvexBrush(*selectedConvex, focus - center);
+                }
+                if (!currentTexturePath.empty())
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Use Current Texture For All Faces"))
+                    {
+                        for (EditorBrushFace &face : selectedConvex->faces)
+                            face.texturePath = currentTexturePath;
+                    }
+                    if (selectedConvexFace >= 0 && selectedConvexFace < (int)selectedConvex->faces.size())
+                    {
+                        ImGui::SameLine();
+                        if (ImGui::Button("Use Current For Selected Face"))
+                            selectedConvex->faces[(size_t)selectedConvexFace].texturePath = currentTexturePath;
+                    }
+                }
+            }
+
             if (!currentTexturePath.empty() && ImGuiPropertyGrid::Section("Current Texture", true))
             {
                 // Load current texture preview once per unique texture path.
                 const std::string texName = "current_texture_preview_" + currentTexturePath;
+                const std::string resolvedTexturePath = resolveTexturePathForLoad(currentTexturePath);
                 TextureManager &textureManager = TextureManager::instance();
                 Texture *tex = textureManager.get(texName);
-                if (!tex)
-                    tex = textureManager.load(texName, currentTexturePath);
+                static std::string failedCurrentTexturePreviewPath;
+                if (!tex && failedCurrentTexturePreviewPath != resolvedTexturePath)
+                {
+                    tex = textureManager.load(texName, resolvedTexturePath);
+                    if (!tex)
+                        failedCurrentTexturePreviewPath = resolvedTexturePath;
+                    else
+                        failedCurrentTexturePreviewPath.clear();
+                }
                 
                 if (tex)
                 {
@@ -2106,7 +2868,7 @@ int main()
                 }
                 else
                 {
-                    ImGui::Text("Failed to load: %s", currentTexturePath.c_str());
+                    ImGui::Text("Failed to load: %s", resolvedTexturePath.c_str());
                 }
             }
 
@@ -2282,13 +3044,16 @@ int main()
 
             if (ImGuiPropertyGrid::Section("Help", true))
             {
-                ImGui::BulletText("1 Select, 2 Move, 3 Scale, 4 Rotate, 5 Face, 6 Create");
+                ImGui::BulletText("1 Select, 2 Move, 3 Scale, 4 Rotate, 5 Face, 6 Clip, 7 Create");
                 ImGui::BulletText("LMB ortho com Select: seleciona brush");
                 ImGui::BulletText("Drag retangulo em Select: multi-selecao (Ctrl para adicionar)");
                 ImGui::BulletText("Ctrl + clique: adiciona/remove da selecao");
                 ImGui::BulletText("LMB ortho com Move: arrasta brush selecionado");
                 ImGui::BulletText("LMB ortho com Scale: brush escala por eixo dominante (face)");
                 ImGui::BulletText("LMB ortho com Rotate: roda em passos de 90 graus com drag");
+                ImGui::BulletText("LMB com Face num convex brush: selecciona e move a face");
+                ImGui::BulletText("LMB com Clip: 2 pontos numa view 2D para cortar convex brush");
+                ImGui::BulletText("Texture Lock: ON prende a textura ao brush; OFF usa world-space");
                 ImGui::BulletText("Mouse wheel sobre uma view: zoom");
                 ImGui::BulletText("RMB na view 2D: popup de tools + view/edit");
                 ImGui::BulletText("LMB na view 3D: orbit");
@@ -2457,6 +3222,7 @@ int main()
                         scenePath = result.path.string();
                         selectedBrushes.clear();
                         selectedBrush = -1;
+                        selectedConvexBrush = -1;
                         selectedEntity = -1;
                         appendConsoleLine(console, "[scene] loaded " + scenePath);
                         appendConsoleLine(console, "[scene] entities " + std::to_string((int)sceneEntities.size() + 1) +
@@ -2530,7 +3296,8 @@ int main()
             if (Input::IsKeyPressed(KEY_THREE)) currentTool = EditorTool::Scale;
             if (Input::IsKeyPressed(KEY_FOUR)) currentTool = EditorTool::Rotate;
             if (Input::IsKeyPressed(KEY_FIVE)) currentTool = EditorTool::Face;
-            if (Input::IsKeyPressed(KEY_SIX)) currentTool = EditorTool::Brush;
+            if (Input::IsKeyPressed(KEY_SIX)) currentTool = EditorTool::Clip;
+            if (Input::IsKeyPressed(KEY_SEVEN)) currentTool = EditorTool::Brush;
 
             if (ctrlDown && Input::IsKeyPressed(KEY_Z))
             {
@@ -2538,6 +3305,7 @@ int main()
                 {
                     selectedBrushes.clear();
                     selectedBrush = -1;
+                    selectedConvexBrush = -1;
                     selectedEntity = -1;
                     appendConsoleLine(console, "[edit] Undo");
                 }
@@ -2549,6 +3317,7 @@ int main()
                 {
                     selectedBrushes.clear();
                     selectedBrush = -1;
+                    selectedConvexBrush = -1;
                     selectedEntity = -1;
                     appendConsoleLine(console, "[edit] Redo");
                 }
@@ -2562,6 +3331,7 @@ int main()
                 for (auto& p : pieces) brushes.push_back(p);
                 selectedBrushes.clear();
                 selectedBrush = -1;
+                selectedConvexBrush = -1;
                 selectedEntity = -1;
                 appendConsoleLine(console, "[csg] Split middle");
             }
@@ -2612,6 +3382,7 @@ int main()
                 std::vector<int> newSelection = pasteBrushClipboard(brushes, brushClipboard, offset);
                 selectedBrushes = newSelection;
                 selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
+                selectedConvexBrush = -1;
                 selectedEntity = -1;
                 appendConsoleLine(console, "[edit] pasted brushes (Ctrl+V)");
             }
@@ -2623,6 +3394,7 @@ int main()
                 std::vector<int> newSelection = cloneSelectedBrushes(brushes, selectedBrushes, offset);
                 selectedBrushes = newSelection;
                 selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
+                selectedConvexBrush = -1;
                 selectedEntity = -1;
                 appendConsoleLine(console, "[edit] duplicated selected brushes (Ctrl+D)");
             }
@@ -2642,6 +3414,14 @@ int main()
                                   shiftDown ? "[entity] unhid selected entity" : "[entity] hid selected entity");
             }
 
+            if (EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                selectedConvex && Input::IsKeyPressed(KEY_H))
+            {
+                selectedConvex->hidden = !shiftDown;
+                appendConsoleLine(console,
+                                  shiftDown ? "[convex] unhid selected brush" : "[convex] hid selected brush");
+            }
+
             if (!selectedBrushes.empty() && Input::IsKeyPressed(KEY_DELETE))
             {
                 pushUndo(undoStack, brushes, redoStack);
@@ -2658,6 +3438,7 @@ int main()
                 appendConsoleLine(console, "[edit] deleted selected brushes");
                 selectedBrushes.clear();
                 selectedBrush = -1;
+                selectedConvexBrush = -1;
                 selectedEntity = -1;
                 draggingSelection = false;
             }
@@ -2668,6 +3449,18 @@ int main()
                 appendConsoleLine(console, "[entity] deleted selected entity");
                 selectedEntity = -1;
                 draggingSelection = false;
+            }
+
+            if (selectedConvexBrush >= 0 && Input::IsKeyPressed(KEY_DELETE))
+            {
+                const int actualIndex = extraConvexBrushActualIndex(worldspawnEntity, selectedConvexBrush);
+                if (actualIndex >= 0)
+                {
+                    worldspawnEntity.convexBrushes.erase(worldspawnEntity.convexBrushes.begin() + actualIndex);
+                    appendConsoleLine(console, "[convex] deleted selected brush");
+                    selectedConvexBrush = -1;
+                    draggingSelection = false;
+                }
             }
         }
 
@@ -2691,7 +3484,10 @@ int main()
                     hoveredViewPtr->orthoSize = glm::clamp(hoveredViewPtr->orthoSize - wheel * 16.0f, 16.0f, 2048.0f);
             }
 
-            if (hoveredViewPtr->type == EditorViewType::Perspective && Input::IsMouseDown(MouseButton::LEFT))
+            if (hoveredViewPtr->type == EditorViewType::Perspective &&
+                Input::IsMouseDown(MouseButton::LEFT) &&
+                !draggingSelection &&
+                currentTool != EditorTool::Move)
             {
                 const glm::vec2 delta = Input::GetMouseDelta();
                 hoveredViewPtr->perspectiveYaw += delta.x * 0.25f;
@@ -2708,7 +3504,34 @@ int main()
                     selectedEntity = hitEntity;
                     selectedBrushes.clear();
                     selectedBrush = -1;
+                    selectedConvexBrush = -1;
                     appendConsoleLine(console, "[entity] selected " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
+                }
+                else
+                {
+                const int hitConvex = findExtraConvexBrushAtScreenPos(worldspawnEntity, *hoveredViewPtr, mousePos);
+                if (hitConvex >= 0 && currentTool == EditorTool::Select)
+                {
+                    selectedConvexBrush = hitConvex;
+                    selectedConvexFace = -1;
+                    selectedEntity = -1;
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[convex] selected " + convexBrushDisplayName(*getExtraConvexBrush(worldspawnEntity, hitConvex), hitConvex));
+                }
+                else if (hitConvex >= 0 && currentTool == EditorTool::Face)
+                {
+                    selectedConvexBrush = hitConvex;
+                    selectedEntity = -1;
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    int hitFace = -1;
+                    EditorBrush *convexBrush = getExtraConvexBrush(worldspawnEntity, hitConvex);
+                    if (convexBrush && findConvexFaceAtScreenPos(*convexBrush, *hoveredViewPtr, mousePos, hitFace))
+                    {
+                        selectedConvexFace = hitFace;
+                        appendConsoleLine(console, "[convex] selected face " + std::to_string(hitFace));
+                    }
                 }
                 else
                 {
@@ -2722,6 +3545,8 @@ int main()
                 if (pickBrushWithRay(brushes, ray, hitBrush, hitFace))
                 {
                     selectedEntity = -1;
+                    selectedConvexBrush = -1;
+                    selectedConvexFace = -1;
                     if (ctrlDown)
                     {
                         if (selectionContains(selectedBrushes, hitBrush))
@@ -2742,6 +3567,7 @@ int main()
                                       " face " + brushFaceName(selectedBrushFace));
                 }
                 }
+                }
             }
 
             if (hoveredViewPtr->type != EditorViewType::Perspective && Input::IsMousePressed(MouseButton::LEFT))
@@ -2754,6 +3580,8 @@ int main()
                         selectedEntity = hitEntity;
                         selectedBrushes.clear();
                         selectedBrush = -1;
+                        selectedConvexBrush = -1;
+                        selectedConvexFace = -1;
                         appendConsoleLine(console, "[entity] selected " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
                     }
                     else
@@ -2801,6 +3629,8 @@ int main()
                     brushes.push_back(brush);
                     selectedBrush = (int)brushes.size() - 1;
                         selectedEntity = -1;
+                        selectedConvexBrush = -1;
+                        selectedConvexFace = -1;
                         selectedBrushes.clear();
                     selectionAddUnique(selectedBrushes, selectedBrush);
                         pendingBrush.active = false;
@@ -2810,22 +3640,80 @@ int main()
                 }
                 else if (currentTool == EditorTool::Face)
                 {
-                    const float pickDistance = glm::max(4.0f, hoveredViewPtr->orthoSize * 0.05f);
-                    selectedBrush = findBrushAtPoint(brushes, hoveredViewPtr->type, hoveredWorld, pickDistance);
-                    if (selectedBrush >= 0)
+                    const int hitConvex = findExtraConvexBrushAtScreenPos(worldspawnEntity, *hoveredViewPtr, mousePos);
+                    const int targetConvex = hitConvex >= 0 ? hitConvex : selectedConvexBrush;
+                    EditorBrush *convexBrush = getExtraConvexBrush(worldspawnEntity, targetConvex);
+                    int hitFace = -1;
+                    if (convexBrush && findConvexFaceAtScreenPos(*convexBrush, *hoveredViewPtr, mousePos, hitFace))
                     {
                         selectedEntity = -1;
+                        selectedBrush = -1;
                         selectedBrushes.clear();
-                        selectionAddUnique(selectedBrushes, selectedBrush);
-                        selectedBrushFace = defaultFaceForView(hoveredViewPtr->type, selectedBrushFace);
+                        selectedConvexBrush = targetConvex;
+                        selectedConvexFace = hitFace;
+                        draggingSelection = true;
+                        dragTool = EditorTool::Face;
+                        dragView = hoveredViewPtr->type;
+                        dragStartWorld = hoveredWorld;
+                        dragOriginalConvexBrush = *convexBrush;
                         appendConsoleLine(console,
-                                          "[face] selected brush " + std::to_string(selectedBrush) +
-                                          " face " + brushFaceName(selectedBrushFace));
+                                          "[convex] face drag " + std::to_string(selectedConvexFace));
+                    }
+                    else
+                    {
+                        const float pickDistance = glm::max(4.0f, hoveredViewPtr->orthoSize * 0.05f);
+                        selectedBrush = findBrushAtPoint(brushes, hoveredViewPtr->type, hoveredWorld, pickDistance);
+                        if (selectedBrush >= 0)
+                        {
+                            selectedEntity = -1;
+                            selectedConvexBrush = -1;
+                            selectedConvexFace = -1;
+                            selectedBrushes.clear();
+                            selectionAddUnique(selectedBrushes, selectedBrush);
+                            selectedBrushFace = defaultFaceForView(hoveredViewPtr->type, selectedBrushFace);
+                            appendConsoleLine(console,
+                                              "[face] selected brush " + std::to_string(selectedBrush) +
+                                              " face " + brushFaceName(selectedBrushFace));
+                        }
+                    }
+                }
+                else if (currentTool == EditorTool::Clip)
+                {
+                    EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                    if (!selectedConvex)
+                    {
+                        appendConsoleLine(console, "[clip] select a convex brush first");
+                    }
+                    else if (!pendingClip.active || pendingClip.view != hoveredViewPtr->type)
+                    {
+                        pendingClip.active = true;
+                        pendingClip.view = hoveredViewPtr->type;
+                        pendingClip.start = hoveredWorld;
+                        appendConsoleLine(console, "[clip] start");
+                    }
+                    else
+                    {
+                        glm::vec3 planePoint(0.0f);
+                        glm::vec3 planeNormal(0.0f);
+                        EditorBrush clippedBrush;
+                        if (buildClipPlaneFromView(pendingClip.view, pendingClip.start, hoveredWorld, planePoint, planeNormal) &&
+                            clipConvexBrush(*selectedConvex, planePoint, planeNormal, currentTexturePath, clippedBrush))
+                        {
+                            *selectedConvex = clippedBrush;
+                            selectedConvexFace = -1;
+                            appendConsoleLine(console, "[clip] applied");
+                        }
+                        else
+                        {
+                            appendConsoleLine(console, "[clip] failed");
+                        }
+                        pendingClip.active = false;
                     }
                 }
                 else if (currentTool == EditorTool::Move)
                 {
                     const int hitEntity = findEntityAtScreenPos(sceneEntities, *hoveredViewPtr, mousePos, 18.0f);
+                    const int hitConvex = findExtraConvexBrushAtScreenPos(worldspawnEntity, *hoveredViewPtr, mousePos);
                     if (hitEntity >= 0)
                     {
                         draggingSelection = true;
@@ -2836,6 +3724,8 @@ int main()
                         selectedEntity = hitEntity;
                         selectedBrush = -1;
                         selectedBrushes.clear();
+                        selectedConvexBrush = -1;
+                        selectedConvexFace = -1;
                         appendConsoleLine(console, "[entity] begin drag " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
                     }
                     else if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size())
@@ -2847,12 +3737,47 @@ int main()
                         dragOriginalEntityOrigin = sceneEntities[(size_t)selectedEntity].origin;
                         appendConsoleLine(console, "[entity] begin drag " + entityDisplayName(sceneEntities[(size_t)selectedEntity], selectedEntity));
                     }
+                    else if (hitConvex >= 0)
+                    {
+                        EditorBrush *convexBrush = getExtraConvexBrush(worldspawnEntity, hitConvex);
+                        if (convexBrush)
+                        {
+                            draggingSelection = true;
+                            dragTool = EditorTool::Move;
+                            dragView = hoveredViewPtr->type;
+                            dragStartWorld = hoveredWorld;
+                            dragStartMouse = mousePos;
+                            dragOriginalConvexBrush = *convexBrush;
+                            selectedConvexBrush = hitConvex;
+                            selectedConvexFace = -1;
+                            selectedEntity = -1;
+                            selectedBrush = -1;
+                            selectedBrushes.clear();
+                            appendConsoleLine(console, "[convex] begin drag " + convexBrushDisplayName(*convexBrush, hitConvex));
+                        }
+                    }
+                    else if (getExtraConvexBrush(worldspawnEntity, selectedConvexBrush))
+                    {
+                        draggingSelection = true;
+                        dragTool = EditorTool::Move;
+                        dragView = hoveredViewPtr->type;
+                        dragStartWorld = hoveredWorld;
+                        dragStartMouse = mousePos;
+                        dragOriginalConvexBrush = *getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                        selectedEntity = -1;
+                        selectedBrush = -1;
+                        selectedBrushes.clear();
+                        selectedConvexFace = -1;
+                        appendConsoleLine(console, "[convex] begin drag " + convexBrushDisplayName(dragOriginalConvexBrush, selectedConvexBrush));
+                    }
                     else if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
                     {
                         draggingSelection = true;
                         dragTool = EditorTool::Move;
                         dragView = hoveredViewPtr->type;
                         selectedEntity = -1;
+                        selectedConvexBrush = -1;
+                        selectedConvexFace = -1;
                         dragStartWorld = hoveredWorld;
                         dragOriginalBrush = brushes[selectedBrush];
                         appendConsoleLine(console, "[move] begin drag brush " + std::to_string(selectedBrush));
@@ -2918,6 +3843,20 @@ int main()
                         brushes[selectedBrush].mins = dragOriginalBrush.mins + delta;
                         brushes[selectedBrush].maxs = dragOriginalBrush.maxs + delta;
                     }
+                    else if (EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush))
+                    {
+                        if (dragView == EditorViewType::Perspective)
+                        {
+                            translateConvexBrush(*selectedConvex, entityPerspectiveDragDelta(*hoveredViewPtr, Input::GetMouseDelta()));
+                            dragOriginalConvexBrush = *selectedConvex;
+                        }
+                        else
+                        {
+                            const glm::vec3 delta = applyViewDelta(hoveredWorld - dragStartWorld, dragView);
+                            *selectedConvex = dragOriginalConvexBrush;
+                            translateConvexBrush(*selectedConvex, delta);
+                        }
+                    }
                 }
                 else if (dragTool == EditorTool::Scale)
                 {
@@ -2951,6 +3890,25 @@ int main()
                                 dragScaleAxis,
                                 dragScalePositiveFace,
                                 deltaAxis);
+                        }
+                    }
+                }
+                else if (dragTool == EditorTool::Face)
+                {
+                    EditorBrush *selectedConvex = getExtraConvexBrush(worldspawnEntity, selectedConvexBrush);
+                    if (dragView != EditorViewType::Perspective &&
+                        selectedConvexFace >= 0 &&
+                        selectedConvex)
+                    {
+                        const glm::vec3 normal = convexFaceNormal(dragOriginalConvexBrush.faces[(size_t)selectedConvexFace]);
+                        const glm::vec3 delta = applyViewDelta(hoveredWorld - dragStartWorld, dragView);
+                        EditorBrush movedBrush;
+                        if (moveConvexBrushFace(dragOriginalConvexBrush,
+                                                selectedConvexFace,
+                                                glm::dot(delta, normal),
+                                                movedBrush))
+                        {
+                            *selectedConvex = movedBrush;
                         }
                     }
                 }
@@ -2997,6 +3955,8 @@ int main()
                 if (!selectionRect.additive)
                 {
                     selectedBrushes.clear();
+                    selectedConvexBrush = -1;
+                    selectedConvexFace = -1;
                     selectedEntity = -1;
                 }
 
@@ -3006,13 +3966,28 @@ int main()
                     if (selectionRect.viewIndex >= 0 && selectionRect.viewIndex < activeViews)
                         pickDistance = glm::max(4.0f, views[(size_t)selectionRect.viewIndex].orthoSize * 0.05f);
 
-                    const int picked = findBrushAtPoint(brushes, selectionRect.viewType, selectionRect.endWorld, pickDistance);
-                    if (picked >= 0)
+                    const EditorView &pickView = views[(size_t)selectionRect.viewIndex];
+                    const int pickedConvex = findExtraConvexBrushAtScreenPos(worldspawnEntity, pickView, selectionRect.endMouse);
+                    if (pickedConvex >= 0)
                     {
-                        if (selectionRect.additive && selectionContains(selectedBrushes, picked))
-                            selectionRemove(selectedBrushes, picked);
-                        else
-                            selectionAddUnique(selectedBrushes, picked);
+                        selectedConvexBrush = (selectionRect.additive && selectedConvexBrush == pickedConvex) ? -1 : pickedConvex;
+                        selectedConvexFace = -1;
+                        selectedBrushes.clear();
+                        selectedBrush = -1;
+                        selectedEntity = -1;
+                    }
+                    else
+                    {
+                        const int picked = findBrushAtPoint(brushes, selectionRect.viewType, selectionRect.endWorld, pickDistance);
+                        if (picked >= 0)
+                        {
+                            selectedConvexBrush = -1;
+                            selectedConvexFace = -1;
+                            if (selectionRect.additive && selectionContains(selectedBrushes, picked))
+                                selectionRemove(selectedBrushes, picked);
+                            else
+                                selectionAddUnique(selectedBrushes, picked);
+                        }
                     }
                 }
                 else
@@ -3037,6 +4012,8 @@ int main()
                 if (selectedBrush >= 0)
                 {
                     selectedEntity = -1;
+                    selectedConvexBrush = -1;
+                    selectedConvexFace = -1;
                     selectedBrushFace = defaultFaceForView(selectionRect.viewType, selectedBrushFace);
                 }
 
@@ -3054,6 +4031,10 @@ int main()
                 {
                     appendConsoleLine(console,
                                       "[entity] end drag " + entityDisplayName(sceneEntities[(size_t)selectedEntity], selectedEntity));
+                }
+                else if (selectedConvexBrush >= 0)
+                {
+                    appendConsoleLine(console, "[convex] end drag " + std::to_string(selectedConvexBrush));
                 }
                 else if (selectedBrush >= 0)
                 {
@@ -3096,6 +4077,27 @@ int main()
             const float maxY = glm::max(selectionRect.startMouse.y, selectionRect.endMouse.y);
             overlay->AddRectFilled(ImVec2(minX, minY), ImVec2(maxX, maxY), IM_COL32(90, 160, 255, 35));
             overlay->AddRect(ImVec2(minX, minY), ImVec2(maxX, maxY), IM_COL32(100, 180, 255, 220), 0.0f, 0, 1.5f);
+        }
+
+        if (pendingClip.active)
+        {
+            for (int i = 0; i < activeViews; ++i)
+            {
+                const EditorView &view = views[(size_t)i];
+                if (view.type != pendingClip.view)
+                    continue;
+
+                glm::vec2 clipStartScreen(0.0f);
+                if (projectWorldToViewScreen(view, pendingClip.start, clipStartScreen))
+                {
+                    overlay->AddLine(ImVec2(clipStartScreen.x, clipStartScreen.y),
+                                     ImVec2(mousePos.x, mousePos.y),
+                                     IM_COL32(255, 90, 90, 255),
+                                     2.0f);
+                    overlay->AddCircleFilled(ImVec2(clipStartScreen.x, clipStartScreen.y), 4.0f, IM_COL32(255, 90, 90, 255), 12);
+                }
+                break;
+            }
         }
 
         if (!io.WantCaptureMouse &&
@@ -3169,12 +4171,15 @@ int main()
                 if (ImGui::MenuItem("FACE (5)", nullptr, currentTool == EditorTool::Face))
                     currentTool = EditorTool::Face;
 
+                if (ImGui::MenuItem("CLIP (6)", nullptr, currentTool == EditorTool::Clip))
+                    currentTool = EditorTool::Clip;
+
                 if (toolIcons.brush && toolIcons.brush->id != 0)
                 {
                     ImGui::Image((ImTextureID)(intptr_t)toolIcons.brush->id, iconSizeMenu);
                     ImGui::SameLine();
                 }
-                if (ImGui::MenuItem("CREATE (6)", nullptr, currentTool == EditorTool::Brush))
+                if (ImGui::MenuItem("CREATE (7)", nullptr, currentTool == EditorTool::Brush))
                     currentTool = EditorTool::Brush;
 
                 ImGui::Separator();
@@ -3361,9 +4366,12 @@ int main()
                              view,
                              device.GetHeight(),
                              brushes,
+                             worldspawnEntity,
                              sceneEntities,
                              selectedBrushes,
                              selectedBrush,
+                             selectedConvexBrush,
+                             selectedConvexFace,
                              selectedEntity,
                              selectedBrushFace,
                              pendingBrush,
@@ -3375,6 +4383,7 @@ int main()
                              focus,
                              previewEnd,
                              currentTexturePath,
+                             settings.textureLock,
                              settings.renderingMode,
                              settings.enableTransparency,
                              settings.transparency);

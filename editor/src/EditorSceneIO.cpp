@@ -1,5 +1,7 @@
 #include "EditorSceneIO.hpp"
 
+#include "EditorConvexBrushOps.hpp"
+
 #include <fstream>
 
 #include <json.hpp>
@@ -107,6 +109,66 @@ struct adl_serializer<EditorKeyValue> {
 };
 
 template <>
+struct adl_serializer<EditorBrushPrimitive> {
+    static void to_json(json &j, const EditorBrushPrimitive &primitive)
+    {
+        j = static_cast<int>(primitive);
+    }
+
+    static void from_json(const json &j, EditorBrushPrimitive &primitive)
+    {
+        primitive = static_cast<EditorBrushPrimitive>(j.get<int>());
+    }
+};
+
+template <>
+struct adl_serializer<EditorBrushFace> {
+    static void to_json(json &j, const EditorBrushFace &face)
+    {
+        j = json{
+            {"planePoints", face.planePoints},
+            {"texturePath", face.texturePath},
+            {"uvOffset", face.uvOffset},
+            {"uvScale", face.uvScale},
+            {"uvRotation", face.uvRotation}
+        };
+    }
+
+    static void from_json(const json &j, EditorBrushFace &face)
+    {
+        face.planePoints = j.value("planePoints", std::array<glm::vec3, 3>{});
+        face.texturePath = j.value("texturePath", std::string());
+        face.uvOffset = j.value("uvOffset", glm::vec2(0.0f));
+        face.uvScale = j.value("uvScale", glm::vec2(1.0f));
+        face.uvRotation = j.value("uvRotation", 0.0f);
+    }
+};
+
+template <>
+struct adl_serializer<EditorBrush> {
+    static void to_json(json &j, const EditorBrush &brush)
+    {
+        j = json{
+            {"name", brush.name},
+            {"primitive", brush.primitive},
+            {"color", brush.color},
+            {"hidden", brush.hidden},
+            {"faces", brush.faces}
+        };
+    }
+
+    static void from_json(const json &j, EditorBrush &brush)
+    {
+        brush.name = j.value("name", std::string());
+        brush.primitive = j.value("primitive", EditorBrushPrimitive::Custom);
+        brush.color = j.value("color", glm::vec3(0.47f, 0.82f, 1.0f));
+        brush.hidden = j.value("hidden", false);
+        brush.faces = j.value("faces", std::vector<EditorBrushFace>{});
+        brush.dirty = true;
+    }
+};
+
+template <>
 struct adl_serializer<EditorEntity> {
     static void to_json(json &j, const EditorEntity &entity)
     {
@@ -116,7 +178,8 @@ struct adl_serializer<EditorEntity> {
             {"origin", entity.origin},
             {"hidden", entity.hidden},
             {"keyvalues", entity.keyvalues},
-            {"brushes", entity.brushes}
+            {"brushes", entity.brushes},
+            {"convexBrushes", entity.convexBrushes}
         };
     }
 
@@ -128,6 +191,7 @@ struct adl_serializer<EditorEntity> {
         entity.hidden = j.value("hidden", false);
         entity.keyvalues = j.value("keyvalues", std::vector<EditorKeyValue>{});
         entity.brushes = j.value("brushes", std::vector<BrushVolume>{});
+        entity.convexBrushes = j.value("convexBrushes", std::vector<EditorBrush>{});
     }
 };
 
@@ -166,7 +230,7 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EditorSettings::ViewSettings, orthoSize, pers
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(EditorSettings, assetRoot, currentTexturePath, focus, gridStep, snapSize,
                                    layoutMode, defaultBrushThickness, defaultBrushHeight, showGrid, showAxes,
                                    snapEnabled, sidebarTopHeight, assetPanelHeight, sidebarWidth, assetViewAsGrid,
-                                   renderingMode, enableTransparency, transparency, views)
+                                   renderingMode, enableTransparency, transparency, textureLock, views)
 
 static std::string makePortablePathForSave(const std::string &rawPath);
 std::string resolveTexturePathForLoad(const std::string &rawPath);
@@ -188,6 +252,12 @@ static void normalizeEntityPathsForSave(EditorEntity &entity)
         for (std::string &faceTexture : brush.faceTextures)
             faceTexture = makePortablePathForSave(faceTexture);
     }
+
+    for (EditorBrush &brush : entity.convexBrushes)
+    {
+        for (EditorBrushFace &face : brush.faces)
+            face.texturePath = makePortablePathForSave(face.texturePath);
+    }
 }
 
 static int normalizeEntityPathsForLoad(EditorEntity &entity)
@@ -208,7 +278,34 @@ static int normalizeEntityPathsForLoad(EditorEntity &entity)
                 ++fixedPaths;
         }
     }
+
+    for (EditorBrush &brush : entity.convexBrushes)
+    {
+        for (EditorBrushFace &face : brush.faces)
+        {
+            const std::string oldTexturePath = face.texturePath;
+            face.texturePath = resolveTexturePathForLoad(face.texturePath);
+            if (face.texturePath != oldTexturePath)
+                ++fixedPaths;
+        }
+    }
     return fixedPaths;
+}
+
+static void syncEntityLegacyBrushesToConvexBrushes(EditorEntity &entity)
+{
+    std::vector<EditorBrush> extras;
+    if (entity.convexBrushes.size() > entity.brushes.size())
+    {
+        extras.assign(entity.convexBrushes.begin() + (ptrdiff_t)entity.brushes.size(),
+                      entity.convexBrushes.end());
+    }
+
+    entity.convexBrushes.clear();
+    entity.convexBrushes.reserve(entity.brushes.size() + extras.size());
+    for (const BrushVolume &brush : entity.brushes)
+        entity.convexBrushes.push_back(makeConvexBrushFromVolume(brush));
+    entity.convexBrushes.insert(entity.convexBrushes.end(), extras.begin(), extras.end());
 }
 
 void saveEditorSettings(const EditorSettings &settings, const std::string &filename)
@@ -362,7 +459,10 @@ bool saveEditorScene(const std::filesystem::path &path,
     if (scene.entities.empty())
         scene.entities.push_back(makeWorldspawnEntity({}));
     for (EditorEntity &entity : scene.entities)
+    {
+        syncEntityLegacyBrushesToConvexBrushes(entity);
         normalizeEntityPathsForSave(entity);
+    }
 
     try
     {
@@ -431,6 +531,12 @@ bool loadEditorScene(const std::filesystem::path &path,
             entities.push_back(makeWorldspawnEntity(scene.brushes));
         if (entities.empty())
             entities.push_back(makeWorldspawnEntity({}));
+
+        for (EditorEntity &entity : entities)
+        {
+            if (entity.convexBrushes.empty() && !entity.brushes.empty())
+                syncEntityLegacyBrushesToConvexBrushes(entity);
+        }
 
         int fixedPaths = 0;
         for (EditorEntity &entity : entities)

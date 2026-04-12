@@ -20,6 +20,10 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/imgui_stdlib.cpp
+    ${IMGUI_DIR}/ImGuizmo.cpp
+    ${IMGUI_DIR}/ImSequencer.cpp
+    ${IMGUI_DIR}/ImCurveEdit.cpp
+    ${IMGUI_DIR}/ImGradient.cpp
     ${IMGUI_DIR}/ImGuiConsole.cpp
     ${IMGUI_DIR}/ImGuiFileDialog.cpp
     ${IMGUI_DIR}/ImGuiPopup.cpp

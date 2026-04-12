@@ -1,8 +1,8 @@
 {
     "assetPanelHeight": 200,
     "assetRoot": "/media/projectos/projects/cpp/minirender/assets/b3d/castel/textures",
-    "assetViewAsGrid": true,
-    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/b3d/castel/textures/Wall01.jpg",
+    "assetViewAsGrid": false,
+    "currentTexturePath": "assets/wall.jpg",
     "defaultBrushHeight": 128.0,
     "defaultBrushThickness": 128.0,
     "enableTransparency": false,
@@ -13,23 +13,24 @@
     ],
     "gridStep": 32.0,
     "layoutMode": 4,
-    "renderingMode": 2,
+    "renderingMode": 1,
     "showAxes": true,
     "showGrid": true,
-    "sidebarTopHeight": 323.0,
+    "sidebarTopHeight": 520.0,
     "sidebarWidth": 340,
     "snapEnabled": true,
     "snapSize": 16.0,
-    "transparency": 0.36000001430511475,
+    "textureLock": true,
+    "transparency": 1.0,
     "views": [
         {
-            "orthoSize": 192.0,
+            "orthoSize": 256.0,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0
         },
         {
-            "orthoSize": 224.0,
+            "orthoSize": 256.0,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0
@@ -42,9 +43,9 @@
         },
         {
             "orthoSize": 256.0,
-            "perspectiveDistance": 384.0,
-            "perspectivePitch": 26.25,
-            "perspectiveYaw": 209.75
+            "perspectiveDistance": 400.0,
+            "perspectivePitch": 60.0,
+            "perspectiveYaw": 134.25
         }
     ]
 }

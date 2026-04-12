@@ -9,6 +9,17 @@
 class AnimatedMesh;
 
 // ============================================================
+//  Transform channel flags — para ignorar pos/rot/scale
+// ============================================================
+enum class TransformChannel : unsigned char
+{
+    Position = 1 << 0,
+    Rotation = 1 << 1,
+    Scale    = 1 << 2,
+    All      = Position | Rotation | Scale
+};
+
+// ============================================================
 //  AnimationLayer — uma "pista" de animação
 //  Múltiplos layers permitem blending de partes do corpo
 //  (ex: torso layer + legs layer)
@@ -54,6 +65,13 @@ public:
     void setBoneMask(const std::unordered_set<int> &mask) { boneMask_ = mask; }
     void clearBoneMask()                                  { boneMask_.clear(); }
     bool hasBoneMask() const                              { return !boneMask_.empty(); }
+
+    // ── Transform mask — controla quais transformações aplicar ───
+    // Use para ignorar position/rotation/scale de animations
+    void setTransformMask(unsigned char mask) { transformMask_ = mask; }
+    unsigned char getTransformMask() const { return transformMask_; }
+    void enableTransformChannel(TransformChannel ch) { transformMask_ |= (unsigned char)ch; }
+    void disableTransformChannel(TransformChannel ch) { transformMask_ &= ~(unsigned char)ch; }
 
     // ── Update — chamado pelo Animator ───────────────────────
     // bones: vector de Bone do AnimatedMesh (para resolver índices)
@@ -112,6 +130,9 @@ private:
 
     std::unordered_set<int> boneMask_; // empty = all bones
     std::unordered_map<std::string, float> transitionBlends_;
+
+    // Transform channel mask — controla quais transformações são aplicadas
+    unsigned char transformMask_ = (unsigned char)TransformChannel::All;
 
     // Queued one-shot action (single-slot queue)
     std::string pendingAction_;

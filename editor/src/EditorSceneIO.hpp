@@ -29,6 +29,7 @@ struct EditorSettings
     EditorRenderingMode renderingMode = EditorRenderingMode::Solid;
     bool enableTransparency = false;
     float transparency = 1.0f;
+    bool textureLock = true;
 
     struct ViewSettings
     {

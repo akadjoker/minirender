@@ -54,7 +54,16 @@ enum class EditorTool
     Scale,
     Rotate,
     Face,
+    Clip,
     Brush
+};
+
+enum class EditorBrushPrimitive
+{
+    Custom,
+    Box,
+    Wedge,
+    Cylinder
 };
 
 struct BrushVolume
@@ -90,6 +99,37 @@ struct BrushVolume
     glm::vec3 size()   const { return maxs - mins; }
 };
 
+struct EditorBrushFace
+{
+    std::array<glm::vec3, 3> planePoints = {};
+    std::string texturePath;
+    glm::vec2 uvOffset = glm::vec2(0.0f);
+    glm::vec2 uvScale = glm::vec2(1.0f);
+    float uvRotation = 0.0f;
+
+    bool isValid() const
+    {
+        const glm::vec3 edgeA = planePoints[1] - planePoints[0];
+        const glm::vec3 edgeB = planePoints[2] - planePoints[0];
+        return glm::length2(glm::cross(edgeA, edgeB)) > 1e-8f;
+    }
+};
+
+struct EditorBrush
+{
+    std::string name;
+    EditorBrushPrimitive primitive = EditorBrushPrimitive::Custom;
+    glm::vec3 color = glm::vec3(0.47f, 0.82f, 1.0f);
+    bool hidden = false;
+    std::vector<EditorBrushFace> faces;
+    bool dirty = false;
+
+    bool isValid() const
+    {
+        return faces.size() >= 4;
+    }
+};
+
 struct EditorKeyValue
 {
     std::string key;
@@ -104,6 +144,7 @@ struct EditorEntity
     bool hidden = false;
     std::vector<EditorKeyValue> keyvalues;
     std::vector<BrushVolume> brushes;
+    std::vector<EditorBrush> convexBrushes;
 
     bool isWorldspawn() const
     {

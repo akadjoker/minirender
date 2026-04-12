@@ -312,7 +312,19 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
                 }
                 else
                 {
-                    finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2);
+                    glm::vec3 p = pos2;
+                    glm::quat r = rot2;
+                    glm::vec3 s = scl2;
+
+                    // Apply transform mask — if disabled, keep previous value
+                    if (!(transformMask_ & (unsigned char)TransformChannel::Position))
+                        p = glm::vec3(finalMatrices[ch.boneIndex][3]);
+                    if (!(transformMask_ & (unsigned char)TransformChannel::Rotation))
+                        r = glm::quat(1.f, 0.f, 0.f, 0.f);
+                    if (!(transformMask_ & (unsigned char)TransformChannel::Scale))
+                        s = glm::vec3(1.f);
+
+                    finalMatrices[ch.boneIndex] = trsMatrix(p, r, s);
                 }
             }
 
@@ -367,11 +379,31 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
                 glm::quat r = glm::normalize(glm::slerp(rot1, rot2, blend));
                 glm::vec3 s = glm::mix(scl1, scl2, blend);
 
+                // Apply transform mask — if disabled, keep previous value
+                if (!(transformMask_ & (unsigned char)TransformChannel::Position))
+                    p = glm::vec3(finalMatrices[ch.boneIndex][3]);
+                if (!(transformMask_ & (unsigned char)TransformChannel::Rotation))
+                    r = glm::quat(1.f, 0.f, 0.f, 0.f);
+                if (!(transformMask_ & (unsigned char)TransformChannel::Scale))
+                    s = glm::vec3(1.f);
+
                 finalMatrices[ch.boneIndex] = trsMatrix(p, r, s);
             }
             else
             {
-                finalMatrices[ch.boneIndex] = trsMatrix(pos2, rot2, scl2);
+                glm::vec3 p = pos2;
+                glm::quat r = rot2;
+                glm::vec3 s = scl2;
+
+                // Apply transform mask — if disabled, keep previous value
+                if (!(transformMask_ & (unsigned char)TransformChannel::Position))
+                    p = glm::vec3(finalMatrices[ch.boneIndex][3]);
+                if (!(transformMask_ & (unsigned char)TransformChannel::Rotation))
+                    r = glm::quat(1.f, 0.f, 0.f, 0.f);
+                if (!(transformMask_ & (unsigned char)TransformChannel::Scale))
+                    s = glm::vec3(1.f);
+
+                finalMatrices[ch.boneIndex] = trsMatrix(p, r, s);
             }
         }
 
@@ -431,6 +463,21 @@ void AnimationLayer::update(float dt, std::vector<glm::mat4> &finalMatrices,
         glm::vec3 pos = current_->interpolatePosition(ch, time_);
         glm::quat rot = current_->interpolateRotation(ch, time_);
         glm::vec3 scl = current_->interpolateScale   (ch, time_);
+
+        // Apply transform mask — if disabled, keep previous value
+        if (!(transformMask_ & (unsigned char)TransformChannel::Position))
+        {
+            // Extract position from existing matrix
+            pos = glm::vec3(finalMatrices[ch.boneIndex][3]);
+        }
+        if (!(transformMask_ & (unsigned char)TransformChannel::Rotation))
+        {
+            rot = glm::quat(1.f, 0.f, 0.f, 0.f);
+        }
+        if (!(transformMask_ & (unsigned char)TransformChannel::Scale))
+        {
+            scl = glm::vec3(1.f);
+        }
 
         finalMatrices[ch.boneIndex] = trsMatrix(pos, rot, scl);
     }

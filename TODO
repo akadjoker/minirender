@@ -143,4 +143,34 @@ Porque isso já prepara:
 - spawn points
 - triggers
 
+Já temos a primeira pipeline útil dos brushes novos.
+
+O que ficou feito:
+- `EditorBrush` convexo já consegue gerar polígonos de face a partir dos planos em [EditorConvexBrushOps.cpp](/media/projectos/projects/cpp/minirender/editor/src/EditorConvexBrushOps.cpp:179)
+- render de convex brushes em wireframe, solid e textured foi ligado no editor em [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1042), [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1055), [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1067) e [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1093)
+- o `renderEditorView` já desenha os convex brushes extra além dos `BrushVolume` antigos em [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1270)
+- adicionei builders iniciais no sidebar:
+  - `Add Wedge`
+  - `Add Cylinder`
+  em [main.cpp](/media/projectos/projects/cpp/minirender/editor/src/main.cpp:1868)
+- o scene I/O preserva os convex brushes extra ao sincronizar com os brushes antigos em [EditorSceneIO.cpp](/media/projectos/projects/cpp/minirender/editor/src/EditorSceneIO.cpp:280)
+
+Também ficou a base consolidada:
+- structs novos em [EditorData.hpp](/media/projectos/projects/cpp/minirender/editor/src/EditorData.hpp:52)
+- builders em [EditorConvexBrushOps.cpp](/media/projectos/projects/cpp/minirender/editor/src/EditorConvexBrushOps.cpp:48)
+
+Build confirmada:
+- `cmake --build build -j4 --target editor`
+
+Estado atual, com honestidade:
+- já consegues criar/ver/guardar `Wedge` e `Cylinder`
+- ainda são “convex brushes novos” paralelos ao sistema antigo
+- ainda não têm picking/seleção/edição como os brushes legacy
+- `Undo/Redo` destes builders novos ainda não está integrado no stack global
+
  
+
+O próximo passo mais forte agora é:
+1. seleção e movimento dos `convexBrushes`
+2. lista própria para esses brushes
+3. depois `Clip` e `Face Move` em cima deste modelo

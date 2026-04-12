@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/constants.hpp>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -371,6 +372,85 @@ static void appendConsoleLine(ImGuiConsole &console, const std::string &line)
         text += "\n";
     text += line;
     console.SetText(text);
+}
+
+static std::string entityDisplayName(const EditorEntity &entity, int index)
+{
+    if (!entity.name.empty())
+        return entity.name;
+    if (!entity.classname.empty())
+        return entity.classname + " " + std::to_string(index + 1);
+    return "Entity " + std::to_string(index + 1);
+}
+
+static EditorEntity makePointEntity(const std::string &classname,
+                                    const glm::vec3 &origin,
+                                    int index)
+{
+    EditorEntity entity;
+    entity.classname = classname;
+    entity.name = classname + " " + std::to_string(index + 1);
+    entity.origin = origin;
+
+    if (classname == "light")
+    {
+        entity.keyvalues.push_back({"light", "300"});
+        entity.keyvalues.push_back({"_color", "1 1 1"});
+    }
+
+    return entity;
+}
+
+static void ensureWorldspawnEntity(EditorEntity &entity)
+{
+    entity.classname = "worldspawn";
+    if (entity.name.empty())
+        entity.name = "World";
+}
+
+static std::vector<EditorEntity> buildSceneEntitiesForSave(const EditorEntity &worldspawnEntity,
+                                                           const std::vector<EditorEntity> &sceneEntities)
+{
+    std::vector<EditorEntity> entities;
+    entities.reserve(1 + sceneEntities.size());
+
+    EditorEntity worldspawn = worldspawnEntity;
+    ensureWorldspawnEntity(worldspawn);
+    entities.push_back(worldspawn);
+    entities.insert(entities.end(), sceneEntities.begin(), sceneEntities.end());
+    return entities;
+}
+
+static void applyLoadedSceneEntities(const std::vector<EditorEntity> &loadedEntities,
+                                     EditorEntity &worldspawnEntity,
+                                     std::vector<EditorEntity> &sceneEntities)
+{
+    worldspawnEntity = {};
+    ensureWorldspawnEntity(worldspawnEntity);
+    sceneEntities.clear();
+
+    for (const EditorEntity &entity : loadedEntities)
+    {
+        if (entity.isWorldspawn())
+        {
+            if (worldspawnEntity.brushes.empty() && worldspawnEntity.keyvalues.empty())
+            {
+                worldspawnEntity = entity;
+                ensureWorldspawnEntity(worldspawnEntity);
+            }
+            else
+            {
+                worldspawnEntity.brushes.insert(worldspawnEntity.brushes.end(),
+                                                entity.brushes.begin(),
+                                                entity.brushes.end());
+            }
+            continue;
+        }
+
+        sceneEntities.push_back(entity);
+    }
+
+    ensureWorldspawnEntity(worldspawnEntity);
 }
 
 static void drawGridForView(RenderBatch &batch,
@@ -873,12 +953,259 @@ static void drawBrushes(RenderBatch &batch,
     }
 }
 
+static bool entityVisibleInOrthoView(const EditorEntity &entity,
+                                     const EditorView &view,
+                                     const glm::vec3 &focus)
+{
+    const float aspect = (view.rect.h > 0) ? ((float)view.rect.w / (float)view.rect.h) : 1.0f;
+    const float halfH = view.orthoSize;
+    const float halfW = halfH * aspect;
+
+    switch (view.type)
+    {
+    case EditorViewType::Top:
+    case EditorViewType::Bottom:
+        return entity.origin.x >= focus.x - halfW && entity.origin.x <= focus.x + halfW &&
+               entity.origin.z >= focus.z - halfH && entity.origin.z <= focus.z + halfH;
+    case EditorViewType::Front:
+    case EditorViewType::Back:
+        return entity.origin.x >= focus.x - halfW && entity.origin.x <= focus.x + halfW &&
+               entity.origin.y >= focus.y - halfH && entity.origin.y <= focus.y + halfH;
+    case EditorViewType::Left:
+    case EditorViewType::Right:
+        return entity.origin.z >= focus.z - halfW && entity.origin.z <= focus.z + halfW &&
+               entity.origin.y >= focus.y - halfH && entity.origin.y <= focus.y + halfH;
+    case EditorViewType::Perspective:
+        break;
+    }
+    return true;
+}
+
+static void drawEntityMarker(RenderBatch &batch,
+                             const EditorEntity &entity,
+                             bool selected,
+                             float size,
+                             u8 alpha)
+{
+    const glm::vec3 p = entity.origin;
+    if (selected)
+        batch.SetColor(255, 235, 90, alpha);
+    else if (entity.classname == "light")
+        batch.SetColor(255, 230, 120, alpha);
+    else if (entity.classname == "info_player_start")
+        batch.SetColor(120, 220, 120, alpha);
+    else
+        batch.SetColor(180, 200, 255, alpha);
+
+    batch.Line3D(p + glm::vec3(-size, 0.0f, 0.0f), p + glm::vec3(size, 0.0f, 0.0f));
+    batch.Line3D(p + glm::vec3(0.0f, -size, 0.0f), p + glm::vec3(0.0f, size, 0.0f));
+    batch.Line3D(p + glm::vec3(0.0f, 0.0f, -size), p + glm::vec3(0.0f, 0.0f, size));
+}
+
+static void drawEntities(RenderBatch &batch,
+                         const EditorView &view,
+                         const std::vector<EditorEntity> &entities,
+                         int selectedEntity,
+                         bool enableTransparency,
+                         float transparency)
+{
+    const bool useTransparency = enableTransparency && (view.type == EditorViewType::Perspective);
+    const u8 alphaValue = useTransparency ? (u8)glm::clamp(transparency * 255.0f, 0.0f, 255.0f) : 255;
+    const float markerSize = (view.type == EditorViewType::Perspective)
+        ? 18.0f
+        : glm::max(view.orthoSize * 0.05f, 8.0f);
+
+    for (int i = 0; i < (int)entities.size(); ++i)
+    {
+        const EditorEntity &entity = entities[i];
+        if (entity.hidden || entity.isWorldspawn())
+            continue;
+        if (view.type != EditorViewType::Perspective && !entityVisibleInOrthoView(entity, view, view.focus))
+            continue;
+        drawEntityMarker(batch, entity, i == selectedEntity, markerSize, alphaValue);
+    }
+}
+
+static bool projectWorldToViewScreen(const EditorView &view,
+                                     const glm::vec3 &world,
+                                     glm::vec2 &outScreen)
+{
+    const glm::vec4 clip = view.camera.viewProjection * glm::vec4(world, 1.0f);
+    if (std::fabs(clip.w) <= 1e-6f)
+        return false;
+
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    if (view.type == EditorViewType::Perspective)
+    {
+        if (ndc.z < -1.0f || ndc.z > 1.0f)
+            return false;
+    }
+
+    outScreen.x = (float)view.rect.x + ((ndc.x * 0.5f) + 0.5f) * (float)view.rect.w;
+    outScreen.y = (float)view.rect.y + (1.0f - ((ndc.y * 0.5f) + 0.5f)) * (float)view.rect.h;
+    return true;
+}
+
+static ImU32 entityMarkerColor(const EditorEntity &entity, bool selected)
+{
+    if (selected)
+        return IM_COL32(255, 235, 90, 255);
+    if (entity.classname == "light")
+        return IM_COL32(255, 212, 90, 255);
+    if (entity.classname == "info_player_start")
+        return IM_COL32(110, 230, 140, 255);
+    return IM_COL32(120, 180, 255, 255);
+}
+
+static void drawEntityOverlayGlyph(ImDrawList *drawList,
+                                   const glm::vec2 &center,
+                                   const EditorEntity &entity,
+                                   bool selected)
+{
+    const ImU32 color = entityMarkerColor(entity, selected);
+    const ImU32 outline = IM_COL32(20, 24, 28, 240);
+
+    if (entity.classname == "light")
+    {
+        drawList->AddCircleFilled(ImVec2(center.x, center.y), 5.0f, color, 16);
+        drawList->AddCircle(ImVec2(center.x, center.y), 8.0f, outline, 16, 3.0f);
+        drawList->AddCircle(ImVec2(center.x, center.y), 8.0f, color, 16, 1.5f);
+        for (int i = 0; i < 8; ++i)
+        {
+            const float angle = glm::two_pi<float>() * ((float)i / 8.0f);
+            const glm::vec2 dir(std::cos(angle), std::sin(angle));
+            const glm::vec2 a = center + dir * 10.0f;
+            const glm::vec2 b = center + dir * 15.0f;
+            drawList->AddLine(ImVec2(a.x, a.y), ImVec2(b.x, b.y), color, selected ? 2.5f : 1.5f);
+        }
+        return;
+    }
+
+    if (entity.classname == "info_player_start")
+    {
+        const ImVec2 top(center.x, center.y - 9.0f);
+        const ImVec2 left(center.x - 8.0f, center.y + 6.0f);
+        const ImVec2 right(center.x + 8.0f, center.y + 6.0f);
+        drawList->AddTriangleFilled(top, left, right, color);
+        drawList->AddTriangle(top, left, right, outline, 2.0f);
+        drawList->AddLine(ImVec2(center.x, center.y + 6.0f),
+                          ImVec2(center.x, center.y + 14.0f),
+                          color,
+                          selected ? 2.5f : 1.5f);
+        return;
+    }
+
+    const ImVec2 p0(center.x, center.y - 8.0f);
+    const ImVec2 p1(center.x + 8.0f, center.y);
+    const ImVec2 p2(center.x, center.y + 8.0f);
+    const ImVec2 p3(center.x - 8.0f, center.y);
+    drawList->AddQuadFilled(p0, p1, p2, p3, color);
+    drawList->AddQuad(p0, p1, p2, p3, outline, 2.0f);
+}
+
+static void drawEntityOverlayLabels(ImDrawList *drawList,
+                                    const std::array<EditorView, 4> &views,
+                                    int activeViews,
+                                    const std::vector<EditorEntity> &entities,
+                                    int selectedEntity)
+{
+    for (int viewIndex = 0; viewIndex < activeViews; ++viewIndex)
+    {
+        const EditorView &view = views[(size_t)viewIndex];
+        for (int i = 0; i < (int)entities.size(); ++i)
+        {
+            const EditorEntity &entity = entities[(size_t)i];
+            if (entity.hidden || entity.isWorldspawn())
+                continue;
+            if (view.type != EditorViewType::Perspective && !entityVisibleInOrthoView(entity, view, view.focus))
+                continue;
+
+            glm::vec2 screenPos(0.0f);
+            if (!projectWorldToViewScreen(view, entity.origin, screenPos))
+                continue;
+
+            const bool selected = (i == selectedEntity);
+            drawEntityOverlayGlyph(drawList, screenPos, entity, selected);
+
+            const std::string label = entityDisplayName(entity, i);
+            const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+            const ImVec2 textPos(screenPos.x + 12.0f, screenPos.y - textSize.y * 0.5f);
+            const ImVec2 bgMin(textPos.x - 4.0f, textPos.y - 2.0f);
+            const ImVec2 bgMax(textPos.x + textSize.x + 4.0f, textPos.y + textSize.y + 2.0f);
+            drawList->AddRectFilled(bgMin,
+                                    bgMax,
+                                    selected ? IM_COL32(35, 40, 28, 220) : IM_COL32(20, 24, 28, 210),
+                                    4.0f);
+            drawList->AddRect(bgMin,
+                              bgMax,
+                              entityMarkerColor(entity, selected),
+                              4.0f,
+                              0,
+                              selected ? 1.5f : 1.0f);
+            drawList->AddText(textPos, IM_COL32(245, 245, 245, 255), label.c_str());
+        }
+    }
+}
+
+static int findEntityAtScreenPos(const std::vector<EditorEntity> &entities,
+                                 const EditorView &view,
+                                 const glm::vec2 &mousePos,
+                                 float maxPixelDistance)
+{
+    int bestIndex = -1;
+    float bestDistance2 = maxPixelDistance * maxPixelDistance;
+
+    for (int i = 0; i < (int)entities.size(); ++i)
+    {
+        const EditorEntity &entity = entities[(size_t)i];
+        if (entity.hidden || entity.isWorldspawn())
+            continue;
+        if (view.type != EditorViewType::Perspective && !entityVisibleInOrthoView(entity, view, view.focus))
+            continue;
+
+        glm::vec2 screenPos(0.0f);
+        if (!projectWorldToViewScreen(view, entity.origin, screenPos))
+            continue;
+
+        const glm::vec2 delta = screenPos - mousePos;
+        const float distance2 = glm::dot(delta, delta);
+        if (distance2 <= bestDistance2)
+        {
+            bestDistance2 = distance2;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
+static glm::vec3 entityPerspectiveDragDelta(const EditorView &view, const glm::vec2 &mouseDelta)
+{
+    const float yaw = glm::radians(view.perspectiveYaw);
+    const float pitch = glm::radians(view.perspectivePitch);
+    const glm::vec3 offset(
+        std::cos(pitch) * std::sin(yaw),
+        std::sin(pitch),
+        std::cos(pitch) * std::cos(yaw));
+
+    const glm::vec3 forward = glm::normalize(-offset);
+    glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+    if (glm::length2(right) < 1e-8f)
+        right = glm::vec3(1.0f, 0.0f, 0.0f);
+    const glm::vec3 up = glm::normalize(glm::cross(right, forward));
+
+    const float dragScale = glm::max(view.perspectiveDistance * 0.0015f, 0.01f);
+    return (right * mouseDelta.x - up * mouseDelta.y) * dragScale;
+}
+
 static void renderEditorView(RenderBatch &batch,
                              const EditorView &view,
                              int screenHeight,
                              const std::vector<BrushVolume> &brushes,
+                             const std::vector<EditorEntity> &entities,
                              const std::vector<int> &selectedBrushes,
                              int primarySelectedBrush,
+                             int selectedEntity,
                              int selectedFace,
                              const PendingBrush &pendingBrush,
                              bool showGrid,
@@ -946,6 +1273,8 @@ static void renderEditorView(RenderBatch &batch,
                 enableTransparency,
                 transparency);
 
+    drawEntities(batch, view, entities, selectedEntity, enableTransparency, transparency);
+
     batch.Render();
 
     if (enableTransparency && (view.type == EditorViewType::Perspective))
@@ -959,6 +1288,9 @@ static void drawScreenOverlay(RenderBatch &batch,
                               int screenWidth,
                               int screenHeight,
                               const std::array<EditorView, 4> &views,
+                              int activeViews,
+                              const std::vector<EditorEntity> &entities,
+                              int selectedEntity,
                               EditorViewType hoveredView,
                               bool hasHoveredView)
 {
@@ -975,6 +1307,8 @@ static void drawScreenOverlay(RenderBatch &batch,
     }
 
     batch.Render();
+
+    drawEntityOverlayLabels(ImGui::GetBackgroundDrawList(), views, activeViews, entities, selectedEntity);
 }
 
 static void pushUndo(std::vector<std::vector<BrushVolume>>& undoStack,
@@ -1193,7 +1527,10 @@ int main()
     }};
     syncViewLabels(views);
 
-    std::vector<BrushVolume> brushes;
+    EditorEntity worldspawnEntity;
+    ensureWorldspawnEntity(worldspawnEntity);
+    std::vector<EditorEntity> sceneEntities;
+    std::vector<BrushVolume> &brushes = worldspawnEntity.brushes;
     std::vector<BrushVolume> brushClipboard;
     ImGuiConsole console;
     console.SetVisible(true);
@@ -1226,6 +1563,7 @@ int main()
     PendingBrush pendingBrush;
     int selectedBrush = -1;
     std::vector<int> selectedBrushes;
+    int selectedEntity = -1;
     int selectedBrushFace = 2; // +Y by default
     BrushSelectionRect selectionRect;
     int orthoPopupViewIndex = -1;
@@ -1240,6 +1578,7 @@ int main()
     glm::vec3 dragStartWorld(0.0f);
     glm::vec2 dragStartMouse(0.0f);
     BrushVolume dragOriginalBrush;
+    glm::vec3 dragOriginalEntityOrigin(0.0f);
     int dragOriginalFace = 2;
     int dragRotateTurns = 0;
     bool dragRotateCommitted = false;
@@ -1297,7 +1636,11 @@ int main()
                 if (ImGui::MenuItem((std::string(ImGuiFontAwesome::kFloppyDisk) + " Save").c_str(), "Ctrl+S"))
                 {
                     std::string error;
-                    if (saveEditorScene(scenePath, brushes, focus, currentTexturePath, error))
+                    if (saveEditorScene(scenePath,
+                                        buildSceneEntitiesForSave(worldspawnEntity, sceneEntities),
+                                        focus,
+                                        currentTexturePath,
+                                        error))
                         appendConsoleLine(console, "[scene] saved " + ensureSceneExtension(scenePath).string());
                     else
                         appendConsoleLine(console, "[scene] save failed: " + error);
@@ -1527,8 +1870,14 @@ int main()
 
             if (ImGuiPropertyGrid::Section("Scene", true) && ImGuiPropertyGrid::Begin("scene_grid"))
             {
+                ImGuiPropertyGrid::Label("Entities");
+                ImGui::Text("%d", (int)sceneEntities.size() + 1);
+                ImGuiPropertyGrid::Label("Worldspawn");
+                ImGui::TextUnformatted(worldspawnEntity.name.c_str());
                 ImGuiPropertyGrid::Label("Brushes");
                 ImGui::Text("%d", (int)brushes.size());
+                ImGuiPropertyGrid::Label("Other Entities");
+                ImGui::Text("%d", (int)sceneEntities.size());
                 ImGuiPropertyGrid::Label("Pending");
                 ImGui::TextUnformatted(pendingBrush.active ? "yes" : "no");
                 ImGuiPropertyGrid::Label("Views");
@@ -1541,9 +1890,95 @@ int main()
                 ImGui::TextWrapped("%s", scenePath.c_str());
                 ImGuiPropertyGrid::Label("Selected Brush");
                 ImGui::Text("%d", selectedBrush);
+                ImGuiPropertyGrid::Label("Selected Entity");
+                ImGui::Text("%d", selectedEntity);
                 ImGuiPropertyGrid::Label("Selection");
                 ImGui::Text("%d", (int)selectedBrushes.size());
                 ImGuiPropertyGrid::End();
+            }
+
+            if (ImGuiPropertyGrid::Section("Entities", true))
+            {
+                if (ImGui::Button("Add Player Start"))
+                {
+                    sceneEntities.push_back(makePointEntity("info_player_start", focus, (int)sceneEntities.size()));
+                    selectedEntity = (int)sceneEntities.size() - 1;
+                    selectedBrush = -1;
+                    selectedBrushes.clear();
+                    appendConsoleLine(console, "[entity] added info_player_start");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Light"))
+                {
+                    sceneEntities.push_back(makePointEntity("light", focus, (int)sceneEntities.size()));
+                    selectedEntity = (int)sceneEntities.size() - 1;
+                    selectedBrush = -1;
+                    selectedBrushes.clear();
+                    appendConsoleLine(console, "[entity] added light");
+                }
+
+                ImGui::BeginChild("##entity_list", ImVec2(-1.0f, 110.0f), true);
+                for (int i = 0; i < (int)sceneEntities.size(); ++i)
+                {
+                    const EditorEntity &entity = sceneEntities[i];
+                    const std::string label = entityDisplayName(entity, i) + " [" + entity.classname + "]";
+                    if (ImGui::Selectable(label.c_str(), selectedEntity == i))
+                    {
+                        selectedEntity = i;
+                        selectedBrush = -1;
+                        selectedBrushes.clear();
+                    }
+                }
+                ImGui::EndChild();
+
+                if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size())
+                {
+                    EditorEntity &entity = sceneEntities[(size_t)selectedEntity];
+                    float origin[3] = {entity.origin.x, entity.origin.y, entity.origin.z};
+
+                    if (ImGuiPropertyGrid::Begin("entity_grid"))
+                    {
+                        ImGuiPropertyGrid::Label("Name");
+                        ImGui::InputText("##entity_name", &entity.name);
+                        ImGuiPropertyGrid::Label("Classname");
+                        ImGui::InputText("##entity_classname", &entity.classname);
+                        ImGuiPropertyGrid::Label("Origin");
+                        if (ImGui::DragFloat3("##entity_origin", origin, 1.0f))
+                            entity.origin = glm::vec3(origin[0], origin[1], origin[2]);
+                        ImGuiPropertyGrid::Label("Hidden");
+                        ImGui::Checkbox("##entity_hidden", &entity.hidden);
+                        ImGuiPropertyGrid::End();
+                    }
+
+                    if (ImGui::Button("Move To Focus"))
+                        entity.origin = focus;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete Entity"))
+                    {
+                        sceneEntities.erase(sceneEntities.begin() + selectedEntity);
+                        selectedEntity = -1;
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextUnformatted("KeyValues");
+                    for (int i = 0; i < (int)entity.keyvalues.size(); ++i)
+                    {
+                        ImGui::PushID(i);
+                        ImGui::InputText("##kv_key", &entity.keyvalues[(size_t)i].key);
+                        ImGui::SameLine();
+                        ImGui::InputText("##kv_value", &entity.keyvalues[(size_t)i].value);
+                        ImGui::SameLine();
+                        if (ImGui::SmallButton("X"))
+                        {
+                            entity.keyvalues.erase(entity.keyvalues.begin() + i);
+                            ImGui::PopID();
+                            break;
+                        }
+                        ImGui::PopID();
+                    }
+                    if (ImGui::Button("Add KeyValue"))
+                        entity.keyvalues.push_back({"", ""});
+                }
             }
 
             if (ImGuiPropertyGrid::Section("CSG Tools", true))
@@ -1568,6 +2003,7 @@ int main()
                     const bool rowSelected = selectionContains(selectedBrushes, i);
                     if (ImGui::Selectable(label, rowSelected))
                     {
+                        selectedEntity = -1;
                         if (ImGui::GetIO().KeyCtrl)
                         {
                             if (rowSelected)
@@ -2012,14 +2448,19 @@ int main()
                 if (result.mode == ImGuiFileDialog::Mode::OpenFile)
                 {
                     std::string error;
-                    if (loadEditorScene(result.path, brushes, focus, currentTexturePath, error))
+                    std::vector<EditorEntity> loadedEntities;
+                    if (loadEditorScene(result.path, loadedEntities, focus, currentTexturePath, error))
                     {
+                        applyLoadedSceneEntities(loadedEntities, worldspawnEntity, sceneEntities);
                         for (EditorView &view : views)
                             view.focus = focus;
                         scenePath = result.path.string();
                         selectedBrushes.clear();
                         selectedBrush = -1;
+                        selectedEntity = -1;
                         appendConsoleLine(console, "[scene] loaded " + scenePath);
+                        appendConsoleLine(console, "[scene] entities " + std::to_string((int)sceneEntities.size() + 1) +
+                                                   " (worldspawn + " + std::to_string((int)sceneEntities.size()) + ")");
                         if (!error.empty())
                             appendConsoleLine(console, "[scene] " + error);
                     }
@@ -2032,7 +2473,11 @@ int main()
                 {
                     std::string error;
                     const std::filesystem::path finalPath = ensureSceneExtension(result.path);
-                    if (saveEditorScene(finalPath, brushes, focus, currentTexturePath, error))
+                    if (saveEditorScene(finalPath,
+                                        buildSceneEntitiesForSave(worldspawnEntity, sceneEntities),
+                                        focus,
+                                        currentTexturePath,
+                                        error))
                     {
                         scenePath = finalPath.string();
                         appendConsoleLine(console, "[scene] saved " + scenePath);
@@ -2093,6 +2538,7 @@ int main()
                 {
                     selectedBrushes.clear();
                     selectedBrush = -1;
+                    selectedEntity = -1;
                     appendConsoleLine(console, "[edit] Undo");
                 }
             }
@@ -2103,6 +2549,7 @@ int main()
                 {
                     selectedBrushes.clear();
                     selectedBrush = -1;
+                    selectedEntity = -1;
                     appendConsoleLine(console, "[edit] Redo");
                 }
             }
@@ -2115,6 +2562,7 @@ int main()
                 for (auto& p : pieces) brushes.push_back(p);
                 selectedBrushes.clear();
                 selectedBrush = -1;
+                selectedEntity = -1;
                 appendConsoleLine(console, "[csg] Split middle");
             }
 
@@ -2131,7 +2579,11 @@ int main()
                 else
                 {
                     std::string error;
-                    if (saveEditorScene(scenePath, brushes, focus, currentTexturePath, error))
+                    if (saveEditorScene(scenePath,
+                                        buildSceneEntitiesForSave(worldspawnEntity, sceneEntities),
+                                        focus,
+                                        currentTexturePath,
+                                        error))
                         appendConsoleLine(console, "[scene] saved " + ensureSceneExtension(scenePath).string());
                     else
                         appendConsoleLine(console, "[scene] save failed: " + error);
@@ -2160,6 +2612,7 @@ int main()
                 std::vector<int> newSelection = pasteBrushClipboard(brushes, brushClipboard, offset);
                 selectedBrushes = newSelection;
                 selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
+                selectedEntity = -1;
                 appendConsoleLine(console, "[edit] pasted brushes (Ctrl+V)");
             }
 
@@ -2170,6 +2623,7 @@ int main()
                 std::vector<int> newSelection = cloneSelectedBrushes(brushes, selectedBrushes, offset);
                 selectedBrushes = newSelection;
                 selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
+                selectedEntity = -1;
                 appendConsoleLine(console, "[edit] duplicated selected brushes (Ctrl+D)");
             }
 
@@ -2179,6 +2633,13 @@ int main()
                 for (int index : source)
                     brushes[(size_t)index].hidden = !shiftDown;
                 appendConsoleLine(console, shiftDown ? "[edit] unhid selected brushes (Shift+H)" : "[edit] hid selected brushes (H)");
+            }
+
+            if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size() && Input::IsKeyPressed(KEY_H))
+            {
+                sceneEntities[(size_t)selectedEntity].hidden = !shiftDown;
+                appendConsoleLine(console,
+                                  shiftDown ? "[entity] unhid selected entity" : "[entity] hid selected entity");
             }
 
             if (!selectedBrushes.empty() && Input::IsKeyPressed(KEY_DELETE))
@@ -2197,6 +2658,15 @@ int main()
                 appendConsoleLine(console, "[edit] deleted selected brushes");
                 selectedBrushes.clear();
                 selectedBrush = -1;
+                selectedEntity = -1;
+                draggingSelection = false;
+            }
+
+            if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size() && Input::IsKeyPressed(KEY_DELETE))
+            {
+                sceneEntities.erase(sceneEntities.begin() + selectedEntity);
+                appendConsoleLine(console, "[entity] deleted selected entity");
+                selectedEntity = -1;
                 draggingSelection = false;
             }
         }
@@ -2232,6 +2702,16 @@ int main()
                 Input::IsMousePressed(MouseButton::LEFT) &&
                 (currentTool == EditorTool::Select || currentTool == EditorTool::Face))
             {
+                const int hitEntity = findEntityAtScreenPos(sceneEntities, *hoveredViewPtr, mousePos, 18.0f);
+                if (hitEntity >= 0 && currentTool == EditorTool::Select)
+                {
+                    selectedEntity = hitEntity;
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[entity] selected " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
+                }
+                else
+                {
                 const glm::vec2 localMouse(
                     mousePos.x - (float)hoveredViewPtr->rect.x,
                     mousePos.y - (float)hoveredViewPtr->rect.y);
@@ -2241,6 +2721,7 @@ int main()
                 int hitFace = -1;
                 if (pickBrushWithRay(brushes, ray, hitBrush, hitFace))
                 {
+                    selectedEntity = -1;
                     if (ctrlDown)
                     {
                         if (selectionContains(selectedBrushes, hitBrush))
@@ -2260,28 +2741,40 @@ int main()
                                       "[pick3d] brush " + std::to_string(selectedBrush) +
                                       " face " + brushFaceName(selectedBrushFace));
                 }
+                }
             }
 
             if (hoveredViewPtr->type != EditorViewType::Perspective && Input::IsMousePressed(MouseButton::LEFT))
             {
                 if (currentTool == EditorTool::Select)
                 {
-                    selectionRect.active = true;
-                    selectionRect.additive = ctrlDown;
-                    selectionRect.viewType = hoveredViewPtr->type;
-                    selectionRect.viewIndex = -1;
-                    for (int i = 0; i < activeViews; ++i)
+                    const int hitEntity = findEntityAtScreenPos(sceneEntities, *hoveredViewPtr, mousePos, 18.0f);
+                    if (hitEntity >= 0)
                     {
-                        if (&views[i] == hoveredViewPtr)
-                        {
-                            selectionRect.viewIndex = i;
-                            break;
-                        }
+                        selectedEntity = hitEntity;
+                        selectedBrushes.clear();
+                        selectedBrush = -1;
+                        appendConsoleLine(console, "[entity] selected " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
                     }
-                    selectionRect.startMouse = mousePos;
-                    selectionRect.endMouse = mousePos;
-                    selectionRect.startWorld = hoveredWorld;
-                    selectionRect.endWorld = hoveredWorld;
+                    else
+                    {
+                        selectionRect.active = true;
+                        selectionRect.additive = ctrlDown;
+                        selectionRect.viewType = hoveredViewPtr->type;
+                        selectionRect.viewIndex = -1;
+                        for (int i = 0; i < activeViews; ++i)
+                        {
+                            if (&views[i] == hoveredViewPtr)
+                            {
+                                selectionRect.viewIndex = i;
+                                break;
+                            }
+                        }
+                        selectionRect.startMouse = mousePos;
+                        selectionRect.endMouse = mousePos;
+                        selectionRect.startWorld = hoveredWorld;
+                        selectionRect.endWorld = hoveredWorld;
+                    }
                 }
                 else if (currentTool == EditorTool::Brush)
                 {
@@ -2307,6 +2800,7 @@ int main()
 
                     brushes.push_back(brush);
                     selectedBrush = (int)brushes.size() - 1;
+                        selectedEntity = -1;
                         selectedBrushes.clear();
                     selectionAddUnique(selectedBrushes, selectedBrush);
                         pendingBrush.active = false;
@@ -2320,6 +2814,7 @@ int main()
                     selectedBrush = findBrushAtPoint(brushes, hoveredViewPtr->type, hoveredWorld, pickDistance);
                     if (selectedBrush >= 0)
                     {
+                        selectedEntity = -1;
                         selectedBrushes.clear();
                         selectionAddUnique(selectedBrushes, selectedBrush);
                         selectedBrushFace = defaultFaceForView(hoveredViewPtr->type, selectedBrushFace);
@@ -2330,11 +2825,34 @@ int main()
                 }
                 else if (currentTool == EditorTool::Move)
                 {
-                    if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    const int hitEntity = findEntityAtScreenPos(sceneEntities, *hoveredViewPtr, mousePos, 18.0f);
+                    if (hitEntity >= 0)
                     {
                         draggingSelection = true;
                         dragTool = EditorTool::Move;
                         dragView = hoveredViewPtr->type;
+                        dragStartWorld = hoveredWorld;
+                        dragOriginalEntityOrigin = sceneEntities[(size_t)hitEntity].origin;
+                        selectedEntity = hitEntity;
+                        selectedBrush = -1;
+                        selectedBrushes.clear();
+                        appendConsoleLine(console, "[entity] begin drag " + entityDisplayName(sceneEntities[(size_t)hitEntity], hitEntity));
+                    }
+                    else if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size())
+                    {
+                        draggingSelection = true;
+                        dragTool = EditorTool::Move;
+                        dragView = hoveredViewPtr->type;
+                        dragStartWorld = hoveredWorld;
+                        dragOriginalEntityOrigin = sceneEntities[(size_t)selectedEntity].origin;
+                        appendConsoleLine(console, "[entity] begin drag " + entityDisplayName(sceneEntities[(size_t)selectedEntity], selectedEntity));
+                    }
+                    else if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    {
+                        draggingSelection = true;
+                        dragTool = EditorTool::Move;
+                        dragView = hoveredViewPtr->type;
+                        selectedEntity = -1;
                         dragStartWorld = hoveredWorld;
                         dragOriginalBrush = brushes[selectedBrush];
                         appendConsoleLine(console, "[move] begin drag brush " + std::to_string(selectedBrush));
@@ -2347,6 +2865,7 @@ int main()
                         draggingSelection = true;
                         dragTool = EditorTool::Scale;
                         dragView = hoveredViewPtr->type;
+                        selectedEntity = -1;
                         dragScaleAxis = BrushScaleAxis::None;
                         dragScalePositiveFace = true;
                         dragStartWorld = hoveredWorld;
@@ -2361,6 +2880,7 @@ int main()
                         draggingSelection = true;
                         dragTool = EditorTool::Rotate;
                         dragView = hoveredViewPtr->type;
+                        selectedEntity = -1;
                         dragStartWorld = hoveredWorld;
                         dragStartMouse = mousePos;
                         dragOriginalBrush = brushes[selectedBrush];
@@ -2378,9 +2898,23 @@ int main()
             {
                 if (dragTool == EditorTool::Move)
                 {
-                    const glm::vec3 delta = applyViewDelta(hoveredWorld - dragStartWorld, dragView);
-                    if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size())
                     {
+                        if (dragView == EditorViewType::Perspective)
+                        {
+                            sceneEntities[(size_t)selectedEntity].origin =
+                                dragOriginalEntityOrigin + entityPerspectiveDragDelta(*hoveredViewPtr, Input::GetMouseDelta());
+                            dragOriginalEntityOrigin = sceneEntities[(size_t)selectedEntity].origin;
+                        }
+                        else
+                        {
+                            const glm::vec3 delta = applyViewDelta(hoveredWorld - dragStartWorld, dragView);
+                            sceneEntities[(size_t)selectedEntity].origin = dragOriginalEntityOrigin + delta;
+                        }
+                    }
+                    else if (selectedBrush >= 0 && selectedBrush < (int)brushes.size())
+                    {
+                        const glm::vec3 delta = applyViewDelta(hoveredWorld - dragStartWorld, dragView);
                         brushes[selectedBrush].mins = dragOriginalBrush.mins + delta;
                         brushes[selectedBrush].maxs = dragOriginalBrush.maxs + delta;
                     }
@@ -2461,7 +2995,10 @@ int main()
             {
                     const float dragPixels = glm::length(selectionRect.endMouse - selectionRect.startMouse);
                 if (!selectionRect.additive)
+                {
                     selectedBrushes.clear();
+                    selectedEntity = -1;
+                }
 
                 if (dragPixels < 4.0f)
                 {
@@ -2498,22 +3035,30 @@ int main()
 
                 selectedBrush = selectedBrushes.empty() ? -1 : selectedBrushes.back();
                 if (selectedBrush >= 0)
+                {
+                    selectedEntity = -1;
                     selectedBrushFace = defaultFaceForView(selectionRect.viewType, selectedBrushFace);
+                }
 
                 selectionRect.active = false;
             }
         }
 
-        if (draggingSelection && Input::IsMouseReleased(MouseButton::LEFT))
-        {
-            draggingSelection = false;
-            dragScaleAxis = BrushScaleAxis::None;
-            dragRotateTurns = 0;
-            dragRotateCommitted = false;
-            if (selectedBrush >= 0)
+            if (draggingSelection && Input::IsMouseReleased(MouseButton::LEFT))
             {
-                std::string action = "[move] end drag brush ";
-                if (dragTool == EditorTool::Scale)
+                draggingSelection = false;
+                dragScaleAxis = BrushScaleAxis::None;
+                dragRotateTurns = 0;
+                dragRotateCommitted = false;
+                if (selectedEntity >= 0 && selectedEntity < (int)sceneEntities.size())
+                {
+                    appendConsoleLine(console,
+                                      "[entity] end drag " + entityDisplayName(sceneEntities[(size_t)selectedEntity], selectedEntity));
+                }
+                else if (selectedBrush >= 0)
+                {
+                    std::string action = "[move] end drag brush ";
+                    if (dragTool == EditorTool::Scale)
                     action = "[scale] end brush ";
                 else if (dragTool == EditorTool::Rotate)
                     action = "[rotate] end brush ";
@@ -2665,6 +3210,25 @@ int main()
                 ImGui::TextDisabled("EDIT:");
                 ImGui::Separator();
 
+                if (ImGui::MenuItem("Create Player Start Here"))
+                {
+                    sceneEntities.push_back(makePointEntity("info_player_start", orthoPopupWorld, (int)sceneEntities.size()));
+                    selectedEntity = (int)sceneEntities.size() - 1;
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[entity] created info_player_start at popup");
+                }
+                if (ImGui::MenuItem("Create Light Here"))
+                {
+                    sceneEntities.push_back(makePointEntity("light", orthoPopupWorld, (int)sceneEntities.size()));
+                    selectedEntity = (int)sceneEntities.size() - 1;
+                    selectedBrushes.clear();
+                    selectedBrush = -1;
+                    appendConsoleLine(console, "[entity] created light at popup");
+                }
+
+                ImGui::Separator();
+
                 if (!selectedBrushes.empty())
                 {
                     if (ImGui::MenuItem("Clone Selected", "Ctrl+D"))
@@ -2797,8 +3361,10 @@ int main()
                              view,
                              device.GetHeight(),
                              brushes,
+                             sceneEntities,
                              selectedBrushes,
                              selectedBrush,
+                             selectedEntity,
                              selectedBrushFace,
                              pendingBrush,
                              settings.showGrid,
@@ -2818,6 +3384,9 @@ int main()
                           device.GetWidth(),
                           device.GetHeight(),
                           views,
+                          activeViews,
+                          sceneEntities,
+                          selectedEntity,
                           hoveredView,
                           hasHoveredView);
 

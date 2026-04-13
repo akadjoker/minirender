@@ -5,11 +5,17 @@
 #include "LevelEditorTheme.hpp"
 
 #include <array>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "ImGuiFileDialog.h"
 #include "imgui.h"
+#include "Mesh.hpp"
+
+class RenderBatch;
+class RenderTarget;
+class Shader;
 
 class LevelEditorApp
 {
@@ -55,6 +61,13 @@ public:
         Grid
     };
 
+    enum class RenderMode
+    {
+        Solid,
+        Wireframe,
+        Textured
+    };
+
     enum class DragTool
     {
         None,
@@ -64,6 +77,7 @@ public:
     };
 
     LevelEditorApp();
+    ~LevelEditorApp();
 
     void RenderFrame(float deltaTime);
 
@@ -96,6 +110,7 @@ private:
         float perspectiveDistance = 720.0f;
         float perspectiveYaw = 45.0f;
         float perspectivePitch = 28.0f;
+        RenderMode renderMode = RenderMode::Solid;
     };
 
     struct AssetEntry
@@ -108,7 +123,8 @@ private:
     void LayoutViews(const ImVec2& canvasPos, const ImVec2& canvasSize);
     void UpdateViewCameras();
     void HandleViewportInput(bool viewportHovered);
-    void DrawViewTile(const LevelEditorView& view, ImDrawList* drawList) const;
+    void DrawViewTile(const LevelEditorView& view, ImDrawList* drawList);
+    void Render3DView(const LevelEditorView& view, ImDrawList* drawList);
     void DrawViewportToolbar();
     void DrawViewportContextMenu();
     void DrawTransformGizmo();
@@ -181,9 +197,6 @@ private:
     std::vector<AssetEntry> assets_;
     AssetViewMode assetViewMode_ = AssetViewMode::Details;
     std::string currentTexturePath_;
-    glm::vec2 currentUvOffset_ = glm::vec2(0.0f);
-    glm::vec2 currentUvScale_ = glm::vec2(1.0f, 1.0f);
-    float currentUvRotation_ = 0.0f;
     float faceExtrudeDistance_ = 16.0f;
     float hollowWallThickness_ = 16.0f;
     int csgClipAxis_ = 0;
@@ -197,6 +210,7 @@ private:
     bool sceneDirty_ = false;
     ImGuiFileDialog assetFolderDialog_;
     ImGuiFileDialog sceneDialog_;
+    ImGuiFileDialog importMeshDialog_;
     int contextViewIndex_ = -1;
     bool gizmoWasUsing_ = false;
     bool draggingObjectInView_ = false;
@@ -222,4 +236,23 @@ private:
     std::vector<glm::vec3> dragStartVertexPositions_;
     std::vector<int> dragFaceVertexIndices_;
     bool dragUndoPushed_ = false;
+
+    std::unique_ptr<RenderBatch> viewBatch_;
+    std::unique_ptr<RenderTarget> viewRT_;
+    int viewRTWidth_ = 0;
+    int viewRTHeight_ = 0;
+
+    Shader* solidShader_ = nullptr;
+
+    // Cached GPU mesh buffers — invalidated when sceneDirty_
+    struct CachedMeshGPU
+    {
+        MeshBuffer buffer;
+        std::vector<std::pair<uint32_t, uint32_t>> faceRanges; // (indexOffset, indexCount) per face
+    };
+    CachedMeshGPU* meshGPUCache_ = nullptr;
+    std::size_t    meshGPUCacheCount_ = 0;
+    bool meshCacheValid_ = false;
+    void InvalidateMeshCache();
+    void RebuildMeshCache();
 };

@@ -75,6 +75,12 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
             nlohmann::json faceJson;
             faceJson["indices"] = face.indices;
             faceJson["material"] = face.materialName;
+            if (face.uvOffset.x != 0.0f || face.uvOffset.y != 0.0f)
+                faceJson["uv_offset"] = {face.uvOffset.x, face.uvOffset.y};
+            if (face.uvScale.x != 1.0f || face.uvScale.y != 1.0f)
+                faceJson["uv_scale"] = {face.uvScale.x, face.uvScale.y};
+            if (face.uvRotation != 0.0f)
+                faceJson["uv_rotation"] = face.uvRotation;
             meshJson["faces"].push_back(faceJson);
         }
 
@@ -152,6 +158,17 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
                 EditableFace face;
                 face.indices = faceJson.value("indices", std::vector<int>{});
                 face.materialName = faceJson.value("material", std::string("default"));
+                if (faceJson.contains("uv_offset"))
+                {
+                    auto arr = faceJson["uv_offset"];
+                    face.uvOffset = glm::vec2(arr[0].get<float>(), arr[1].get<float>());
+                }
+                if (faceJson.contains("uv_scale"))
+                {
+                    auto arr = faceJson["uv_scale"];
+                    face.uvScale = glm::vec2(arr[0].get<float>(), arr[1].get<float>());
+                }
+                face.uvRotation = faceJson.value("uv_rotation", 0.0f);
                 faces.push_back(face);
             }
 

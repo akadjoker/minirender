@@ -8,12 +8,17 @@
 struct EditableVertex
 {
     glm::vec3 position {0.0f, 0.0f, 0.0f};
+    glm::vec3 normal   {0.0f, 1.0f, 0.0f};
+    glm::vec2 uv       {0.0f, 0.0f};
 };
 
 struct EditableFace
 {
     std::vector<int> indices;
     std::string materialName = "default";
+    glm::vec2 uvOffset {0.0f, 0.0f};
+    glm::vec2 uvScale  {1.0f, 1.0f};
+    float     uvRotation = 0.0f;
 };
 
 class EditableMesh

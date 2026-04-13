@@ -15,12 +15,12 @@ EditableMesh EditableMesh::MakeBox(const glm::vec3& minBounds, const glm::vec3& 
     };
 
     mesh.faces_ = {
-        {{0, 1, 2, 3}, "wall"},
-        {{4, 5, 6, 7}, "wall"},
-        {{0, 4, 5, 1}, "wall"},
-        {{1, 5, 6, 2}, "wall"},
-        {{2, 6, 7, 3}, "wall"},
-        {{3, 7, 4, 0}, "wall"},
+        {{0, 1, 2, 3}, "left"},
+        {{4, 5, 6, 7}, "right"},
+        {{0, 4, 5, 1}, "bottom"},
+        {{1, 5, 6, 2}, "front"},
+        {{2, 6, 7, 3}, "top"},
+        {{3, 7, 4, 0}, "back"},
     };
 
     return mesh;

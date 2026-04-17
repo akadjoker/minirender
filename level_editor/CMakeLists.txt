@@ -31,7 +31,9 @@ add_executable(level_editor
     src/LevelEditorScene.cpp
     src/LevelEditorSceneIO.cpp
     src/LevelEditorTheme.cpp
+    src/LightmapBaker.cpp
     src/MeshCSG.cpp
+    src/stb_truetype_impl.cpp
     src/main.cpp
 )
 
@@ -45,6 +47,7 @@ else()
         src
         ${CMAKE_SOURCE_DIR}/vendor/imgui
         ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+        ${CMAKE_SOURCE_DIR}/vendor/stb
     )
 endif()
 
@@ -63,5 +66,5 @@ if (WIN32)
 endif()
 
 if (UNIX)
-    target_link_libraries(level_editor core imgui m SDL2 GL)
+    target_link_libraries(level_editor core imgui poly2tri m SDL2 GL)
 endif()

@@ -1,0 +1,98 @@
+{
+    "assetRoot": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel/textures",
+    "assetViewMode": 2,
+    "currentTexturePath": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel/textures/Floor02.jpg",
+    "debugDrawNormals": false,
+    "debugDrawTangents": false,
+    "debugNormalLength": 32.5,
+    "gridSize": 16.0,
+    "lastImportDir": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel",
+    "lmAmbient": 0.4099999964237213,
+    "lmBias": 2.0,
+    "lmResolution": 2084,
+    "lmSamples": 5,
+    "perspGridSize": 19.100000381469727,
+    "scenePath": "/media/ctw04578/data/projects/zen/minirender/bin/scenes/room.mred",
+    "selectionMode": 0,
+    "showGrid": false,
+    "snapEnabled": true,
+    "theme": 1,
+    "transparency": 0.3199999928474426,
+    "useLightmap": true,
+    "useTransparency": true,
+    "viewLayout": 4,
+    "views": [
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                0.0,
+                64.0,
+                0.0
+            ],
+            "orthoSize": 4096.0,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 0,
+            "type": 0
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                -1571.251220703125,
+                29.181907653808594,
+                0.0
+            ],
+            "orthoSize": 314.9829406738281,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 0,
+            "type": 2
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                0.0,
+                364.4548034667969,
+                -492.12420654296875
+            ],
+            "orthoSize": 1887.3206787109375,
+            "perspectiveDistance": 720.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 0,
+            "type": 5
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                -1049.08447265625,
+                -9.933526992797852,
+                -318.586669921875
+            ],
+            "orthoSize": 256.0,
+            "perspectiveDistance": 3712.0,
+            "perspectivePitch": 31.25,
+            "perspectiveYaw": -277.6996765136719,
+            "renderMode": 2,
+            "type": 6
+        }
+    ]
+}

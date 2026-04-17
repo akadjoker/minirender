@@ -8,6 +8,7 @@ project(minirender)
 add_compile_definitions(IMGUI_IMPL_OPENGL_ES3)
 
 add_subdirectory(vendor/imgui)
+add_subdirectory(vendor/poly2tri)
 add_subdirectory(core)
 add_subdirectory(demos)
 add_subdirectory(editor)

@@ -198,6 +198,25 @@ std::string ResolveTexturePath(const std::string &baseDir, const std::string &sh
         }
     }
 
+    // Search common texture subdirectories
+    const char *subDirs[] = {"textures", "tex", "Textures", "Tex", "../textures", "../Textures"};
+    for (const char *sub : subDirs)
+    {
+        const std::string subBase = PathJoin(baseDir, sub);
+        if (!fileOnly.empty())
+        {
+            const std::string subJoined = PathJoin(subBase, fileOnly);
+            if (FileExists(subJoined))
+                return subJoined;
+            for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); ++i)
+            {
+                const std::string subExt = PathJoin(subBase, fileOnly + exts[i]);
+                if (FileExists(subExt))
+                    return subExt;
+            }
+        }
+    }
+
     return std::string();
 }
 

@@ -6,12 +6,16 @@
 
 #include <array>
 #include <memory>
+#include <thread>
+#include <atomic>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ImGuiFileDialog.h"
 #include "imgui.h"
 #include "Mesh.hpp"
+#include "LightmapBaker.hpp"
 
 class RenderBatch;
 class RenderTarget;
@@ -49,6 +53,7 @@ public:
 
     enum class ViewLayout
     {
+        One = 1,
         Two = 2,
         Three = 3,
         Four = 4
@@ -111,6 +116,9 @@ private:
         float perspectiveYaw = 45.0f;
         float perspectivePitch = 28.0f;
         RenderMode renderMode = RenderMode::Solid;
+        RenderTarget* rt = nullptr;
+        int rtWidth = 0;
+        int rtHeight = 0;
     };
 
     struct AssetEntry
@@ -158,6 +166,20 @@ private:
     bool SaveSceneToPath(const std::string& path, bool setAsCurrentPath);
     bool LoadSceneFromPath(const std::string& path);
     void HandleFileDialogs();
+    void SaveEditorSettings();
+    void LoadEditorSettings();
+
+    enum class RefPlaneAxis { Front, Back, Left, Right, Top, Bottom };
+    struct ReferencePlane
+    {
+        RefPlaneAxis axis = RefPlaneAxis::Front;
+        std::string imagePath;
+        float offset = 0.0f;
+        float scale = 256.0f;
+        float opacity = 0.5f;
+        bool visible = true;
+        std::string textureName; // key in TextureManager
+    };
 
     LevelEditorScene scene_;
     LevelEditorTheme theme_ = LevelEditorTheme::Studio;
@@ -173,8 +195,10 @@ private:
     bool snapEnabled_ = true;
     bool useTransparency_ = true;
     bool vertexFrontOnly_ = true;
+    bool placeVertexMode_ = false;
     float transparency_ = 0.45f;
     float gridSize_ = 16.0f;
+    float perspGridSize_ = 16.0f;
     std::array<LevelEditorView, 4> views_ = {};
     int activeViewIndex_ = 3;
     int activeViewCount_ = 4;
@@ -198,19 +222,48 @@ private:
     AssetViewMode assetViewMode_ = AssetViewMode::Details;
     std::string currentTexturePath_;
     float faceExtrudeDistance_ = 16.0f;
+    float faceInsetAmount_ = 8.0f;
     float hollowWallThickness_ = 16.0f;
     int csgClipAxis_ = 0;
     float csgClipOffset_ = 0.0f;
     bool csgClipKeepFront_ = true;
+
+    // Primitive creation
+    enum class PrimitiveType { Box, Cylinder, Sphere, Plane, Wedge, Stairs, SpiralStairs, Text };
+    PrimitiveType primitiveType_ = PrimitiveType::Box;
+    glm::vec3 primSize_ = glm::vec3(128.0f, 128.0f, 128.0f);
+    float primRadius_ = 64.0f;
+    float primHeight_ = 128.0f;
+    int primSegments_ = 16;
+    int primRings_ = 8;
+    float primPlaneW_ = 256.0f;
+    float primPlaneD_ = 256.0f;
+    int primSubdivX_ = 1;
+    int primSubdivZ_ = 1;
+    int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
+    int primStairSteps_ = 8;
+    float primInnerRadius_ = 32.0f;
+    float primOuterRadius_ = 96.0f;
+    float primSpiralAngle_ = 360.0f;
+    // Text primitive
+    std::string primText_ = "Hello";
+    std::string primFontPath_ = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    float primTextSize_ = 64.0f;
+    float primTextExtrude_ = 8.0f;
+    int primTextCurveQuality_ = 4;
     glm::vec3 vertexBakeTranslate_ = glm::vec3(0.0f);
     glm::vec3 vertexBakeRotate_ = glm::vec3(0.0f);
     glm::vec3 vertexBakeScale_ = glm::vec3(1.0f);
     std::string scenePath_;
     std::string sceneStatusMessage_;
+    std::string lastImportDir_;
     bool sceneDirty_ = false;
     ImGuiFileDialog assetFolderDialog_;
     ImGuiFileDialog sceneDialog_;
     ImGuiFileDialog importMeshDialog_;
+    ImGuiFileDialog refPlaneImageDialog_;
+    int refPlaneDialogTarget_ = -1;
+    std::vector<ReferencePlane> referencePlanes_;
     int contextViewIndex_ = -1;
     bool gizmoWasUsing_ = false;
     bool draggingObjectInView_ = false;
@@ -238,21 +291,47 @@ private:
     bool dragUndoPushed_ = false;
 
     std::unique_ptr<RenderBatch> viewBatch_;
-    std::unique_ptr<RenderTarget> viewRT_;
-    int viewRTWidth_ = 0;
-    int viewRTHeight_ = 0;
 
     Shader* solidShader_ = nullptr;
 
     // Cached GPU mesh buffers — invalidated when sceneDirty_
+    struct MaterialRange
+    {
+        std::string materialName;
+        uint32_t indexStart;
+        uint32_t indexCount;
+    };
     struct CachedMeshGPU
     {
         MeshBuffer buffer;
-        std::vector<std::pair<uint32_t, uint32_t>> faceRanges; // (indexOffset, indexCount) per face
+        std::vector<MaterialRange> materialRanges;  // grouped by material for batched draw
+        std::vector<std::pair<uint32_t, uint32_t>> faceRanges; // per face (for highlight)
     };
     CachedMeshGPU* meshGPUCache_ = nullptr;
+    std::unordered_set<std::string> failedTextureLoads_;
     std::size_t    meshGPUCacheCount_ = 0;
     bool meshCacheValid_ = false;
     void InvalidateMeshCache();
     void RebuildMeshCache();
+
+    // Debug visualization
+    bool debugDrawNormals_ = false;
+    bool debugDrawTangents_ = false;
+    float debugNormalLength_ = 10.0f;
+
+    // Lightmap
+    LightmapResult lightmapResult_;
+    LightmapSettings lightmapSettings_;
+    GLuint lightmapTexture_ = 0;
+    bool useLightmap_ = false;
+    void BakeAndUploadLightmap();
+
+    // Async bake
+    std::atomic<float> bakeProgress_{0.0f};
+    bool bakeRunning_ = false;
+    std::unique_ptr<std::thread> bakeThread_;
+    LightmapResult bakeResult_;
+    LevelEditorScene bakeSceneCopy_;
+    void StartBakeAsync();
+    void FinishBakeAsync();
 };

@@ -33,6 +33,8 @@ std::string entityTypeToString(LevelEntityType type)
     case LevelEntityType::Light: return "light";
     case LevelEntityType::Door: return "door";
     case LevelEntityType::Elevator: return "elevator";
+    case LevelEntityType::Platform: return "platform";
+    case LevelEntityType::Placement: return "placement";
     }
     return "entity";
 }
@@ -43,6 +45,8 @@ LevelEntityType entityTypeFromString(const std::string& value)
     if (value == "light") return LevelEntityType::Light;
     if (value == "door") return LevelEntityType::Door;
     if (value == "elevator") return LevelEntityType::Elevator;
+    if (value == "platform") return LevelEntityType::Platform;
+    if (value == "placement") return LevelEntityType::Placement;
     return LevelEntityType::PlayerStart;
 }
 }
@@ -111,6 +115,31 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
             entityJson["direction"] = {entity.direction.x, entity.direction.y, entity.direction.z};
             entityJson["spotAngle"] = entity.spotAngle;
             entityJson["spotSoftness"] = entity.spotSoftness;
+        }
+        if (entity.type == LevelEntityType::PlayerStart)
+        {
+            entityJson["direction"] = {entity.direction.x, entity.direction.y, entity.direction.z};
+        }
+        if (entity.type == LevelEntityType::Door)
+        {
+            entityJson["doorType"] = static_cast<int>(entity.doorType);
+            entityJson["direction"] = {entity.direction.x, entity.direction.y, entity.direction.z};
+            entityJson["doorDistance"] = entity.doorDistance;
+            entityJson["doorSpeed"] = entity.doorSpeed;
+            entityJson["doorStartOpen"] = entity.doorStartOpen;
+            entityJson["linkedMesh"] = entity.linkedMeshIndex;
+        }
+        if (entity.type == LevelEntityType::Elevator || entity.type == LevelEntityType::Platform)
+        {
+            entityJson["endPosition"] = {entity.endPosition.x, entity.endPosition.y, entity.endPosition.z};
+            entityJson["moveSpeed"] = entity.moveSpeed;
+            entityJson["waitTime"] = entity.waitTime;
+            entityJson["linkedMesh"] = entity.linkedMeshIndex;
+        }
+        if (entity.type == LevelEntityType::Placement)
+        {
+            entityJson["itemType"] = entity.itemType;
+            entityJson["rotationY"] = entity.rotationY;
         }
         root["entities"].push_back(entityJson);
     }
@@ -229,6 +258,40 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
                                                  entityJson["direction"][2].get<float>());
                 entity.spotAngle = entityJson.value("spotAngle", 45.0f);
                 entity.spotSoftness = entityJson.value("spotSoftness", 0.1f);
+            }
+            if (entity.type == LevelEntityType::PlayerStart)
+            {
+                if (entityJson.contains("direction") && entityJson["direction"].is_array() && entityJson["direction"].size() == 3)
+                    entity.direction = glm::vec3(entityJson["direction"][0].get<float>(),
+                                                 entityJson["direction"][1].get<float>(),
+                                                 entityJson["direction"][2].get<float>());
+            }
+            if (entity.type == LevelEntityType::Door)
+            {
+                entity.doorType = static_cast<DoorType>(entityJson.value("doorType", 0));
+                if (entityJson.contains("direction") && entityJson["direction"].is_array() && entityJson["direction"].size() == 3)
+                    entity.direction = glm::vec3(entityJson["direction"][0].get<float>(),
+                                                 entityJson["direction"][1].get<float>(),
+                                                 entityJson["direction"][2].get<float>());
+                entity.doorDistance = entityJson.value("doorDistance", 128.0f);
+                entity.doorSpeed = entityJson.value("doorSpeed", 64.0f);
+                entity.doorStartOpen = entityJson.value("doorStartOpen", false);
+                entity.linkedMeshIndex = entityJson.value("linkedMesh", -1);
+            }
+            if (entity.type == LevelEntityType::Elevator || entity.type == LevelEntityType::Platform)
+            {
+                if (entityJson.contains("endPosition") && entityJson["endPosition"].is_array() && entityJson["endPosition"].size() == 3)
+                    entity.endPosition = glm::vec3(entityJson["endPosition"][0].get<float>(),
+                                                   entityJson["endPosition"][1].get<float>(),
+                                                   entityJson["endPosition"][2].get<float>());
+                entity.moveSpeed = entityJson.value("moveSpeed", 64.0f);
+                entity.waitTime = entityJson.value("waitTime", 2.0f);
+                entity.linkedMeshIndex = entityJson.value("linkedMesh", -1);
+            }
+            if (entity.type == LevelEntityType::Placement)
+            {
+                entity.itemType = entityJson.value("itemType", 0);
+                entity.rotationY = entityJson.value("rotationY", 0.0f);
             }
             scene.entities().push_back(entity);
         }

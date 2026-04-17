@@ -198,6 +198,15 @@ private:
     bool showGrid_ = true;
     bool snapEnabled_ = true;
     bool snapToGeometry_ = false;
+
+    // Entity preview (animate doors/elevators/platforms in editor)
+    bool entityPreviewActive_ = false;
+    int entityPreviewIndex_ = -1;         // which entity is being previewed
+    float entityPreviewTime_ = 0.0f;      // 0..1 ping-pong
+    bool entityPreviewForward_ = true;
+    glm::vec3 entityPreviewOrigPos_ {0.0f}; // backup of linked mesh position
+    glm::vec3 entityPreviewOrigRot_ {0.0f}; // backup of linked mesh rotation
+
     bool useTransparency_ = true;
     bool vertexFrontOnly_ = true;
     bool placeVertexMode_ = false;

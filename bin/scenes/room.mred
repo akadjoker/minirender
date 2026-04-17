@@ -1,6 +1,11 @@
 {
   "entities": [
     {
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ],
       "name": "Player Start",
       "position": [
         -2395.0,

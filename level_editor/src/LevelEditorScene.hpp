@@ -11,7 +11,16 @@ enum class LevelEntityType
     PlayerStart,
     Light,
     Door,
-    Elevator
+    Elevator,
+    Platform,
+    Placement
+};
+
+enum class DoorType
+{
+    Slide,    // sliding door — moves along direction
+    Turn,     // hinged door — rotates from edge
+    Shutter   // double sliding — two halves slide apart
 };
 
 struct LevelMeshObject
@@ -33,15 +42,33 @@ struct LevelEntityObject
     std::string name = "PlayerStart";
     LevelEntityType type = LevelEntityType::PlayerStart;
     glm::vec3 position {0.0f, 0.0f, 0.0f};
+
     // Light properties
     LightType lightType = LightType::Point;
     glm::vec3 color {1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
     float radius = 512.0f;
-    // Directional / Spot
-    glm::vec3 direction {0.0f, -1.0f, 0.0f}; // normalized direction
-    float spotAngle = 45.0f;                   // half-angle in degrees (spot only)
-    float spotSoftness = 0.1f;                 // 0=hard edge, 1=very soft
+
+    // Directional / Spot / PlayerStart direction
+    glm::vec3 direction {0.0f, -1.0f, 0.0f};
+    float spotAngle = 45.0f;
+    float spotSoftness = 0.1f;
+
+    // Door properties
+    DoorType doorType = DoorType::Slide;
+    float doorDistance = 128.0f;   // slide distance (units) or turn angle (degrees)
+    float doorSpeed = 64.0f;      // units/sec or degrees/sec
+    bool doorStartOpen = false;
+    int linkedMeshIndex = -1;     // which mesh this entity controls
+
+    // Elevator / Platform properties
+    glm::vec3 endPosition {0.0f, 128.0f, 0.0f};
+    float moveSpeed = 64.0f;
+    float waitTime = 2.0f;        // seconds to wait at each end
+
+    // Placement properties
+    int itemType = 0;
+    float rotationY = 0.0f;
 };
 
 class LevelEditorScene

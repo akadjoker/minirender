@@ -105,8 +105,21 @@ const char* entityTypeName(LevelEntityType type)
     case LevelEntityType::Light: return "Light";
     case LevelEntityType::Door: return "Door";
     case LevelEntityType::Elevator: return "Elevator";
+    case LevelEntityType::Platform: return "Platform";
+    case LevelEntityType::Placement: return "Placement";
     }
     return "Entity";
+}
+
+const char* doorTypeName(DoorType type)
+{
+    switch (type)
+    {
+    case DoorType::Slide: return "Slide";
+    case DoorType::Turn: return "Turn";
+    case DoorType::Shutter: return "Shutter";
+    }
+    return "Slide";
 }
 
 const char* viewTypeName(LevelEditorApp::ViewType type)
@@ -1672,6 +1685,52 @@ void LevelEditorApp::RenderFrame(float deltaTime)
     ImGuizmo::BeginFrame();
     HandleUndoRedoShortcuts();
     HandleToolShortcuts();
+
+    // Entity preview animation
+    if (entityPreviewActive_ && entityPreviewIndex_ >= 0 &&
+        entityPreviewIndex_ < static_cast<int>(scene_.entities().size()))
+    {
+        const LevelEntityObject& ent = scene_.entities()[(size_t)entityPreviewIndex_];
+        const float speed = 0.5f; // 0→1 in 2 seconds (full cycle ~4s)
+
+        if (entityPreviewForward_)
+        {
+            entityPreviewTime_ += deltaTime * speed;
+            if (entityPreviewTime_ >= 1.0f) { entityPreviewTime_ = 1.0f; entityPreviewForward_ = false; }
+        }
+        else
+        {
+            entityPreviewTime_ -= deltaTime * speed;
+            if (entityPreviewTime_ <= 0.0f) { entityPreviewTime_ = 0.0f; entityPreviewForward_ = true; }
+        }
+
+        // Smooth ease in/out
+        const float t = entityPreviewTime_ * entityPreviewTime_ * (3.0f - 2.0f * entityPreviewTime_);
+
+        if (ent.linkedMeshIndex >= 0 && ent.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+        {
+            LevelMeshObject& mesh = scene_.meshObjects()[(size_t)ent.linkedMeshIndex];
+
+            if (ent.type == LevelEntityType::Door)
+            {
+                if (ent.doorType == DoorType::Slide || ent.doorType == DoorType::Shutter)
+                {
+                    glm::vec3 dir = glm::length(ent.direction) > 0.01f ? glm::normalize(ent.direction) : glm::vec3(1, 0, 0);
+                    mesh.position = entityPreviewOrigPos_ + dir * ent.doorDistance * t;
+                }
+                else if (ent.doorType == DoorType::Turn)
+                {
+                    mesh.rotationEuler = entityPreviewOrigRot_ + glm::vec3(0, ent.doorDistance * t, 0);
+                }
+            }
+            else if (ent.type == LevelEntityType::Elevator || ent.type == LevelEntityType::Platform)
+            {
+                mesh.position = glm::mix(entityPreviewOrigPos_, ent.endPosition, t);
+            }
+            sceneDirty_ = true;
+        }
+    }
+
     ShowMenuBar();
     UpdatePanelLayout();
     ShowLeftPanel();
@@ -3725,6 +3784,8 @@ void LevelEditorApp::DrawTransformGizmo()
     {
         LevelEntityObject& ent = scene_.entities()[selectedEntityIndex_];
         entityHasDirection = (ent.type == LevelEntityType::PlayerStart) ||
+            (ent.type == LevelEntityType::Door &&
+             (ent.doorType == DoorType::Slide || ent.doorType == DoorType::Shutter)) ||
             (ent.type == LevelEntityType::Light &&
              (ent.lightType == LightType::Directional || ent.lightType == LightType::Spot));
         if (entityHasDirection)
@@ -4581,6 +4642,116 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     viewBatch_->Line3D(feet + glm::vec3(0, 0, -6), feet + glm::vec3(0, 0, 6));
                 }
             }
+            else if (ent.type == LevelEntityType::Door)
+            {
+                const uint8_t alpha = selected ? 255 : 180;
+                const float s = 8.0f;
+
+                // Door rectangle outline
+                viewBatch_->SetColor(180, 120, 60, alpha);
+                const glm::vec3 up(0, s * 3, 0);
+                glm::vec3 right = glm::cross(glm::vec3(0, 1, 0), ent.direction);
+                if (glm::length(right) < 0.01f) right = glm::vec3(1, 0, 0);
+                right = glm::normalize(right) * s;
+
+                const glm::vec3 bl = p - right;
+                const glm::vec3 br = p + right;
+                const glm::vec3 tl = bl + up;
+                const glm::vec3 tr = br + up;
+                viewBatch_->Line3D(bl, br);
+                viewBatch_->Line3D(br, tr);
+                viewBatch_->Line3D(tr, tl);
+                viewBatch_->Line3D(tl, bl);
+
+                // Hinge indicator for Turn
+                if (ent.doorType == DoorType::Turn)
+                {
+                    viewBatch_->SetColor(255, 200, 80, alpha);
+                    viewBatch_->Line3D(bl, bl + glm::vec3(0, s * 0.5f, 0));
+                    viewBatch_->Line3D(bl, bl - glm::vec3(0, s * 0.5f, 0));
+                }
+
+                // Slide direction arrow
+                if (ent.doorType == DoorType::Slide || ent.doorType == DoorType::Shutter)
+                {
+                    viewBatch_->SetColor(255, 200, 80, alpha);
+                    glm::vec3 dir = glm::length(ent.direction) > 0.01f ? glm::normalize(ent.direction) : glm::vec3(1, 0, 0);
+                    const glm::vec3 mid = p + up * 0.5f;
+                    viewBatch_->Line3D(mid, mid + dir * s * 2.0f);
+                    // Arrowhead
+                    glm::vec3 as = glm::cross(dir, glm::vec3(0, 1, 0));
+                    if (glm::length(as) < 0.01f) as = glm::cross(dir, glm::vec3(1, 0, 0));
+                    as = glm::normalize(as) * 2.0f;
+                    const glm::vec3 ab = mid + dir * s * 2.0f - dir * 3.0f;
+                    viewBatch_->Line3D(mid + dir * s * 2.0f, ab + as);
+                    viewBatch_->Line3D(mid + dir * s * 2.0f, ab - as);
+
+                    // Shutter: second arrow in opposite direction
+                    if (ent.doorType == DoorType::Shutter)
+                    {
+                        viewBatch_->Line3D(mid, mid - dir * s * 2.0f);
+                        const glm::vec3 ab2 = mid - dir * s * 2.0f + dir * 3.0f;
+                        viewBatch_->Line3D(mid - dir * s * 2.0f, ab2 + as);
+                        viewBatch_->Line3D(mid - dir * s * 2.0f, ab2 - as);
+                    }
+                }
+
+                // Selection highlight
+                if (selected)
+                {
+                    viewBatch_->SetColor(255, 255, 255, 100);
+                    viewBatch_->Line3D(bl, br);
+                    viewBatch_->Line3D(br, tr);
+                    viewBatch_->Line3D(tr, tl);
+                    viewBatch_->Line3D(tl, bl);
+                }
+            }
+            else if (ent.type == LevelEntityType::Elevator || ent.type == LevelEntityType::Platform)
+            {
+                const uint8_t alpha = selected ? 255 : 180;
+                const float s = 6.0f;
+
+                // Platform icon: flat square
+                viewBatch_->SetColor(100, 180, 255, alpha);
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, -s), p + glm::vec3(s, 0, -s));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, -s), p + glm::vec3(s, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, s), p + glm::vec3(-s, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, s), p + glm::vec3(-s, 0, -s));
+                // Cross
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, -s), p + glm::vec3(s, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, -s), p + glm::vec3(-s, 0, s));
+
+                // Line to end position
+                viewBatch_->SetColor(100, 255, 100, selected ? 200 : 100);
+                viewBatch_->Line3D(p, ent.endPosition);
+
+                // Small cross at end position
+                viewBatch_->SetColor(100, 255, 100, selected ? 180 : 80);
+                const float es = 3.0f;
+                viewBatch_->Line3D(ent.endPosition + glm::vec3(-es, 0, 0), ent.endPosition + glm::vec3(es, 0, 0));
+                viewBatch_->Line3D(ent.endPosition + glm::vec3(0, -es, 0), ent.endPosition + glm::vec3(0, es, 0));
+                viewBatch_->Line3D(ent.endPosition + glm::vec3(0, 0, -es), ent.endPosition + glm::vec3(0, 0, es));
+            }
+            else if (ent.type == LevelEntityType::Placement)
+            {
+                const uint8_t alpha = selected ? 255 : 180;
+                const float s = 5.0f;
+
+                // Diamond shape (top view)
+                viewBatch_->SetColor(255, 180, 255, alpha);
+                viewBatch_->Line3D(p + glm::vec3(0, 0, -s), p + glm::vec3(s, 0, 0));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, 0), p + glm::vec3(0, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(0, 0, s), p + glm::vec3(-s, 0, 0));
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, 0), p + glm::vec3(0, 0, -s));
+                // Vertical line
+                viewBatch_->Line3D(p, p + glm::vec3(0, s * 2, 0));
+
+                // Rotation arrow (rotationY)
+                const float rad = glm::radians(ent.rotationY);
+                const glm::vec3 fwd(std::sin(rad), 0, -std::cos(rad));
+                viewBatch_->SetColor(255, 255, 80, alpha);
+                viewBatch_->Line3D(p, p + fwd * s * 2.0f);
+            }
             else
             {
                 // Generic entity: small cross
@@ -5187,6 +5358,50 @@ void LevelEditorApp::ShowLeftPanel()
             entity.name = "Player Start " + std::to_string(maxIdx + 1);
             entity.type = LevelEntityType::PlayerStart;
             entity.direction = glm::vec3(0, 0, -1);
+            scene_.entities().push_back(entity);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+        }
+
+        if (ImGui::Button("Add Elevator"))
+        {
+            PushUndoState();
+            LevelEntityObject entity;
+            int maxIdx = 0;
+            for (const auto& e : scene_.entities())
+                if (e.type == LevelEntityType::Elevator)
+                    ++maxIdx;
+            entity.name = "Elevator " + std::to_string(maxIdx + 1);
+            entity.type = LevelEntityType::Elevator;
+            entity.endPosition = glm::vec3(0, 128, 0);
+            scene_.entities().push_back(entity);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add Platform"))
+        {
+            PushUndoState();
+            LevelEntityObject entity;
+            int maxIdx = 0;
+            for (const auto& e : scene_.entities())
+                if (e.type == LevelEntityType::Platform)
+                    ++maxIdx;
+            entity.name = "Platform " + std::to_string(maxIdx + 1);
+            entity.type = LevelEntityType::Platform;
+            entity.endPosition = glm::vec3(128, 0, 0);
+            scene_.entities().push_back(entity);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Add Placement"))
+        {
+            PushUndoState();
+            LevelEntityObject entity;
+            int maxIdx = 0;
+            for (const auto& e : scene_.entities())
+                if (e.type == LevelEntityType::Placement)
+                    ++maxIdx;
+            entity.name = "Item " + std::to_string(maxIdx + 1);
+            entity.type = LevelEntityType::Placement;
             scene_.entities().push_back(entity);
             selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
         }
@@ -6462,6 +6677,253 @@ void LevelEditorApp::ShowRightPanel()
                 {
                     PushUndoState();
                     entity.direction = glm::normalize(dir);
+                }
+            }
+        }
+
+        // Door properties
+        if (entity.type == LevelEntityType::Door)
+        {
+            static const char* doorTypeNames[] = {"Slide", "Turn", "Shutter"};
+            int dt = static_cast<int>(entity.doorType);
+            if (ImGui::Combo("Door Type", &dt, doorTypeNames, 3))
+            {
+                PushUndoState();
+                entity.doorType = static_cast<DoorType>(dt);
+            }
+
+            if (entity.doorType == DoorType::Slide || entity.doorType == DoorType::Shutter)
+            {
+                glm::vec3 dir = entity.direction;
+                if (ImGui::DragFloat3("Slide Direction", &dir.x, 0.01f, -1.0f, 1.0f))
+                {
+                    if (glm::length(dir) > 1e-4f)
+                    {
+                        PushUndoState();
+                        entity.direction = glm::normalize(dir);
+                    }
+                }
+                // Quick direction presets
+                if (ImGui::Button("Left")) { PushUndoState(); entity.direction = glm::vec3(-1, 0, 0); }
+                ImGui::SameLine();
+                if (ImGui::Button("Right")) { PushUndoState(); entity.direction = glm::vec3(1, 0, 0); }
+                ImGui::SameLine();
+                if (ImGui::Button("Up")) { PushUndoState(); entity.direction = glm::vec3(0, 1, 0); }
+                ImGui::SameLine();
+                if (ImGui::Button("Down")) { PushUndoState(); entity.direction = glm::vec3(0, -1, 0); }
+            }
+
+            const char* distLabel = (entity.doorType == DoorType::Turn) ? "Angle (degrees)" : "Distance";
+            float dist = entity.doorDistance;
+            if (ImGui::DragFloat(distLabel, &dist, 1.0f, 0.0f, 1000.0f) && dist != entity.doorDistance)
+            {
+                PushUndoState();
+                entity.doorDistance = dist;
+            }
+
+            float spd = entity.doorSpeed;
+            if (ImGui::DragFloat("Speed##Door", &spd, 1.0f, 0.1f, 1000.0f) && spd != entity.doorSpeed)
+            {
+                PushUndoState();
+                entity.doorSpeed = spd;
+            }
+
+            bool open = entity.doorStartOpen;
+            if (ImGui::Checkbox("Start Open", &open))
+            {
+                PushUndoState();
+                entity.doorStartOpen = open;
+            }
+
+            // Link to mesh
+            const char* meshPreview = (entity.linkedMeshIndex >= 0 &&
+                entity.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+                ? scene_.meshObjects()[(size_t)entity.linkedMeshIndex].name.c_str()
+                : "(none)";
+            if (ImGui::BeginCombo("Linked Mesh", meshPreview))
+            {
+                if (ImGui::Selectable("(none)", entity.linkedMeshIndex < 0))
+                {
+                    PushUndoState();
+                    entity.linkedMeshIndex = -1;
+                }
+                for (int mi = 0; mi < static_cast<int>(scene_.meshObjects().size()); ++mi)
+                {
+                    const bool sel = (mi == entity.linkedMeshIndex);
+                    if (ImGui::Selectable(scene_.meshObjects()[(size_t)mi].name.c_str(), sel))
+                    {
+                        PushUndoState();
+                        entity.linkedMeshIndex = mi;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // Elevator properties
+        if (entity.type == LevelEntityType::Elevator)
+        {
+            glm::vec3 endPos = entity.endPosition;
+            if (ImGui::DragFloat3("End Position", &endPos.x, 1.0f) && endPos != entity.endPosition)
+            {
+                PushUndoState();
+                entity.endPosition = endPos;
+            }
+
+            float spd = entity.moveSpeed;
+            if (ImGui::DragFloat("Speed##Elev", &spd, 1.0f, 0.1f, 1000.0f) && spd != entity.moveSpeed)
+            {
+                PushUndoState();
+                entity.moveSpeed = spd;
+            }
+
+            float wt = entity.waitTime;
+            if (ImGui::DragFloat("Wait Time (s)", &wt, 0.1f, 0.0f, 60.0f) && wt != entity.waitTime)
+            {
+                PushUndoState();
+                entity.waitTime = wt;
+            }
+
+            // Link to mesh
+            const char* meshPreview = (entity.linkedMeshIndex >= 0 &&
+                entity.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+                ? scene_.meshObjects()[(size_t)entity.linkedMeshIndex].name.c_str()
+                : "(none)";
+            if (ImGui::BeginCombo("Linked Mesh##Elev", meshPreview))
+            {
+                if (ImGui::Selectable("(none)##Elev", entity.linkedMeshIndex < 0))
+                {
+                    PushUndoState();
+                    entity.linkedMeshIndex = -1;
+                }
+                for (int mi = 0; mi < static_cast<int>(scene_.meshObjects().size()); ++mi)
+                {
+                    const bool sel = (mi == entity.linkedMeshIndex);
+                    if (ImGui::Selectable(scene_.meshObjects()[(size_t)mi].name.c_str(), sel))
+                    {
+                        PushUndoState();
+                        entity.linkedMeshIndex = mi;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // Platform properties
+        if (entity.type == LevelEntityType::Platform)
+        {
+            glm::vec3 endPos = entity.endPosition;
+            if (ImGui::DragFloat3("End Position##Plat", &endPos.x, 1.0f) && endPos != entity.endPosition)
+            {
+                PushUndoState();
+                entity.endPosition = endPos;
+            }
+
+            float spd = entity.moveSpeed;
+            if (ImGui::DragFloat("Speed##Plat", &spd, 1.0f, 0.1f, 1000.0f) && spd != entity.moveSpeed)
+            {
+                PushUndoState();
+                entity.moveSpeed = spd;
+            }
+
+            float wt = entity.waitTime;
+            if (ImGui::DragFloat("Wait Time##Plat", &wt, 0.1f, 0.0f, 60.0f) && wt != entity.waitTime)
+            {
+                PushUndoState();
+                entity.waitTime = wt;
+            }
+
+            // Link to mesh
+            const char* meshPreview = (entity.linkedMeshIndex >= 0 &&
+                entity.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+                ? scene_.meshObjects()[(size_t)entity.linkedMeshIndex].name.c_str()
+                : "(none)";
+            if (ImGui::BeginCombo("Linked Mesh##Plat", meshPreview))
+            {
+                if (ImGui::Selectable("(none)##Plat", entity.linkedMeshIndex < 0))
+                {
+                    PushUndoState();
+                    entity.linkedMeshIndex = -1;
+                }
+                for (int mi = 0; mi < static_cast<int>(scene_.meshObjects().size()); ++mi)
+                {
+                    const bool sel = (mi == entity.linkedMeshIndex);
+                    if (ImGui::Selectable(scene_.meshObjects()[(size_t)mi].name.c_str(), sel))
+                    {
+                        PushUndoState();
+                        entity.linkedMeshIndex = mi;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // Placement properties
+        if (entity.type == LevelEntityType::Placement)
+        {
+            int it = entity.itemType;
+            if (ImGui::InputInt("Item Type", &it) && it != entity.itemType)
+            {
+                PushUndoState();
+                entity.itemType = it;
+            }
+
+            float ry = entity.rotationY;
+            if (ImGui::DragFloat("Rotation Y", &ry, 1.0f, -360.0f, 360.0f) && ry != entity.rotationY)
+            {
+                PushUndoState();
+                entity.rotationY = ry;
+            }
+        }
+
+        // Preview button for Door / Elevator / Platform
+        if ((entity.type == LevelEntityType::Door ||
+             entity.type == LevelEntityType::Elevator ||
+             entity.type == LevelEntityType::Platform) &&
+            entity.linkedMeshIndex >= 0 &&
+            entity.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+        {
+            ImGui::Separator();
+            const bool thisPreview = (entityPreviewActive_ && entityPreviewIndex_ == selectedEntityIndex_);
+            if (thisPreview)
+            {
+                if (ImGui::Button("Stop Preview"))
+                {
+                    // Restore original mesh position/rotation
+                    LevelMeshObject& mesh = scene_.meshObjects()[(size_t)entity.linkedMeshIndex];
+                    mesh.position = entityPreviewOrigPos_;
+                    mesh.rotationEuler = entityPreviewOrigRot_;
+                    entityPreviewActive_ = false;
+                    entityPreviewIndex_ = -1;
+                    entityPreviewTime_ = 0.0f;
+                    sceneDirty_ = true;
+                }
+                // Show progress bar
+                ImGui::SameLine();
+                ImGui::ProgressBar(entityPreviewTime_, ImVec2(100, 0));
+            }
+            else
+            {
+                if (ImGui::Button("Preview"))
+                {
+                    // Stop any existing preview first
+                    if (entityPreviewActive_ && entityPreviewIndex_ >= 0 &&
+                        entityPreviewIndex_ < static_cast<int>(scene_.entities().size()))
+                    {
+                        const auto& prevEnt = scene_.entities()[(size_t)entityPreviewIndex_];
+                        if (prevEnt.linkedMeshIndex >= 0 && prevEnt.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size()))
+                        {
+                            scene_.meshObjects()[(size_t)prevEnt.linkedMeshIndex].position = entityPreviewOrigPos_;
+                            scene_.meshObjects()[(size_t)prevEnt.linkedMeshIndex].rotationEuler = entityPreviewOrigRot_;
+                        }
+                    }
+                    // Start new preview
+                    entityPreviewActive_ = true;
+                    entityPreviewIndex_ = selectedEntityIndex_;
+                    entityPreviewTime_ = 0.0f;
+                    entityPreviewForward_ = true;
+                    entityPreviewOrigPos_ = scene_.meshObjects()[(size_t)entity.linkedMeshIndex].position;
+                    entityPreviewOrigRot_ = scene_.meshObjects()[(size_t)entity.linkedMeshIndex].rotationEuler;
                 }
             }
         }

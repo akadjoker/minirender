@@ -2,7 +2,7 @@
     "assetPanelHeight": 200,
     "assetRoot": "/media/projectos/projects/cpp/minirender/assets/b3d/castel/textures",
     "assetViewAsGrid": false,
-    "currentTexturePath": "assets/wall.jpg",
+    "currentTexturePath": "/media/ctw04578/data/projects/zen/minirender/assets/wall.jpg",
     "defaultBrushHeight": 128.0,
     "defaultBrushThickness": 128.0,
     "enableTransparency": false,
@@ -43,7 +43,7 @@
         },
         {
             "orthoSize": 256.0,
-            "perspectiveDistance": 400.0,
+            "perspectiveDistance": 1168.0,
             "perspectivePitch": 60.0,
             "perspectiveYaw": 134.25
         }

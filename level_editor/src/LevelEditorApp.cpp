@@ -11,6 +11,8 @@
 #include "Opengl.hpp"
 #include "Material.hpp"
 #include "Utils.hpp"
+#include "MeshLoader.hpp"
+#include "BinaryStream.hpp"
 #include "stb_image_write.h"
 
 #include <json.hpp>
@@ -23,6 +25,7 @@
 #include <fstream>
 #include <map>
 #include <limits>
+#include <set>
 
 #include <glm/gtx/norm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -224,6 +227,39 @@ glm::vec3 editableMeshBoundsBottomCenter(const EditableMesh& mesh)
     return glm::vec3((bounds.min.x + bounds.max.x) * 0.5f,
                      bounds.min.y,
                      (bounds.min.z + bounds.max.z) * 0.5f);
+}
+
+// Snap to nearest vertex in OTHER meshes (world space). Returns true if snapped.
+bool snapToNearestVertex(const LevelEditorScene& scene, int excludeMeshIndex,
+                         const glm::vec3& worldPos, float threshold, glm::vec3& outSnapped)
+{
+    float bestDist2 = threshold * threshold;
+    bool found = false;
+    for (int mi = 0; mi < static_cast<int>(scene.meshObjects().size()); ++mi)
+    {
+        if (mi == excludeMeshIndex) continue;
+        const LevelMeshObject& other = scene.meshObjects()[mi];
+        if (!other.visible) continue;
+        const glm::mat4 model = glm::translate(glm::mat4(1.0f), other.position)
+            * glm::translate(glm::mat4(1.0f), other.pivot)
+            * glm::rotate(glm::mat4(1.0f), glm::radians(other.rotationEuler.x), glm::vec3(1,0,0))
+            * glm::rotate(glm::mat4(1.0f), glm::radians(other.rotationEuler.y), glm::vec3(0,1,0))
+            * glm::rotate(glm::mat4(1.0f), glm::radians(other.rotationEuler.z), glm::vec3(0,0,1))
+            * glm::scale(glm::mat4(1.0f), other.scale)
+            * glm::translate(glm::mat4(1.0f), -other.pivot);
+        for (const auto& v : other.mesh.vertices())
+        {
+            const glm::vec3 wp = glm::vec3(model * glm::vec4(v.position, 1.0f));
+            const float d2 = glm::dot(wp - worldPos, wp - worldPos);
+            if (d2 < bestDist2)
+            {
+                bestDist2 = d2;
+                outSnapped = wp;
+                found = true;
+            }
+        }
+    }
+    return found;
 }
 
 glm::vec3 editableFaceNormal(const EditableMesh& mesh, const EditableFace& face)
@@ -738,6 +774,14 @@ void LevelEditorApp::RebuildMeshCache()
         std::string currentMat;
         uint32_t matStart = 0;
 
+        // Compute mesh center for cylindrical/spherical UV projection
+        glm::vec3 meshCenter(0.0f);
+        if (!verts.empty())
+        {
+            for (const auto& v : verts) meshCenter += v.position;
+            meshCenter /= static_cast<float>(verts.size());
+        }
+
         auto emitFace = [&](std::size_t fi)
         {
             const EditableFace& face = faces[fi];
@@ -779,12 +823,50 @@ void LevelEditorApp::RebuildMeshCache()
 
                 const glm::vec3 absN = glm::abs(faceN);
                 glm::vec2 uv;
-                if (absN.y >= absN.x && absN.y >= absN.z)
-                    uv = glm::vec2(ev.position.x, ev.position.z);
-                else if (absN.x >= absN.y && absN.x >= absN.z)
-                    uv = glm::vec2(ev.position.z, ev.position.y);
-                else
-                    uv = glm::vec2(ev.position.x, ev.position.y);
+                switch (face.uvProjection)
+                {
+                case UvProjection::Planar:
+                {
+                    // Project onto the face plane using face normal as projection axis
+                    // Build tangent/bitangent from face normal
+                    glm::vec3 tangent = glm::cross(faceN, glm::vec3(0, 1, 0));
+                    if (glm::length(tangent) < 0.01f)
+                        tangent = glm::cross(faceN, glm::vec3(1, 0, 0));
+                    tangent = glm::normalize(tangent);
+                    const glm::vec3 bitangent = glm::normalize(glm::cross(faceN, tangent));
+                    uv = glm::vec2(glm::dot(ev.position, tangent), glm::dot(ev.position, bitangent));
+                    break;
+                }
+                case UvProjection::Cylindrical:
+                {
+                    // Cylindrical: angle around Y axis -> U, height -> V
+                    const glm::vec3 rel = ev.position - meshCenter;
+                    uv.x = std::atan2(rel.x, rel.z) / 6.2831853f + 0.5f;
+                    uv.y = rel.y * 0.01f;
+                    break;
+                }
+                case UvProjection::Spherical:
+                {
+                    // Spherical: longitude -> U, latitude -> V
+                    const glm::vec3 rel = ev.position - meshCenter;
+                    const float len = glm::length(rel);
+                    const glm::vec3 d = len > 1e-6f ? rel / len : glm::vec3(0, 1, 0);
+                    uv.x = std::atan2(d.x, d.z) / 6.2831853f + 0.5f;
+                    uv.y = std::asin(glm::clamp(d.y, -1.0f, 1.0f)) / 3.1415926f + 0.5f;
+                    break;
+                }
+                case UvProjection::Box:
+                default:
+                {
+                    if (absN.y >= absN.x && absN.y >= absN.z)
+                        uv = glm::vec2(ev.position.x, ev.position.z);
+                    else if (absN.x >= absN.y && absN.x >= absN.z)
+                        uv = glm::vec2(ev.position.z, ev.position.y);
+                    else
+                        uv = glm::vec2(ev.position.x, ev.position.y);
+                    break;
+                }
+                }
 
                 uv *= face.uvScale * 0.01f;
                 const float ru = uv.x * cosR - uv.y * sinR;
@@ -991,6 +1073,17 @@ void LevelEditorApp::BakeAndUploadLightmap()
     meshCacheValid_ = false;
 }
 
+bool LevelEditorApp::Section(const char* label, bool defaultOpen)
+{
+    auto it = sectionOpen_.find(label);
+    if (it == sectionOpen_.end())
+        it = sectionOpen_.emplace(label, defaultOpen).first;
+    ImGui::SetNextItemOpen(it->second, ImGuiCond_Always);
+    bool open = ImGui::CollapsingHeader(label);
+    it->second = open;
+    return open;
+}
+
 static const char* kSettingsPath = "level_editor_settings.json";
 
 void LevelEditorApp::SaveEditorSettings()
@@ -1005,6 +1098,7 @@ void LevelEditorApp::SaveEditorSettings()
     j["theme"] = static_cast<int>(theme_);
     j["showGrid"] = showGrid_;
     j["snapEnabled"] = snapEnabled_;
+    j["snapToGeometry"] = snapToGeometry_;
     j["gridSize"] = gridSize_;
     j["perspGridSize"] = perspGridSize_;
     j["useTransparency"] = useTransparency_;
@@ -1039,6 +1133,12 @@ void LevelEditorApp::SaveEditorSettings()
     j["lmBias"] = lightmapSettings_.bias;
     j["lmAmbient"] = lightmapSettings_.ambient;
 
+    // Section collapse states
+    nlohmann::json secJson;
+    for (const auto& [name, open] : sectionOpen_)
+        secJson[name] = open;
+    j["sections"] = secJson;
+
     std::ofstream out(kSettingsPath);
     if (out.is_open())
         out << j.dump(4);
@@ -1070,10 +1170,11 @@ void LevelEditorApp::LoadEditorSettings()
     if (j.contains("theme"))
     {
         const int th = j["theme"].get<int>();
-        if (th >= 0 && th <= 1) { theme_ = static_cast<LevelEditorTheme>(th); applyLevelEditorTheme(theme_); }
+        if (th >= 0 && th <= 3) { theme_ = static_cast<LevelEditorTheme>(th); applyLevelEditorTheme(theme_); }
     }
     if (j.contains("showGrid")) showGrid_ = j["showGrid"].get<bool>();
     if (j.contains("snapEnabled")) snapEnabled_ = j["snapEnabled"].get<bool>();
+    if (j.contains("snapToGeometry")) snapToGeometry_ = j["snapToGeometry"].get<bool>();
     if (j.contains("gridSize")) gridSize_ = j["gridSize"].get<float>();
     if (j.contains("perspGridSize")) perspGridSize_ = j["perspGridSize"].get<float>();
     if (j.contains("useTransparency")) useTransparency_ = j["useTransparency"].get<bool>();
@@ -1113,6 +1214,354 @@ void LevelEditorApp::LoadEditorSettings()
     if (j.contains("lmSamples")) lightmapSettings_.samplesPerTexel = j["lmSamples"].get<int>();
     if (j.contains("lmBias")) lightmapSettings_.bias = j["lmBias"].get<float>();
     if (j.contains("lmAmbient")) lightmapSettings_.ambient = j["lmAmbient"].get<float>();
+
+    // Section collapse states
+    if (j.contains("sections") && j["sections"].is_object())
+    {
+        for (auto& [key, val] : j["sections"].items())
+            sectionOpen_[key] = val.get<bool>();
+    }
+}
+
+// ============================================================
+//  Export helpers
+// ============================================================
+namespace {
+struct ExportVertex {
+    glm::vec3 pos;
+    glm::vec3 normal;
+    glm::vec2 uv;
+    glm::vec2 lightmapUv{0.0f, 0.0f};
+};
+
+// Collect all visible meshes into one merged vertex/index list, grouped by material.
+// Each mesh's transform (position + rotation + scale) is baked into the vertices.
+struct ExportData {
+    std::vector<ExportVertex> vertices;
+    std::vector<uint32_t> indices;
+    std::vector<std::string> materialNames;
+    struct SubMesh { uint32_t indexStart; uint32_t indexCount; int materialIdx; };
+    std::vector<SubMesh> subMeshes;
+    bool hasLightmapUVs = false;
+};
+
+ExportData gatherExportData(const LevelEditorScene& scene, const LightmapResult* lmResult = nullptr)
+{
+    ExportData data;
+    std::map<std::string, int> matMap;
+
+    const bool haveLM = lmResult && !lmResult->meshUVs.empty();
+    data.hasLightmapUVs = haveLM;
+
+    int meshIdx = -1; // index across ALL mesh objects (including hidden)
+    for (int objIdx = 0; objIdx < static_cast<int>(scene.meshObjects().size()); ++objIdx)
+    {
+        const auto& obj = scene.meshObjects()[objIdx];
+        meshIdx = objIdx; // lightmapResult_.meshUVs is indexed by meshObject index
+        if (!obj.visible) continue;
+
+        const glm::mat4 T = glm::translate(glm::mat4(1.0f), obj.position);
+        const glm::mat4 R = glm::mat4_cast(glm::quat(glm::radians(obj.rotationEuler)));
+        const glm::mat4 S = glm::scale(glm::mat4(1.0f), obj.scale);
+        const glm::mat4 model = T * R * S;
+        const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(model)));
+
+        const auto& verts = obj.mesh.vertices();
+        const auto& faces = obj.mesh.faces();
+
+        // Group faces by material, emit unique vertices per face-vertex
+        std::map<std::string, std::vector<uint32_t>> facesPerMat;
+        for (int fi = 0; fi < static_cast<int>(faces.size()); ++fi)
+        {
+            const auto& face = faces[fi];
+            // Emit one vertex per face-vertex (allows unique lightmap UVs per face)
+            std::vector<uint32_t> faceVerts;
+            for (int vi = 0; vi < static_cast<int>(face.indices.size()); ++vi)
+            {
+                int idx = face.indices[vi];
+                if (idx < 0 || idx >= static_cast<int>(verts.size())) continue;
+                const auto& sv = verts[idx];
+                ExportVertex ev;
+                ev.pos = glm::vec3(model * glm::vec4(sv.position, 1.0f));
+                ev.normal = glm::normalize(normalMat * sv.normal);
+                ev.uv = sv.uv;
+                if (haveLM && meshIdx < static_cast<int>(lmResult->meshUVs.size()) &&
+                    fi < static_cast<int>(lmResult->meshUVs[meshIdx].faceVertexUVs.size()) &&
+                    vi < static_cast<int>(lmResult->meshUVs[meshIdx].faceVertexUVs[fi].size()))
+                {
+                    ev.lightmapUv = lmResult->meshUVs[meshIdx].faceVertexUVs[fi][vi];
+                }
+                faceVerts.push_back(static_cast<uint32_t>(data.vertices.size()));
+                data.vertices.push_back(ev);
+            }
+
+            // Fan triangulate
+            auto& idxList = facesPerMat[face.materialName];
+            for (size_t k = 2; k < faceVerts.size(); ++k)
+            {
+                idxList.push_back(faceVerts[0]);
+                idxList.push_back(faceVerts[k - 1]);
+                idxList.push_back(faceVerts[k]);
+            }
+        }
+
+        for (auto& [matName, idxList] : facesPerMat)
+        {
+            if (idxList.empty()) continue;
+            int matIdx;
+            auto it = matMap.find(matName);
+            if (it != matMap.end()) {
+                matIdx = it->second;
+            } else {
+                matIdx = static_cast<int>(data.materialNames.size());
+                data.materialNames.push_back(matName);
+                matMap[matName] = matIdx;
+            }
+
+            ExportData::SubMesh sm;
+            sm.indexStart = static_cast<uint32_t>(data.indices.size());
+            sm.indexCount = static_cast<uint32_t>(idxList.size());
+            sm.materialIdx = matIdx;
+            data.subMeshes.push_back(sm);
+            data.indices.insert(data.indices.end(), idxList.begin(), idxList.end());
+        }
+    }
+
+    return data;
+}
+
+glm::vec4 computeTangent(const ExportVertex& v0, const ExportVertex& v1, const ExportVertex& v2, const glm::vec3& normal)
+{
+    const glm::vec3 e1 = v1.pos - v0.pos;
+    const glm::vec3 e2 = v2.pos - v0.pos;
+    const glm::vec2 duv1 = v1.uv - v0.uv;
+    const glm::vec2 duv2 = v2.uv - v0.uv;
+    float denom = duv1.x * duv2.y - duv2.x * duv1.y;
+    glm::vec3 t;
+    if (std::abs(denom) < 1e-8f)
+        t = glm::vec3(1, 0, 0);
+    else {
+        float r = 1.0f / denom;
+        t = glm::normalize((e1 * duv2.y - e2 * duv1.y) * r);
+    }
+    // Gram-Schmidt
+    t = glm::normalize(t - normal * glm::dot(normal, t));
+    glm::vec3 b = glm::cross(normal, t);
+    float w = (glm::dot(glm::cross(normal, t), b) < 0.0f) ? -1.0f : 1.0f;
+    return glm::vec4(t, w);
+}
+
+} // anon namespace
+
+bool LevelEditorApp::ExportSceneOBJ(const std::string& path)
+{
+    ExportData data = gatherExportData(scene_);
+    if (data.vertices.empty()) return false;
+
+    // Write .mtl file
+    std::string mtlPath = path;
+    if (mtlPath.size() > 4 && mtlPath.substr(mtlPath.size() - 4) == ".obj")
+        mtlPath = mtlPath.substr(0, mtlPath.size() - 4) + ".mtl";
+    else
+        mtlPath += ".mtl";
+
+    std::string mtlName = std::filesystem::path(mtlPath).filename().string();
+
+    {
+        std::ofstream mtl(mtlPath);
+        if (!mtl.is_open()) return false;
+        for (const auto& name : data.materialNames)
+        {
+            mtl << "newmtl " << name << "\n";
+            mtl << "Kd 0.8 0.8 0.8\n";
+            mtl << "d 1.0\n\n";
+        }
+    }
+
+    // Write .obj file
+    std::ofstream out(path);
+    if (!out.is_open()) return false;
+
+    out << "# Exported from Level Editor\n";
+    out << "mtllib " << mtlName << "\n\n";
+
+    // Vertices
+    for (const auto& v : data.vertices)
+        out << "v " << v.pos.x << " " << v.pos.y << " " << v.pos.z << "\n";
+    out << "\n";
+
+    // Normals
+    for (const auto& v : data.vertices)
+        out << "vn " << v.normal.x << " " << v.normal.y << " " << v.normal.z << "\n";
+    out << "\n";
+
+    // UVs
+    for (const auto& v : data.vertices)
+        out << "vt " << v.uv.x << " " << v.uv.y << "\n";
+    out << "\n";
+
+    // Faces (grouped by material/submesh)
+    for (const auto& sm : data.subMeshes)
+    {
+        out << "usemtl " << data.materialNames[sm.materialIdx] << "\n";
+        for (uint32_t i = 0; i < sm.indexCount; i += 3)
+        {
+            // OBJ indices are 1-based
+            const uint32_t a = data.indices[sm.indexStart + i] + 1;
+            const uint32_t b = data.indices[sm.indexStart + i + 1] + 1;
+            const uint32_t c = data.indices[sm.indexStart + i + 2] + 1;
+            out << "f " << a << "/" << a << "/" << a
+                << " " << b << "/" << b << "/" << b
+                << " " << c << "/" << c << "/" << c << "\n";
+        }
+    }
+
+    printf("[Export] OBJ saved: %s  (%zu verts, %zu tris)\n",
+           path.c_str(), data.vertices.size(), data.indices.size() / 3);
+    return true;
+}
+
+bool LevelEditorApp::ExportSceneH3D(const std::string& path)
+{
+    const bool haveLM = !lightmapResult_.pixels.empty();
+    ExportData data = gatherExportData(scene_, haveLM ? &lightmapResult_ : nullptr);
+    if (data.vertices.empty()) return false;
+
+    BinaryStream stream(path, "wb");
+    if (!stream.isOpen()) return false;
+
+    stream.writeU32(MESH_MAGIC);
+    stream.writeU32(MESH_VERSION);
+
+    // MATS chunk
+    {
+        stream.writeU32(CHUNK_MATS);
+        stream.writeU32(0); // placeholder
+        Sint64 start = stream.tell();
+
+        stream.writeU32(static_cast<uint32_t>(data.materialNames.size()));
+        for (const auto& name : data.materialNames)
+        {
+            stream.writeStr(name);
+            stream.writeF32(0.8f); stream.writeF32(0.8f); stream.writeF32(0.8f); // diffuse
+            stream.writeStr(""); // texture ref
+        }
+
+        Sint64 end = stream.tell();
+        stream.seek(start - 4);
+        stream.writeU32(static_cast<uint32_t>(end - start));
+        stream.seek(end);
+    }
+
+    // Precompute per-vertex tangents for H3D
+    std::vector<glm::vec4> tangents(data.vertices.size(), glm::vec4(1, 0, 0, 1));
+    for (size_t i = 0; i + 2 < data.indices.size(); i += 3)
+    {
+        uint32_t i0 = data.indices[i], i1 = data.indices[i + 1], i2 = data.indices[i + 2];
+        glm::vec4 t = computeTangent(data.vertices[i0], data.vertices[i1], data.vertices[i2], data.vertices[i0].normal);
+        tangents[i0] = t;
+        tangents[i1] = t;
+        tangents[i2] = t;
+    }
+
+    // BUFF chunk
+    {
+        stream.writeU32(CHUNK_BUFF);
+        stream.writeU32(0);
+        Sint64 buffStart = stream.tell();
+
+        stream.writeU32(BUFFER_FLAG_TANGENTS | (data.hasLightmapUVs ? BUFFER_FLAG_LIGHTMAP : 0));
+
+        // VRTS
+        {
+            stream.writeU32(CHUNK_VRTS);
+            stream.writeU32(0);
+            Sint64 vrtsStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.vertices.size()));
+            for (size_t i = 0; i < data.vertices.size(); ++i)
+            {
+                const auto& v = data.vertices[i];
+                stream.writeF32(v.pos.x); stream.writeF32(v.pos.y); stream.writeF32(v.pos.z);
+                stream.writeF32(v.normal.x); stream.writeF32(v.normal.y); stream.writeF32(v.normal.z);
+                stream.writeF32(tangents[i].x); stream.writeF32(tangents[i].y);
+                stream.writeF32(tangents[i].z); stream.writeF32(tangents[i].w);
+                stream.writeF32(v.uv.x); stream.writeF32(v.uv.y);
+                if (data.hasLightmapUVs) {
+                    stream.writeF32(v.lightmapUv.x); stream.writeF32(v.lightmapUv.y);
+                }
+            }
+
+            Sint64 vrtsEnd = stream.tell();
+            stream.seek(vrtsStart - 4);
+            stream.writeU32(static_cast<uint32_t>(vrtsEnd - vrtsStart));
+            stream.seek(vrtsEnd);
+        }
+
+        // IDXS
+        {
+            stream.writeU32(CHUNK_IDXS);
+            stream.writeU32(0);
+            Sint64 idxsStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.indices.size()));
+            for (auto idx : data.indices) stream.writeU32(idx);
+
+            Sint64 idxsEnd = stream.tell();
+            stream.seek(idxsStart - 4);
+            stream.writeU32(static_cast<uint32_t>(idxsEnd - idxsStart));
+            stream.seek(idxsEnd);
+        }
+
+        // SURF
+        {
+            stream.writeU32(CHUNK_SURF);
+            stream.writeU32(0);
+            Sint64 surfStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.subMeshes.size()));
+            for (const auto& sm : data.subMeshes)
+            {
+                stream.writeU32(sm.indexStart);
+                stream.writeU32(sm.indexCount);
+                stream.writeI32(sm.materialIdx);
+            }
+
+            Sint64 surfEnd = stream.tell();
+            stream.seek(surfStart - 4);
+            stream.writeU32(static_cast<uint32_t>(surfEnd - surfStart));
+            stream.seek(surfEnd);
+        }
+
+        Sint64 buffEnd = stream.tell();
+        stream.seek(buffStart - 4);
+        stream.writeU32(static_cast<uint32_t>(buffEnd - buffStart));
+        stream.seek(buffEnd);
+    }
+
+    // LMAP chunk — embedded lightmap texture (RGB)
+    if (data.hasLightmapUVs && !lightmapResult_.pixels.empty())
+    {
+        stream.writeU32(CHUNK_LMAP);
+        stream.writeU32(0);
+        Sint64 lmStart = stream.tell();
+
+        stream.writeI32(lightmapResult_.width);
+        stream.writeI32(lightmapResult_.height);
+        stream.writeI32(3); // channels (RGB)
+        stream.writeRaw(lightmapResult_.pixels.data(), lightmapResult_.pixels.size());
+
+        Sint64 lmEnd = stream.tell();
+        stream.seek(lmStart - 4);
+        stream.writeU32(static_cast<uint32_t>(lmEnd - lmStart));
+        stream.seek(lmEnd);
+    }
+
+    printf("[Export] H3D saved: %s  (%zu verts, %zu tris, %zu mats, %zu surfs%s)\n",
+           path.c_str(), data.vertices.size(), data.indices.size() / 3,
+           data.materialNames.size(), data.subMeshes.size(),
+           data.hasLightmapUVs ? ", +lightmap" : "");
+    return true;
 }
 
 LevelEditorApp::LevelEditorApp()
@@ -1352,6 +1801,7 @@ void LevelEditorApp::SetSingleSelectedMesh(int index)
     selectedMeshIndices_.assign(1, selectedMeshIndex_);
     selectedVertexIndices_.clear();
     selectedFaceIndex_ = -1;
+    selectedEntityIndex_ = -1; // deselect entity when selecting mesh
 }
 
 void LevelEditorApp::SyncSelectedMeshes()
@@ -1505,6 +1955,32 @@ void LevelEditorApp::HandleFileDialogs()
     ImGui::PushID("RefPlaneImageDialog");
     refPlaneImageDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
     ImGui::PopID();
+
+    // Export dialog
+    if (exportDialog_.HasResult())
+    {
+        const auto result = exportDialog_.ConsumeResult();
+        if (result.accepted)
+        {
+            const std::string ext = result.path.extension().string();
+            if (ext == ".obj")
+                ExportSceneOBJ(result.path.generic_string());
+            else if (ext == ".h3d" || ext == ".mesh")
+                ExportSceneH3D(result.path.generic_string());
+            else
+            {
+                // Guess from filename
+                const std::string s = result.path.generic_string();
+                if (s.find(".obj") != std::string::npos)
+                    ExportSceneOBJ(s);
+                else
+                    ExportSceneH3D(s);
+            }
+        }
+    }
+    ImGui::PushID("ExportDialog");
+    exportDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
+    ImGui::PopID();
 }
 
 void LevelEditorApp::PushUndoState()
@@ -1554,27 +2030,27 @@ void LevelEditorApp::HandleUndoRedoShortcuts()
     if (io.WantTextInput)
         return;
 
-    const bool ctrlDown = Input::IsKeyDown(KEY_LEFT_CONTROL) || Input::IsKeyDown(KEY_RIGHT_CONTROL);
-    const bool shiftDown = Input::IsKeyDown(KEY_LEFT_SHIFT) || Input::IsKeyDown(KEY_RIGHT_SHIFT);
+    const bool ctrlDown = io.KeyCtrl;
+    const bool shiftDown = io.KeyShift;
     if (!ctrlDown)
         return;
 
-    if (Input::IsKeyPressed(KEY_Z))
+    if (ImGui::IsKeyPressed(ImGuiKey_Z))
     {
         if (shiftDown)
             PerformRedo();
         else
             PerformUndo();
     }
-    else if (Input::IsKeyPressed(KEY_Y))
+    else if (ImGui::IsKeyPressed(ImGuiKey_Y))
     {
         PerformRedo();
     }
-    else if (Input::IsKeyPressed(KEY_O))
+    else if (ImGui::IsKeyPressed(ImGuiKey_O))
     {
         sceneDialog_.Open(ImGuiFileDialog::Mode::OpenFile, std::filesystem::current_path(), "scene.mred");
     }
-    else if (Input::IsKeyPressed(KEY_S))
+    else if (ImGui::IsKeyPressed(ImGuiKey_S))
     {
         if (shiftDown || scenePath_.empty())
             sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mred");
@@ -1589,18 +2065,18 @@ void LevelEditorApp::HandleToolShortcuts()
     if (io.WantTextInput)
         return;
 
-    const bool ctrlDown = Input::IsKeyDown(KEY_LEFT_CONTROL) || Input::IsKeyDown(KEY_RIGHT_CONTROL);
+    const bool ctrlDown = io.KeyCtrl;
     if (!ctrlDown)
     {
-        if (Input::IsKeyPressed(KEY_M)) currentTool_ = Tool::Move;
-        if (Input::IsKeyPressed(KEY_R)) currentTool_ = Tool::Rotate;
-        if (Input::IsKeyPressed(KEY_S)) currentTool_ = Tool::Scale;
+        if (ImGui::IsKeyPressed(ImGuiKey_M)) currentTool_ = Tool::Move;
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) currentTool_ = Tool::Rotate;
+        if (ImGui::IsKeyPressed(ImGuiKey_S)) currentTool_ = Tool::Scale;
     }
 
-    if (Input::IsKeyPressed(KEY_ONE)) currentTool_ = Tool::Select;
-    if (Input::IsKeyPressed(KEY_TWO)) currentTool_ = Tool::Move;
-    if (Input::IsKeyPressed(KEY_THREE)) currentTool_ = Tool::Scale;
-    if (Input::IsKeyPressed(KEY_FOUR)) currentTool_ = Tool::Rotate;
+    if (ImGui::IsKeyPressed(ImGuiKey_1)) currentTool_ = Tool::Select;
+    if (ImGui::IsKeyPressed(ImGuiKey_2)) currentTool_ = Tool::Move;
+    if (ImGui::IsKeyPressed(ImGuiKey_3)) currentTool_ = Tool::Scale;
+    if (ImGui::IsKeyPressed(ImGuiKey_4)) currentTool_ = Tool::Rotate;
 
     // Delete key: delete selected vertex/face/object depending on mode
     if (!io.WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Delete) &&
@@ -1730,6 +2206,67 @@ void LevelEditorApp::HandleToolShortcuts()
         if (selectedEntityIndex_ >= static_cast<int>(scene_.entities().size()))
             selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
         sceneDirty_ = true;
+    }
+
+    // Ctrl+D: Duplicate selected mesh or entity
+    if (ctrlDown && ImGui::IsKeyPressed(ImGuiKey_D))
+    {
+        if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
+        {
+            PushUndoState();
+            LevelMeshObject copy = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+            copy.name += " (copy)";
+            copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
+            scene_.meshObjects().push_back(copy);
+            SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+            sceneDirty_ = true;
+        }
+        else if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
+        {
+            PushUndoState();
+            LevelEntityObject copy = scene_.entities()[(size_t)selectedEntityIndex_];
+            copy.name += " (copy)";
+            copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
+            scene_.entities().push_back(copy);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            sceneDirty_ = true;
+        }
+    }
+
+    // F: Frame selected — center camera on selection
+    if (!ctrlDown && ImGui::IsKeyPressed(ImGuiKey_F))
+    {
+        glm::vec3 target(0.0f);
+        float radius = 64.0f;
+        bool hasTarget = false;
+
+        if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
+        {
+            const LevelMeshObject& obj = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+            const BoundingBox localBounds = editableMeshLocalBounds(obj.mesh);
+            const BoundingBox worldBounds = localBounds.transformed(meshObjectModelMatrix(obj));
+            target = (worldBounds.min + worldBounds.max) * 0.5f;
+            radius = glm::length(worldBounds.max - worldBounds.min) * 0.5f;
+            if (radius < 1.0f) radius = 64.0f;
+            hasTarget = true;
+        }
+        else if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
+        {
+            target = scene_.entities()[(size_t)selectedEntityIndex_].position;
+            hasTarget = true;
+        }
+
+        if (hasTarget)
+        {
+            for (int vi = 0; vi < activeViewCount_; ++vi)
+            {
+                views_[vi].focus = target;
+                if (views_[vi].type == ViewType::Perspective)
+                    views_[vi].perspectiveDistance = radius * 3.0f;
+                else
+                    views_[vi].orthoSize = radius * 2.5f;
+            }
+        }
     }
 }
 
@@ -2476,6 +3013,13 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                     newLocal.y = std::round(newLocal.y / gridSize_) * gridSize_;
                     newLocal.z = std::round(newLocal.z / gridSize_) * gridSize_;
                 }
+                if (snapToGeometry_)
+                {
+                    const glm::vec3 worldCandidate = glm::vec3(modelMatrix * glm::vec4(newLocal, 1.0f));
+                    glm::vec3 snapped;
+                    if (snapToNearestVertex(scene_, selectedMeshIndex_, worldCandidate, gridSize_, snapped))
+                        newLocal = glm::vec3(inverseModel * glm::vec4(snapped, 1.0f));
+                }
                 object.mesh.verticesMutable()[(size_t)vertexIndex].position = newLocal;
             }
             sceneDirty_ = true;
@@ -2515,6 +3059,13 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                     newLocal.x = std::round(newLocal.x / gridSize_) * gridSize_;
                     newLocal.y = std::round(newLocal.y / gridSize_) * gridSize_;
                     newLocal.z = std::round(newLocal.z / gridSize_) * gridSize_;
+                }
+                if (snapToGeometry_)
+                {
+                    const glm::vec3 worldCandidate = glm::vec3(modelMatrix * glm::vec4(newLocal, 1.0f));
+                    glm::vec3 snapped;
+                    if (snapToNearestVertex(scene_, selectedMeshIndex_, worldCandidate, gridSize_, snapped))
+                        newLocal = glm::vec3(inverseModel * glm::vec4(snapped, 1.0f));
                 }
                 object.mesh.verticesMutable()[(size_t)vertexIndex].position = newLocal;
             }
@@ -2679,6 +3230,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                     std::sort(selectedMeshIndices_.begin(), selectedMeshIndices_.end());
                     selectedMeshIndex_ = picked;
                 }
+                selectedEntityIndex_ = -1;
             }
             else if (shiftDown)
             {
@@ -2686,6 +3238,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                     selectedMeshIndices_.push_back(picked);
                 std::sort(selectedMeshIndices_.begin(), selectedMeshIndices_.end());
                 selectedMeshIndex_ = picked;
+                selectedEntityIndex_ = -1;
             }
             else
             {
@@ -2721,6 +3274,14 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                 localPos.x = std::round(localPos.x / gridSize_) * gridSize_;
                 localPos.y = std::round(localPos.y / gridSize_) * gridSize_;
                 localPos.z = std::round(localPos.z / gridSize_) * gridSize_;
+            }
+            if (snapToGeometry_)
+            {
+                const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
+                const glm::vec3 worldCandidate = glm::vec3(modelMatrix * glm::vec4(localPos, 1.0f));
+                glm::vec3 snapped;
+                if (snapToNearestVertex(scene_, selectedMeshIndex_, worldCandidate, gridSize_, snapped))
+                    localPos = glm::vec3(inverseModel * glm::vec4(snapped, 1.0f));
             }
             EditableVertex newVtx;
             newVtx.position = localPos;
@@ -3097,6 +3658,8 @@ void LevelEditorApp::DrawViewportContextMenu()
             showGrid_ = !showGrid_;
         if (ImGui::MenuItem("Snap", nullptr, snapEnabled_))
             snapEnabled_ = !snapEnabled_;
+        if (ImGui::MenuItem("Snap to Geometry", nullptr, snapToGeometry_))
+            snapToGeometry_ = !snapToGeometry_;
     }
 
     ImGui::EndPopup();
@@ -3152,6 +3715,7 @@ void LevelEditorApp::DrawTransformGizmo()
 
     // Build gizmo matrix from the selected object
     glm::mat4 gizmoMatrix(1.0f);
+    bool entityHasDirection = false;
     if (hasMesh)
     {
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
@@ -3160,10 +3724,27 @@ void LevelEditorApp::DrawTransformGizmo()
     else
     {
         LevelEntityObject& ent = scene_.entities()[selectedEntityIndex_];
-        gizmoMatrix = glm::translate(glm::mat4(1.0f), ent.position);
+        entityHasDirection = (ent.type == LevelEntityType::PlayerStart) ||
+            (ent.type == LevelEntityType::Light &&
+             (ent.lightType == LightType::Directional || ent.lightType == LightType::Spot));
+        if (entityHasDirection)
+        {
+            // Build rotation from direction vector: direction is where -Z points
+            glm::vec3 dir = glm::length(ent.direction) > 1e-6f ? glm::normalize(ent.direction) : glm::vec3(0, -1, 0);
+            // Create rotation that maps (0,0,-1) to dir
+            glm::vec3 up = (std::abs(dir.y) > 0.9f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+            glm::mat4 lookMat = glm::lookAt(glm::vec3(0), dir, up);
+            // lookAt gives view matrix (inverted), we need the model rotation
+            glm::mat3 rot = glm::transpose(glm::mat3(lookMat));
+            gizmoMatrix = glm::translate(glm::mat4(1.0f), ent.position) * glm::mat4(rot);
+        }
+        else
+        {
+            gizmoMatrix = glm::translate(glm::mat4(1.0f), ent.position);
+        }
     }
 
-    // Entities only support Move (no rotate/scale)
+    // Entities: Move always, Rotate for Dir/Spot only, no Scale
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     if (hasMesh)
     {
@@ -3171,6 +3752,10 @@ void LevelEditorApp::DrawTransformGizmo()
             operation = ImGuizmo::ROTATE;
         else if (currentTool_ == Tool::Scale)
             operation = ImGuizmo::SCALE;
+    }
+    else if (entityHasDirection && currentTool_ == Tool::Rotate)
+    {
+        operation = ImGuizmo::ROTATE;
     }
 
     ImGuizmo::SetOrthographic(view.type != ViewType::Perspective);
@@ -3209,14 +3794,26 @@ void LevelEditorApp::DrawTransformGizmo()
 
         if (hasEntity)
         {
-            // Entity: just update position
             LevelEntityObject& ent = scene_.entities()[selectedEntityIndex_];
             const glm::vec3 newPos(t[0], t[1], t[2]);
+            bool changed = false;
             if (newPos != ent.position)
             {
                 ent.position = newPos;
-                sceneDirty_ = true;
+                changed = true;
             }
+            // Extract direction from gizmo rotation (direction = where local -Z points)
+            if (entityHasDirection && operation == ImGuizmo::ROTATE)
+            {
+                glm::mat3 rot(gizmoMatrix);
+                glm::vec3 newDir = glm::normalize(rot * glm::vec3(0, 0, -1));
+                if (glm::length(newDir - ent.direction) > 1e-4f)
+                {
+                    ent.direction = newDir;
+                    changed = true;
+                }
+            }
+            if (changed) sceneDirty_ = true;
         }
         else
         {
@@ -3829,6 +4426,17 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     // Circle around origin to show "sun disc"
                     if (selected)
                         drawCircle(p, perp1, perp2, s * 2.0f, 16, 80);
+
+                    // Long direction ray for aiming (visible while rotating)
+                    viewBatch_->SetColor(cr, cg, cb, selected ? 200 : 80);
+                    const float rayLen = 500.0f;
+                    const int dashes = 20;
+                    for (int di = 0; di < dashes; ++di)
+                    {
+                        const float t0 = static_cast<float>(di) / static_cast<float>(dashes);
+                        const float t1 = (static_cast<float>(di) + 0.6f) / static_cast<float>(dashes);
+                        viewBatch_->Line3D(p + dir * (t0 * rayLen), p + dir * (t1 * rayLen));
+                    }
                 }
                 else if (ent.lightType == LightType::Spot)
                 {
@@ -3877,6 +4485,17 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     // Radius circle at origin (XZ plane)
                     if (selected)
                         drawCircle(p, glm::vec3(1,0,0), glm::vec3(0,0,1), ent.radius, 32, 40);
+
+                    // Long direction ray for aiming (visible while rotating)
+                    viewBatch_->SetColor(cr, cg, cb, selected ? 200 : 80);
+                    const float rayLen2 = std::min(ent.radius, 500.0f);
+                    const int dashes2 = 15;
+                    for (int di = 0; di < dashes2; ++di)
+                    {
+                        const float t0 = static_cast<float>(di) / static_cast<float>(dashes2);
+                        const float t1 = (static_cast<float>(di) + 0.6f) / static_cast<float>(dashes2);
+                        viewBatch_->Line3D(p + dir * (t0 * rayLen2), p + dir * (t1 * rayLen2));
+                    }
                 }
 
                 // Selection highlight: brighter outline
@@ -3894,6 +4513,72 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     viewBatch_->Line3D(st, sf); viewBatch_->Line3D(st, sbk);
                     viewBatch_->Line3D(sb, sr); viewBatch_->Line3D(sb, sl);
                     viewBatch_->Line3D(sb, sf); viewBatch_->Line3D(sb, sbk);
+                }
+            }
+            else if (ent.type == LevelEntityType::PlayerStart)
+            {
+                // Stick figure + direction arrow
+                const uint8_t alpha = selected ? 255 : 180;
+                viewBatch_->SetColor(80, 255, 80, alpha);
+
+                // Body proportions (total height ~32 units)
+                const float headR = 3.0f;
+                const glm::vec3 feet      = p;
+                const glm::vec3 hip       = p + glm::vec3(0, 14, 0);
+                const glm::vec3 shoulders = p + glm::vec3(0, 24, 0);
+                const glm::vec3 neck      = p + glm::vec3(0, 26, 0);
+                const glm::vec3 headC     = p + glm::vec3(0, 26 + headR, 0);
+
+                // Legs
+                viewBatch_->Line3D(feet + glm::vec3(-4, 0, 0), hip);
+                viewBatch_->Line3D(feet + glm::vec3(4, 0, 0), hip);
+
+                // Spine
+                viewBatch_->Line3D(hip, shoulders);
+
+                // Arms
+                viewBatch_->Line3D(shoulders, shoulders + glm::vec3(-6, -4, 0));
+                viewBatch_->Line3D(shoulders, shoulders + glm::vec3(6, -4, 0));
+
+                // Neck
+                viewBatch_->Line3D(shoulders, neck);
+
+                // Head circle (8 segments)
+                const int headSegs = 8;
+                for (int ci = 0; ci < headSegs; ++ci)
+                {
+                    const float a0 = static_cast<float>(ci) / headSegs * 6.2831853f;
+                    const float a1 = static_cast<float>(ci + 1) / headSegs * 6.2831853f;
+                    viewBatch_->Line3D(
+                        headC + glm::vec3(std::cos(a0) * headR, std::sin(a0) * headR, 0),
+                        headC + glm::vec3(std::cos(a1) * headR, std::sin(a1) * headR, 0));
+                    viewBatch_->Line3D(
+                        headC + glm::vec3(0, std::sin(a0) * headR, std::cos(a0) * headR),
+                        headC + glm::vec3(0, std::sin(a1) * headR, std::cos(a1) * headR));
+                }
+
+                // Direction arrow (forward = ent.direction or -Z default)
+                glm::vec3 dir = glm::normalize(ent.direction);
+                if (glm::length(ent.direction) < 0.01f) dir = glm::vec3(0, 0, -1);
+                const glm::vec3 arrowStart = hip;
+                const glm::vec3 arrowEnd = hip + dir * 16.0f;
+                viewBatch_->SetColor(255, 255, 80, alpha);
+                viewBatch_->Line3D(arrowStart, arrowEnd);
+                // Arrowhead
+                glm::vec3 side = glm::cross(dir, glm::vec3(0, 1, 0));
+                if (glm::length(side) < 0.01f) side = glm::cross(dir, glm::vec3(1, 0, 0));
+                side = glm::normalize(side) * 2.5f;
+                const glm::vec3 back = arrowEnd - dir * 4.0f;
+                viewBatch_->Line3D(arrowEnd, back + side);
+                viewBatch_->Line3D(arrowEnd, back - side);
+                viewBatch_->Line3D(arrowEnd, back + glm::vec3(0, 2.5f, 0));
+
+                // Ground cross
+                if (selected)
+                {
+                    viewBatch_->SetColor(80, 255, 80, 100);
+                    viewBatch_->Line3D(feet + glm::vec3(-6, 0, 0), feet + glm::vec3(6, 0, 0));
+                    viewBatch_->Line3D(feet + glm::vec3(0, 0, -6), feet + glm::vec3(0, 0, 6));
                 }
             }
             else
@@ -4136,6 +4821,15 @@ void LevelEditorApp::ShowMenuBar()
                 : std::filesystem::path(lastImportDir_);
             importMeshDialog_.Open(ImGuiFileDialog::Mode::OpenFile, startDir, "mesh");
         }
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Export"))
+        {
+            if (ImGui::MenuItem("Export OBJ..."))
+                exportDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.obj");
+            if (ImGui::MenuItem("Export H3D..."))
+                exportDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.h3d");
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
 
@@ -4146,7 +4840,7 @@ void LevelEditorApp::ShowMenuBar()
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack_.empty()))
             PerformRedo();
         ImGui::Separator();
-        ImGui::MenuItem("Duplicate", "Ctrl+D", false, false);
+        ImGui::MenuItem("Duplicate", "Ctrl+D", false, true);
         ImGui::EndMenu();
     }
 
@@ -4168,19 +4862,17 @@ void LevelEditorApp::ShowMenuBar()
 
     if (ImGui::BeginMenu("Theme"))
     {
-        bool dark = theme_ == LevelEditorTheme::Dark;
-        if (ImGui::MenuItem("Dark", nullptr, &dark))
-        {
-            theme_ = LevelEditorTheme::Dark;
-            applyLevelEditorTheme(theme_);
-        }
-
-        bool studio = theme_ == LevelEditorTheme::Studio;
-        if (ImGui::MenuItem("Studio", nullptr, &studio))
-        {
-            theme_ = LevelEditorTheme::Studio;
-            applyLevelEditorTheme(theme_);
-        }
+        auto themeItem = [&](const char* name, LevelEditorTheme t) {
+            if (ImGui::MenuItem(name, nullptr, theme_ == t))
+            {
+                theme_ = t;
+                applyLevelEditorTheme(theme_);
+            }
+        };
+        themeItem("Dark", LevelEditorTheme::Dark);
+        themeItem("Light", LevelEditorTheme::Light);
+        themeItem("Classic", LevelEditorTheme::Classic);
+        themeItem("Studio", LevelEditorTheme::Studio);
         ImGui::EndMenu();
     }
 
@@ -4198,7 +4890,7 @@ void LevelEditorApp::ShowLeftPanel()
         return;
     }
 
-    if (ImGui::CollapsingHeader("Tools", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Tools"))
     {
         ImGui::SetNextItemWidth(140.0f);
         if (ImGui::BeginCombo("Selection Mode", selectionModeName(selectionMode_)))
@@ -4206,7 +4898,6 @@ void LevelEditorApp::ShowLeftPanel()
             const SelectionMode modes[] = {
                 SelectionMode::Object,
                 SelectionMode::Face,
-                SelectionMode::Edge,
                 SelectionMode::Vertex
             };
             for (SelectionMode mode : modes)
@@ -4226,7 +4917,7 @@ void LevelEditorApp::ShowLeftPanel()
             ImGui::Checkbox("Front Vertices Only", &vertexFrontOnly_);
     }
 
-    if (ImGui::CollapsingHeader("Mesh Objects", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Mesh Objects"))
     {
         const auto& meshObjects = scene_.meshObjects();
         const int meshCount = static_cast<int>(meshObjects.size());
@@ -4311,28 +5002,6 @@ void LevelEditorApp::ShowLeftPanel()
         if (ImGui::Button("Invert"))
         {
             for (auto& o : scene_.meshObjects()) o.visible = !o.visible;
-        }
-
-        if (ImGui::Button("Add Box"))
-        {
-            PushUndoState();
-            LevelMeshObject object;
-            object.name = "Brush " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
-            scene_.meshObjects().push_back(object);
-            SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Create Empty"))
-        {
-            PushUndoState();
-            LevelMeshObject object;
-            object.name = "Mesh " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
-            object.mesh = EditableMesh::FromData({}, {});
-            scene_.meshObjects().push_back(object);
-            SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
-            selectionMode_ = SelectionMode::Vertex;
-            placeVertexMode_ = true;
-            sceneDirty_ = true;
         }
 
         ImGui::Separator();
@@ -4463,7 +5132,7 @@ void LevelEditorApp::ShowLeftPanel()
         }
     }
 
-    if (ImGui::CollapsingHeader("Entities", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Entities"))
     {
         const auto& entities = scene_.entities();
         for (int i = 0; i < static_cast<int>(entities.size()); ++i)
@@ -4471,7 +5140,10 @@ void LevelEditorApp::ShowLeftPanel()
             const bool selected = i == selectedEntityIndex_;
             ImGui::PushID(i);
             if (ImGui::Selectable(entities[i].name.c_str(), selected))
+            {
                 selectedEntityIndex_ = i;
+                selectedMeshIndex_ = -1; // deselect mesh when selecting entity
+            }
             ImGui::PopID();
         }
 
@@ -4503,6 +5175,21 @@ void LevelEditorApp::ShowLeftPanel()
             scene_.entities().push_back(entity);
             selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Add Player Start"))
+        {
+            PushUndoState();
+            LevelEntityObject entity;
+            int maxIdx = 0;
+            for (const auto& e : scene_.entities())
+                if (e.type == LevelEntityType::PlayerStart)
+                    ++maxIdx;
+            entity.name = "Player Start " + std::to_string(maxIdx + 1);
+            entity.type = LevelEntityType::PlayerStart;
+            entity.direction = glm::vec3(0, 0, -1);
+            scene_.entities().push_back(entity);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+        }
 
         // Delete selected entity
         if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
@@ -4523,7 +5210,7 @@ void LevelEditorApp::ShowLeftPanel()
     {
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
 
-        if (ImGui::CollapsingHeader("Mesh Edit", ImGuiTreeNodeFlags_DefaultOpen))
+        if (Section("Mesh Edit"))
         {
             ImGui::PushID("MeshEditSection");
 
@@ -4674,6 +5361,113 @@ void LevelEditorApp::ShowLeftPanel()
                         sceneDirty_ = true;
                     }
                     ImGui::EndDisabled();
+
+                    // Merge 2+ selected vertices into one (midpoint)
+                    ImGui::BeginDisabled(selectedVertexIndices_.size() < 2);
+                    ImGui::SameLine();
+                    if (ImGui::Button("Merge Vertices"))
+                    {
+                        PushUndoState();
+                        auto& verts = meshObject.mesh.verticesMutable();
+                        auto& faces = meshObject.mesh.facesMutable();
+
+                        // Compute midpoint of selected vertices
+                        glm::vec3 mid(0.0f);
+                        glm::vec3 avgNormal(0.0f);
+                        for (int idx : selectedVertexIndices_)
+                        {
+                            if (idx >= 0 && idx < static_cast<int>(verts.size()))
+                            {
+                                mid += verts[(size_t)idx].position;
+                                avgNormal += verts[(size_t)idx].normal;
+                            }
+                        }
+                        mid /= static_cast<float>(selectedVertexIndices_.size());
+                        if (glm::length(avgNormal) > 1e-6f)
+                            avgNormal = glm::normalize(avgNormal);
+                        else
+                            avgNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+
+                        // Keep the first selected vertex, move it to midpoint
+                        const int keepIdx = selectedVertexIndices_[0];
+                        if (keepIdx >= 0 && keepIdx < static_cast<int>(verts.size()))
+                        {
+                            verts[(size_t)keepIdx].position = mid;
+                            verts[(size_t)keepIdx].normal = avgNormal;
+                        }
+
+                        // Build set of merged indices (all except keepIdx)
+                        std::set<int> mergedSet(selectedVertexIndices_.begin(), selectedVertexIndices_.end());
+                        mergedSet.erase(keepIdx);
+
+                        // Remap face indices: merged verts → keepIdx
+                        for (auto& face : faces)
+                        {
+                            for (auto& idx : face.indices)
+                            {
+                                if (mergedSet.count(idx))
+                                    idx = keepIdx;
+                            }
+                            // Remove degenerate edges (same vertex twice in a row)
+                            std::vector<int> cleaned;
+                            for (std::size_t ci = 0; ci < face.indices.size(); ++ci)
+                            {
+                                const int next = face.indices[(ci + 1) % face.indices.size()];
+                                if (face.indices[ci] != next)
+                                    cleaned.push_back(face.indices[ci]);
+                            }
+                            face.indices = cleaned;
+                        }
+
+                        // Remove faces with < 3 vertices (degenerate)
+                        faces.erase(std::remove_if(faces.begin(), faces.end(),
+                            [](const EditableFace& f) { return f.indices.size() < 3; }),
+                            faces.end());
+
+                        // Remove unused vertices and remap
+                        std::vector<bool> used(verts.size(), false);
+                        for (const auto& f : faces)
+                            for (int idx : f.indices)
+                                if (idx >= 0 && idx < static_cast<int>(used.size()))
+                                    used[(size_t)idx] = true;
+
+                        std::vector<int> remap(verts.size(), -1);
+                        std::vector<EditableVertex> keptVerts;
+                        for (std::size_t i = 0; i < verts.size(); ++i)
+                        {
+                            if (used[i])
+                            {
+                                remap[i] = static_cast<int>(keptVerts.size());
+                                keptVerts.push_back(verts[i]);
+                            }
+                        }
+                        std::vector<EditableFace> keptFaces;
+                        for (const auto& f : faces)
+                        {
+                            EditableFace remapped;
+                            remapped.materialName = f.materialName;
+                            remapped.uvOffset = f.uvOffset;
+                            remapped.uvScale = f.uvScale;
+                            remapped.uvRotation = f.uvRotation;
+                            remapped.uvProjection = f.uvProjection;
+                            bool valid = true;
+                            for (int idx : f.indices)
+                            {
+                                if (idx < 0 || idx >= static_cast<int>(remap.size()) || remap[(size_t)idx] < 0)
+                                { valid = false; break; }
+                                remapped.indices.push_back(remap[(size_t)idx]);
+                            }
+                            if (valid && remapped.indices.size() >= 3)
+                                keptFaces.push_back(remapped);
+                        }
+
+                        meshObject.mesh.setData(keptVerts, keptFaces);
+                        selectedVertexIndices_.clear();
+                        selectedFaceIndex_ = -1;
+                        sceneDirty_ = true;
+                    }
+                    ImGui::EndDisabled();
+
                     ImGui::SameLine();
                     if (ImGui::Button("Clear Sel"))
                         selectedVertexIndices_.clear();
@@ -4876,40 +5670,38 @@ void LevelEditorApp::ShowLeftPanel()
             else
                 ImGui::TextDisabled("(applying to all faces)");
 
-            if (ImGui::Button("Box Project UV"))
-            {
+            static const char* uvProjNames[] = {"Box", "Planar", "Cylindrical", "Spherical"};
+            auto applyProjection = [&](UvProjection proj) {
                 PushUndoState();
-                auto applyBox = [](EditableFace& f) {
+                auto apply = [&](EditableFace& f) {
+                    f.uvProjection = proj;
                     f.uvOffset = glm::vec2(0.0f);
                     f.uvScale = glm::vec2(1.0f);
                     f.uvRotation = 0.0f;
                 };
                 if (uvPerFace)
-                    applyBox(meshObject.mesh.facesMutable()[(size_t)selectedFaceIndex_]);
+                    apply(meshObject.mesh.facesMutable()[(size_t)selectedFaceIndex_]);
                 else
-                    for (auto& f : meshObject.mesh.facesMutable()) applyBox(f);
+                    for (auto& f : meshObject.mesh.facesMutable()) apply(f);
                 sceneDirty_ = true;
+            };
+
+            for (int pi = 0; pi < 4; ++pi)
+            {
+                if (pi > 0) ImGui::SameLine();
+                if (ImGui::Button(uvProjNames[pi]))
+                    applyProjection(static_cast<UvProjection>(pi));
             }
-            ImGui::SameLine();
+
             if (ImGui::Button("Reset UV"))
             {
-                PushUndoState();
-                auto applyReset = [](EditableFace& f) {
-                    f.uvOffset = glm::vec2(0.0f);
-                    f.uvScale = glm::vec2(1.0f);
-                    f.uvRotation = 0.0f;
-                };
-                if (uvPerFace)
-                    applyReset(meshObject.mesh.facesMutable()[(size_t)selectedFaceIndex_]);
-                else
-                    for (auto& f : meshObject.mesh.facesMutable()) applyReset(f);
-                sceneDirty_ = true;
+                applyProjection(UvProjection::Box);
             }
 
             ImGui::PopID();
         }
 
-        if (ImGui::CollapsingHeader("CSG", ImGuiTreeNodeFlags_DefaultOpen))
+        if (Section("CSG"))
         {
             ImGui::PushID("CSGSection");
 
@@ -5058,7 +5850,7 @@ void LevelEditorApp::ShowLeftPanel()
                         }
                     }
 
-                    if (ImGui::CollapsingHeader("Experimental Mesh CSG", ImGuiTreeNodeFlags_None))
+                    if (Section("Experimental Mesh CSG", false))
                     {
                         if (ImGui::Button("Union Root CSG"))
                         {
@@ -5144,7 +5936,7 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::TextDisabled("Select 2+ meshes for CSG");
             }
 
-            if (ImGui::CollapsingHeader("Plane Clip", ImGuiTreeNodeFlags_None))
+            if (Section("Plane Clip", false))
             {
                 ImGui::SetNextItemWidth(80.0f);
                 if (ImGui::BeginCombo("Clip Axis##CSGClipAxis", csgAxisName(csgClipAxis_)))
@@ -5189,7 +5981,7 @@ void LevelEditorApp::ShowLeftPanel()
     }
 
     // Reference Image Planes
-    if (ImGui::CollapsingHeader("Reference Planes", ImGuiTreeNodeFlags_None))
+    if (Section("Reference Planes", false))
     {
         static const char* refAxisNames[] = {"Front", "Back", "Left", "Right", "Top", "Bottom"};
 
@@ -5336,7 +6128,7 @@ void LevelEditorApp::ShowRightPanel()
         return;
     }
 
-    if (ImGui::CollapsingHeader("Level Stats", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Level Stats"))
     {
         std::size_t totalVertices = 0;
         std::size_t totalFaces = 0;
@@ -5352,7 +6144,7 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::Text("Total Faces: %d", static_cast<int>(totalFaces));
     }
 
-    if (ImGui::CollapsingHeader("Lightmap", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Lightmap"))
     {
         const bool isBaking = bakeRunning_;
         if (isBaking) ImGui::BeginDisabled();
@@ -5382,7 +6174,7 @@ void LevelEditorApp::ShowRightPanel()
         }
     }
 
-    if (ImGui::CollapsingHeader("View Settings", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("View Settings"))
     {
         ImGui::Checkbox("Show Grid", &showGrid_);
         ImGui::SameLine();
@@ -5425,7 +6217,7 @@ void LevelEditorApp::ShowRightPanel()
         }
     }
 
-    if (ImGui::CollapsingHeader("Debug", ImGuiTreeNodeFlags_None))
+    if (Section("Debug", false))
     {
         ImGui::Checkbox("Draw Normals", &debugDrawNormals_);
         ImGui::SameLine();
@@ -5435,7 +6227,7 @@ void LevelEditorApp::ShowRightPanel()
     }
 
     if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
-        ImGui::CollapsingHeader("Selected Mesh", ImGuiTreeNodeFlags_DefaultOpen))
+        Section("Selected Mesh"))
     {
         ImGui::PushID("SelectedMeshSection");
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
@@ -5574,7 +6366,7 @@ void LevelEditorApp::ShowRightPanel()
     }
 
     if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()) &&
-        ImGui::CollapsingHeader("Selected Entity", ImGuiTreeNodeFlags_DefaultOpen))
+        Section("Selected Entity"))
     {
         ImGui::PushID("SelectedEntitySection");
         LevelEntityObject& entity = scene_.entities()[selectedEntityIndex_];
@@ -5660,10 +6452,24 @@ void LevelEditorApp::ShowRightPanel()
             }
         }
 
+        // PlayerStart direction
+        if (entity.type == LevelEntityType::PlayerStart)
+        {
+            glm::vec3 dir = entity.direction;
+            if (ImGui::DragFloat3("Direction##PlayerDir", &dir.x, 0.01f, -1.0f, 1.0f))
+            {
+                if (glm::length(dir) > 1e-4f)
+                {
+                    PushUndoState();
+                    entity.direction = glm::normalize(dir);
+                }
+            }
+        }
+
         ImGui::PopID();
     }
 
-    if (ImGui::CollapsingHeader("Texture", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Texture"))
     {
         TextureManager& textureManager = TextureManager::instance();
         Texture* white = textureManager.getWhite();
@@ -5786,7 +6592,7 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::TextDisabled("Uses Assets root");
     }
 
-    if (ImGui::CollapsingHeader("History", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("History"))
     {
         ImGui::Text("Undo states: %d", static_cast<int>(undoStack_.size()));
         ImGui::Text("Redo states: %d", static_cast<int>(redoStack_.size()));
@@ -5802,10 +6608,10 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::EndDisabled();
     }
 
-    if (ImGui::CollapsingHeader("Roadmap", ImGuiTreeNodeFlags_DefaultOpen))
+    if (Section("Roadmap"))
     {
         ImGui::BulletText("Create box -> render real mesh");
-        ImGui::BulletText("Object / Face / Edge / Vertex selection");
+        ImGui::BulletText("Object / Face / Vertex selection");
         ImGui::BulletText("Extrude, split, clip, bevel");
         ImGui::BulletText("Entities with editable properties");
         ImGui::BulletText("CSG as a higher-level operation");

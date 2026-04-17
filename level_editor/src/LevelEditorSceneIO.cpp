@@ -88,6 +88,8 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
                 faceJson["uv_scale"] = {face.uvScale.x, face.uvScale.y};
             if (face.uvRotation != 0.0f)
                 faceJson["uv_rotation"] = face.uvRotation;
+            if (face.uvProjection != UvProjection::Box)
+                faceJson["uv_projection"] = static_cast<int>(face.uvProjection);
             meshJson["faces"].push_back(faceJson);
         }
 
@@ -197,6 +199,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
                     face.uvScale = glm::vec2(arr[0].get<float>(), arr[1].get<float>());
                 }
                 face.uvRotation = faceJson.value("uv_rotation", 0.0f);
+                face.uvProjection = static_cast<UvProjection>(faceJson.value("uv_projection", 0));
                 faces.push_back(face);
             }
 

@@ -9,6 +9,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -157,6 +158,7 @@ private:
     void ShowAssetsPanel();
     void ShowStatusBar(float deltaTime);
     void UpdatePanelLayout();
+    bool Section(const char* label, bool defaultOpen = true);
     void PushUndoState();
     bool PerformUndo();
     bool PerformRedo();
@@ -168,6 +170,8 @@ private:
     void HandleFileDialogs();
     void SaveEditorSettings();
     void LoadEditorSettings();
+    bool ExportSceneOBJ(const std::string& path);
+    bool ExportSceneH3D(const std::string& path);
 
     enum class RefPlaneAxis { Front, Back, Left, Right, Top, Bottom };
     struct ReferencePlane
@@ -193,6 +197,7 @@ private:
     int selectedEntityIndex_ = 0;
     bool showGrid_ = true;
     bool snapEnabled_ = true;
+    bool snapToGeometry_ = false;
     bool useTransparency_ = true;
     bool vertexFrontOnly_ = true;
     bool placeVertexMode_ = false;
@@ -212,6 +217,8 @@ private:
     ImVec2 assetPanelSize_ = ImVec2(860.0f, 200.0f);
     ImVec2 rightPanelPos_ = ImVec2(0.0f, 0.0f);
     ImVec2 rightPanelSize_ = ImVec2(360.0f, 720.0f);
+    // Collapsing header open/closed states (persisted in settings)
+    std::unordered_map<std::string, bool> sectionOpen_;
     std::vector<LevelEditorScene> undoStack_;
     std::vector<LevelEditorScene> redoStack_;
     int maxUndoStates_ = 64;
@@ -262,6 +269,7 @@ private:
     ImGuiFileDialog sceneDialog_;
     ImGuiFileDialog importMeshDialog_;
     ImGuiFileDialog refPlaneImageDialog_;
+    ImGuiFileDialog exportDialog_;
     int refPlaneDialogTarget_ = -1;
     std::vector<ReferencePlane> referencePlanes_;
     int contextViewIndex_ = -1;

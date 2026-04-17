@@ -3,6 +3,8 @@
 enum class LevelEditorTheme
 {
     Dark,
+    Light,
+    Classic,
     Studio
 };
 

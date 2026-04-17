@@ -15,6 +15,7 @@ constexpr uint32_t MESH_VERSION         = 101;
 constexpr uint32_t BUFFER_FLAG_SKINNED  = 1 << 0;
 constexpr uint32_t BUFFER_FLAG_TANGENTS = 1 << 1;
 constexpr uint32_t BUFFER_FLAG_COLORS   = 1 << 2;
+constexpr uint32_t BUFFER_FLAG_LIGHTMAP = 1 << 3; // second UV channel for lightmap
 
 constexpr uint32_t CHUNK_MATS           = 0x4D415453; // "MATS"
 constexpr uint32_t CHUNK_BUFF           = 0x42554646; // "BUFF"
@@ -23,6 +24,7 @@ constexpr uint32_t CHUNK_IDXS           = 0x49445853; // "IDXS"
 constexpr uint32_t CHUNK_SKEL           = 0x534B454C; // "SKEL"
 constexpr uint32_t CHUNK_SKIN           = 0x534B494E; // "SKIN"
 constexpr uint32_t CHUNK_SURF           = 0x53555246; // "SURF"
+constexpr uint32_t CHUNK_LMAP           = 0x4C4D4150; // "LMAP" — embedded lightmap texture
 
 constexpr uint32_t ANIM_MAGIC           = 0x414E494D; // "ANIM"
 constexpr uint32_t ANIM_VERSION         = 100;

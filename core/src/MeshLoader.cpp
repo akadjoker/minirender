@@ -394,6 +394,7 @@ void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
     uint32_t materialIndex  = 0;
     uint32_t flags          = firstWord;
     bool     hasTangents    = (flags & BUFFER_FLAG_TANGENTS) != 0;
+    bool     hasLightmapUV  = (flags & BUFFER_FLAG_LIGHTMAP) != 0;
     bool     hasSurfaceChunk = false;
 
     if (isBufferSubChunk(secondWord))
@@ -405,6 +406,7 @@ void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
         materialIndex = firstWord;
         flags = secondWord;
         hasTangents = (flags & BUFFER_FLAG_TANGENTS) != 0;
+        hasLightmapUV = (flags & BUFFER_FLAG_LIGHTMAP) != 0;
     }
 
     uint32_t vertexBase  = (uint32_t)mesh->buffer.vertices.size();
@@ -430,6 +432,10 @@ void MeshReader::readBuffer(const ChunkHeader &h, Mesh *mesh)
                     v.tangent.z = s_->readF32(); v.tangent.w = s_->readF32();
                 }
                 v.uv.x = s_->readF32(); v.uv.y = s_->readF32();
+                if (hasLightmapUV) {
+                    v.tangent.x = s_->readF32(); // lightmap U
+                    v.tangent.y = s_->readF32(); // lightmap V
+                }
                 mesh->buffer.vertices.push_back(v);
             }
         }
@@ -579,6 +585,15 @@ bool MeshReader::load(const std::string &path, Mesh *mesh)
 
         if      (h.id == CHUNK_MATS) readMaterials(h, mesh->materials);
         else if (h.id == CHUNK_BUFF) readBuffer(h, mesh);
+        else if (h.id == CHUNK_LMAP)
+        {
+            mesh->lightmap.width    = s_->readI32();
+            mesh->lightmap.height   = s_->readI32();
+            mesh->lightmap.channels = s_->readI32();
+            uint32_t dataSize = mesh->lightmap.width * mesh->lightmap.height * mesh->lightmap.channels;
+            mesh->lightmap.pixels.resize(dataSize);
+            s_->readRaw(mesh->lightmap.pixels.data(), dataSize);
+        }
         else                         skipChunk(h);
 
         if (s_->tell() < end) s_->seek(end);

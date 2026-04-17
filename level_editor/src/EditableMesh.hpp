@@ -5,6 +5,14 @@
 #include <string>
 #include <vector>
 
+enum class UvProjection : int
+{
+    Box = 0,
+    Planar,
+    Cylindrical,
+    Spherical
+};
+
 struct EditableVertex
 {
     glm::vec3 position {0.0f, 0.0f, 0.0f};
@@ -19,6 +27,7 @@ struct EditableFace
     glm::vec2 uvOffset {0.0f, 0.0f};
     glm::vec2 uvScale  {1.0f, 1.0f};
     float     uvRotation = 0.0f;
+    UvProjection uvProjection = UvProjection::Box;
 };
 
 class EditableMesh

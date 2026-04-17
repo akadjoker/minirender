@@ -405,6 +405,14 @@ public:
     // Phase 1: AABB reject.  Phase 2: Möller–Trumbore per triangle.
     // Returns best hit or hit==false if no intersection.
     PickResult pick(const Ray &worldRay, const glm::mat4 &model = glm::mat4(1.f)) const;
+
+    // Embedded lightmap (optional, loaded from LMAP chunk in H3D)
+    struct EmbeddedLightmap {
+        int width = 0, height = 0, channels = 3;
+        std::vector<uint8_t> pixels; // RGB
+        bool empty() const { return pixels.empty(); }
+    };
+    EmbeddedLightmap lightmap;
 };
 
 // ============================================================

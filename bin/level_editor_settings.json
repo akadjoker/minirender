@@ -1,34 +1,36 @@
 {
-    "assetRoot": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel/textures",
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/textures",
     "assetViewMode": 2,
-    "currentTexturePath": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel/textures/Floor02.jpg",
+    "currentTexturePath": "import::sponza.obj/column_b_diffuse",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
+    "faceHighlightFillAlpha": 0.6000000238418579,
+    "faceHighlightFillEnabled": true,
     "gridSize": 16.0,
-    "lastImportDir": "/media/ctw04578/data/projects/zen/minirender/assets/b3d/castel",
-    "lmAmbient": 0.4099999964237213,
-    "lmBias": 2.0,
-    "lmResolution": 2084,
-    "lmSamples": 5,
+    "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/obj",
+    "lmAmbient": 0.20999999344348907,
+    "lmBias": 3.859999895095825,
+    "lmResolution": 1024,
+    "lmSamples": 1,
     "perspGridSize": 19.100000381469727,
-    "scenePath": "/media/ctw04578/data/projects/zen/minirender/bin/scenes/room.mred",
+    "scenePath": "",
     "sections": {
         "CSG": true,
         "Debug": false,
         "Entities": true,
-        "Experimental Mesh CSG": false,
-        "History": true,
+        "Experimental Mesh CSG": true,
+        "History": false,
         "Level Stats": false,
-        "Lightmap": false,
-        "Mesh Edit": true,
+        "Lightmap": true,
+        "Mesh Edit": false,
         "Mesh Objects": true,
         "Plane Clip": false,
         "Reference Planes": false,
         "Roadmap": true,
-        "Selected Entity": false,
+        "Selected Entity": true,
         "Selected Mesh": false,
-        "Texture": false,
+        "Texture": true,
         "Tools": true,
         "View Settings": false
     },
@@ -53,11 +55,11 @@
                 64.0,
                 0.0
             ],
-            "orthoSize": 4096.0,
-            "perspectiveDistance": 720.0,
-            "perspectivePitch": 28.0,
-            "perspectiveYaw": 45.0,
-            "renderMode": 0,
+            "orthoSize": 3968.34521484375,
+            "perspectiveDistance": 332.5537414550781,
+            "perspectivePitch": -4.0,
+            "perspectiveYaw": 68.10002136230469,
+            "renderMode": 1,
             "type": 0
         },
         {
@@ -67,15 +69,15 @@
                 0.14000000059604645
             ],
             "focus": [
-                -1571.251220703125,
-                29.181907653808594,
+                0.0,
+                64.0,
                 0.0
             ],
-            "orthoSize": 3102.49853515625,
-            "perspectiveDistance": 720.0,
-            "perspectivePitch": 28.0,
-            "perspectiveYaw": 45.0,
-            "renderMode": 0,
+            "orthoSize": 405.7432556152344,
+            "perspectiveDistance": 396.5537414550781,
+            "perspectivePitch": 53.5,
+            "perspectiveYaw": -195.449951171875,
+            "renderMode": 1,
             "type": 2
         },
         {
@@ -86,15 +88,15 @@
             ],
             "focus": [
                 0.0,
-                364.4548034667969,
-                -492.12420654296875
+                64.0,
+                0.0
             ],
-            "orthoSize": 1887.3206787109375,
+            "orthoSize": 695.037109375,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0,
-            "renderMode": 0,
-            "type": 5
+            "renderMode": 1,
+            "type": 4
         },
         {
             "clearColor": [
@@ -103,14 +105,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                -1049.08447265625,
-                -9.933526992797852,
-                -318.586669921875
+                -84.7279052734375,
+                216.0186309814453,
+                357.023193359375
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 4096.0,
-            "perspectivePitch": 24.75,
-            "perspectiveYaw": 38.350589752197266,
+            "perspectiveDistance": 1644.5537109375,
+            "perspectivePitch": 65.5,
+            "perspectiveYaw": -6033.44580078125,
             "renderMode": 2,
             "type": 6
         }

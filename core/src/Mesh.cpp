@@ -5,29 +5,6 @@
 #include <cstring>
 #include <glm/gtc/matrix_inverse.hpp>
 
-namespace
-{
-glm::mat3 orthonormalizeBasis(const glm::vec3 &axis0, const glm::vec3 &axis1, const glm::vec3 &axis2)
-{
-    glm::vec3 x = glm::length2(axis0) > 1e-8f ? glm::normalize(axis0) : glm::vec3(1.0f, 0.0f, 0.0f);
-
-    glm::vec3 y = axis1 - x * glm::dot(x, axis1);
-    if (glm::length2(y) <= 1e-8f)
-        y = axis2 - x * glm::dot(x, axis2);
-    if (glm::length2(y) <= 1e-8f)
-        y = glm::vec3(0.0f, 1.0f, 0.0f) - x * glm::dot(x, glm::vec3(0.0f, 1.0f, 0.0f));
-    y = glm::length2(y) > 1e-8f ? glm::normalize(y) : glm::vec3(0.0f, 1.0f, 0.0f);
-
-    glm::vec3 z = glm::cross(x, y);
-    if (glm::dot(z, axis2) < 0.0f)
-        z = -z;
-    z = glm::length2(z) > 1e-8f ? glm::normalize(z) : glm::vec3(0.0f, 0.0f, 1.0f);
-
-    y = glm::normalize(glm::cross(z, x));
-    return glm::mat3(x, y, z);
-}
-}
-
 // ============================================================
 //  InstanceBuffer
 // ============================================================

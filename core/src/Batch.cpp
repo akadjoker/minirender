@@ -59,9 +59,9 @@ namespace
 
 RenderBatch::RenderBatch()
     : maxVertices(0), currentMode(QUAD), currentTexture(0), currentDepth(0.0f),
-      texcoordx(0.0f), texcoordy(0.0f), colorr(255), colorg(255), colorb(255), colora(255),
       gpuReady(false), use_matrix(false),
       modelMatrix(glm::mat4(1.0f)), viewMatrix(glm::mat4(1.0f)),
+      texcoordx(0.0f), texcoordy(0.0f), colorr(255), colorg(255), colorb(255), colora(255),
       programId(0), vaoId(0), vboId(0), eboId(0), whiteTextureId(0),
       uMvpLocation(-1), uTextureLocation(-1),
       aPosLocation(-1), aUvLocation(-1), aColorLocation(-1)

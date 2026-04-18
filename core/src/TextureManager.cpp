@@ -349,6 +349,7 @@ Texture *TextureManager::uploadSurface(const std::string &name,
     SDL_FreeSurface(surf);
 
     t->name = name;
+    t->sourcePath.clear();
     cache[name] = t;
     return t;
 }
@@ -390,6 +391,8 @@ Texture *TextureManager::load(const std::string &name,
                                   static_cast<std::size_t>(channels);
     Texture *t = uploadMemory(name, width, height, pixelType, pixels, sizeBytes, opts);
     stbi_image_free(pixels);
+    if (t)
+        t->sourcePath = path;
     if (t)
         SDL_Log("[TextureManager] Loaded '%s' (%dx%d)", name.c_str(), t->width, t->height);
 
@@ -472,6 +475,7 @@ Texture *TextureManager::uploadMemory(const std::string &name,
 
     glBindTexture(GL_TEXTURE_2D, 0);
     t->name = name;
+    t->sourcePath.clear();
     cache[name] = t;
     return t;
 }

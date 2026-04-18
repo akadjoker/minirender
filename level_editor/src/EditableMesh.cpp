@@ -88,6 +88,144 @@ EditableMesh EditableMesh::MakeHollowBox(const glm::vec3& minBounds, const glm::
     return mesh;
 }
 
+EditableMesh EditableMesh::MakeRoom(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness)
+{
+    const glm::vec3 size = maxBounds - minBounds;
+    const float maxThickness = std::max(0.0f, std::min(std::min(size.x, size.y), size.z) * 0.5f - 0.001f);
+    const float thickness = glm::clamp(wallThickness, 0.001f, maxThickness);
+    if (maxThickness <= 0.0f)
+        return MakeBox(minBounds, maxBounds);
+
+    EditableMesh mesh;
+
+    auto appendBox = [&](const glm::vec3& boxMin, const glm::vec3& boxMax, const char* materialName)
+    {
+        EditableMesh piece = MakeBox(boxMin, boxMax);
+        const int vertexOffset = static_cast<int>(mesh.vertices_.size());
+        mesh.vertices_.insert(mesh.vertices_.end(), piece.vertices_.begin(), piece.vertices_.end());
+        for (EditableFace face : piece.faces_)
+        {
+            face.materialName = materialName;
+            for (int& index : face.indices)
+                index += vertexOffset;
+            mesh.faces_.push_back(std::move(face));
+        }
+    };
+
+    const glm::vec3 outerMin = minBounds;
+    const glm::vec3 outerMax = maxBounds;
+    const glm::vec3 innerMin = outerMin + glm::vec3(thickness, thickness, thickness);
+    const glm::vec3 innerMax = outerMax - glm::vec3(thickness, thickness, thickness);
+
+    appendBox(
+        glm::vec3(outerMin.x, outerMin.y, outerMin.z),
+        glm::vec3(outerMax.x, outerMin.y + thickness, outerMax.z),
+        "floor");
+
+    appendBox(
+        glm::vec3(outerMin.x, outerMax.y - thickness, outerMin.z),
+        glm::vec3(outerMax.x, outerMax.y, outerMax.z),
+        "ceiling");
+
+    appendBox(
+        glm::vec3(outerMin.x, innerMin.y, outerMin.z),
+        glm::vec3(outerMin.x + thickness, innerMax.y, outerMax.z),
+        "wall");
+
+    appendBox(
+        glm::vec3(outerMax.x - thickness, innerMin.y, outerMin.z),
+        glm::vec3(outerMax.x, innerMax.y, outerMax.z),
+        "wall");
+
+    appendBox(
+        glm::vec3(innerMin.x, innerMin.y, outerMin.z),
+        glm::vec3(innerMax.x, innerMax.y, outerMin.z + thickness),
+        "wall");
+
+    appendBox(
+        glm::vec3(innerMin.x, innerMin.y, outerMax.z - thickness),
+        glm::vec3(innerMax.x, innerMax.y, outerMax.z),
+        "wall");
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeSector(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness,
+                                      bool left, bool right, bool top, bool bottom, bool front, bool back)
+{
+    const glm::vec3 size = maxBounds - minBounds;
+    const float maxThickness = std::max(0.0f, std::min(std::min(size.x, size.y), size.z) * 0.5f - 0.001f);
+    const float thickness = glm::clamp(wallThickness, 0.001f, maxThickness);
+    if (maxThickness <= 0.0f)
+        return MakeBox(minBounds, maxBounds);
+
+    EditableMesh mesh;
+
+    auto appendBox = [&](const glm::vec3& boxMin, const glm::vec3& boxMax, const char* materialName)
+    {
+        EditableMesh piece = MakeBox(boxMin, boxMax);
+        const int vertexOffset = static_cast<int>(mesh.vertices_.size());
+        mesh.vertices_.insert(mesh.vertices_.end(), piece.vertices_.begin(), piece.vertices_.end());
+        for (EditableFace face : piece.faces_)
+        {
+            face.materialName = materialName;
+            for (int& index : face.indices)
+                index += vertexOffset;
+            mesh.faces_.push_back(std::move(face));
+        }
+    };
+
+    const float innerMinX = minBounds.x + (left ? thickness : 0.0f);
+    const float innerMaxX = maxBounds.x - (right ? thickness : 0.0f);
+    const float innerMinZ = minBounds.z + (front ? thickness : 0.0f);
+    const float innerMaxZ = maxBounds.z - (back ? thickness : 0.0f);
+
+    if (bottom)
+    {
+        appendBox(
+            glm::vec3(innerMinX, minBounds.y, innerMinZ),
+            glm::vec3(innerMaxX, minBounds.y + thickness, innerMaxZ),
+            "floor");
+    }
+    if (top)
+    {
+        appendBox(
+            glm::vec3(innerMinX, maxBounds.y - thickness, innerMinZ),
+            glm::vec3(innerMaxX, maxBounds.y, innerMaxZ),
+            "ceiling");
+    }
+    if (left)
+    {
+        appendBox(
+            glm::vec3(minBounds.x, minBounds.y, minBounds.z),
+            glm::vec3(minBounds.x + thickness, maxBounds.y, maxBounds.z),
+            "wall");
+    }
+    if (right)
+    {
+        appendBox(
+            glm::vec3(maxBounds.x - thickness, minBounds.y, minBounds.z),
+            glm::vec3(maxBounds.x, maxBounds.y, maxBounds.z),
+            "wall");
+    }
+    if (front)
+    {
+        appendBox(
+            glm::vec3(innerMinX, minBounds.y, minBounds.z),
+            glm::vec3(innerMaxX, maxBounds.y, minBounds.z + thickness),
+            "wall");
+    }
+    if (back)
+    {
+        appendBox(
+            glm::vec3(innerMinX, minBounds.y, maxBounds.z - thickness),
+            glm::vec3(innerMaxX, maxBounds.y, maxBounds.z),
+            "wall");
+    }
+
+    return mesh;
+}
+
 EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, float height, int segments)
 {
     if (segments < 3) segments = 3;
@@ -679,7 +817,6 @@ EditableMesh EditableMesh::MakeText(const std::string& text, const std::string& 
                 if (extrude > 0.001f)
                 {
                     const int backBase = static_cast<int>(mesh.vertices_.size());
-                    const int polyCount = static_cast<int>(allPoly.size());
 
                     // Back face vertices (Z = -extrude)
                     for (const auto& p : allPoly)

@@ -80,11 +80,14 @@ public:
 
     const std::vector<LevelMeshObject>& meshObjects() const { return meshObjects_; }
     const std::vector<LevelEntityObject>& entities() const { return entities_; }
+    const std::string& assetRoot() const { return assetRoot_; }
 
     std::vector<LevelMeshObject>& meshObjects() { return meshObjects_; }
     std::vector<LevelEntityObject>& entities() { return entities_; }
+    std::string& assetRoot() { return assetRoot_; }
 
 private:
     std::vector<LevelMeshObject> meshObjects_;
     std::vector<LevelEntityObject> entities_;
+    std::string assetRoot_ = "assets";
 };

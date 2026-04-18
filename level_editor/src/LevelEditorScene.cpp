@@ -9,6 +9,7 @@ void LevelEditorScene::reset()
 {
     meshObjects_.clear();
     entities_.clear();
+    assetRoot_ = "assets";
 
     meshObjects_.push_back(LevelMeshObject{});
 

@@ -1,16 +1,52 @@
-
 #include "pch.h"
 #include "Device.hpp"
 #include "Pixmap.hpp"
 #include "Manager.hpp"
 #include "RenderState.hpp"
 #include "Input.hpp"
+#define MSF_GIF_IMPL
+#include "msf_gif.h"
 // Platform OpenGL/GLES headers — resolved centrally
 #include "Opengl.hpp"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
 #include "ImGuiFontAwesome.h"
+
+#include <algorithm>
+#include <cstdlib>
+#include <cstdio>
+#include <ctime>
+#include <filesystem>
+#include <vector>
+
+struct Device::GifRecordingState
+{
+    FILE* file = nullptr;
+    MsfGifState gif = {};
+    int width = 0;
+    int height = 0;
+    int fps = 12;
+    int frameDelayCenti = 8;
+    double captureInterval = 1.0 / 12.0;
+    double accumulator = 0.0;
+    int framesWritten = 0;
+    std::string path;
+    std::vector<uint8_t> pixels;
+};
+
+struct Device::FrameSequenceRecordingState
+{
+    int width = 0;
+    int height = 0;
+    int fps = 30;
+    double captureInterval = 1.0 / 30.0;
+    double accumulator = 0.0;
+    int framesWritten = 0;
+    std::string directory;
+    std::string extension;
+    std::vector<uint8_t> pixels;
+};
 
 double GetTime() { return static_cast<double>(SDL_GetTicks()) / 1000; }
 
@@ -363,6 +399,8 @@ void Device::Close()
     if (!m_ready)
         return;
 
+    EndGifRecording();
+    EndFrameSequenceRecording();
     m_ready = false;
 
     ImGuiShutdown();
@@ -390,6 +428,9 @@ void Device::Flip()
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         RenderState::instance().useProgram(0);
     }
+
+    CaptureGifFrame();
+    CaptureFrameSequenceFrame();
 
     SDL_GL_SwapWindow(m_window);
 
@@ -508,4 +549,357 @@ bool Device::TakeScreenshot(const char *filename)
 
     delete screenshot;
     return success;
+}
+
+bool Device::BeginGifRecording(const char* filename, int fps)
+{
+    if (!m_ready || !m_window)
+        return false;
+    if (IsGifRecording())
+        return false;
+
+    std::string outputPath = (filename && filename[0] != '\0') ? filename : BuildDefaultGifPath();
+    std::filesystem::path path(outputPath);
+    if (path.has_parent_path())
+        std::filesystem::create_directories(path.parent_path());
+
+    auto recording = std::make_unique<GifRecordingState>();
+    recording->width = GetWidth();
+    recording->height = GetHeight();
+    recording->fps = std::clamp(fps, 1, 50);
+    recording->frameDelayCenti = std::max(1, static_cast<int>(std::round(100.0 / static_cast<double>(recording->fps))));
+    recording->captureInterval = recording->frameDelayCenti / 100.0;
+    recording->accumulator = recording->captureInterval;
+    recording->path = path.generic_string();
+    recording->pixels.resize(static_cast<std::size_t>(recording->width) * static_cast<std::size_t>(recording->height) * 4u);
+
+    recording->file = std::fopen(recording->path.c_str(), "wb");
+    if (!recording->file)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] Failed to open GIF file: %s", recording->path.c_str());
+        return false;
+    }
+
+    msf_gif_alpha_threshold = 0;
+    msf_gif_bgra_flag = 0;
+    if (!msf_gif_begin_to_file(&recording->gif, recording->width, recording->height,
+                               reinterpret_cast<MsfGifFileWriteFunc>(std::fwrite), recording->file))
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] Failed to begin GIF recording");
+        std::fclose(recording->file);
+        return false;
+    }
+
+    SDL_Log("[Device] GIF recording started: %s (%dx%d @ %d fps)",
+            recording->path.c_str(), recording->width, recording->height, recording->fps);
+    m_gifRecording = std::move(recording);
+    return true;
+}
+
+bool Device::EndGifRecording()
+{
+    if (!m_gifRecording)
+        return false;
+
+    bool success = true;
+    if (m_gifRecording->file)
+    {
+        success = msf_gif_end_to_file(&m_gifRecording->gif) != 0;
+        std::fclose(m_gifRecording->file);
+        m_gifRecording->file = nullptr;
+    }
+
+    SDL_Log(success
+            ? "[Device] GIF recording saved: %s (%d frames)"
+            : "[Device] GIF recording failed while finalizing: %s",
+            m_gifRecording->path.c_str(),
+            m_gifRecording->framesWritten);
+
+    m_gifRecording.reset();
+    return success;
+}
+
+bool Device::IsGifRecording() const
+{
+    return static_cast<bool>(m_gifRecording);
+}
+
+std::string Device::GetGifRecordingPath() const
+{
+    return m_gifRecording ? m_gifRecording->path : std::string();
+}
+
+int Device::GetGifRecordingFPS() const
+{
+    return m_gifRecording ? m_gifRecording->fps : 0;
+}
+
+int Device::GetGifRecordingFrameCount() const
+{
+    return m_gifRecording ? m_gifRecording->framesWritten : 0;
+}
+
+bool Device::BeginFrameSequenceRecording(const char* directory, const char* extension, int fps)
+{
+    if (!m_ready || !m_window)
+        return false;
+    if (IsFrameSequenceRecording())
+        return false;
+
+    std::string normalizedExtension = (extension && extension[0] != '\0') ? extension : "png";
+    if (!normalizedExtension.empty() && normalizedExtension.front() == '.')
+        normalizedExtension.erase(normalizedExtension.begin());
+    std::transform(normalizedExtension.begin(), normalizedExtension.end(), normalizedExtension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (normalizedExtension != "png" && normalizedExtension != "jpg" && normalizedExtension != "jpeg")
+        return false;
+
+    auto recording = std::make_unique<FrameSequenceRecordingState>();
+    recording->width = GetWidth();
+    recording->height = GetHeight();
+    recording->fps = std::clamp(fps, 1, 120);
+    recording->captureInterval = 1.0 / static_cast<double>(recording->fps);
+    recording->accumulator = recording->captureInterval;
+    recording->extension = normalizedExtension == "jpeg" ? "jpg" : normalizedExtension;
+    recording->directory = (directory && directory[0] != '\0')
+        ? std::filesystem::path(directory).generic_string()
+        : BuildDefaultFrameSequenceDirectory(recording->extension.c_str());
+    recording->pixels.resize(static_cast<std::size_t>(recording->width) * static_cast<std::size_t>(recording->height) * 4u);
+
+    std::filesystem::create_directories(recording->directory);
+    SDL_Log("[Device] Frame sequence recording started: %s (%dx%d @ %d fps, %s)",
+            recording->directory.c_str(), recording->width, recording->height, recording->fps, recording->extension.c_str());
+    m_frameSequenceRecording = std::move(recording);
+    return true;
+}
+
+bool Device::EndFrameSequenceRecording()
+{
+    if (!m_frameSequenceRecording)
+        return false;
+
+    m_lastFrameSequenceDirectory = m_frameSequenceRecording->directory;
+    m_lastFrameSequenceExtension = m_frameSequenceRecording->extension;
+    m_lastFrameSequenceFPS = m_frameSequenceRecording->fps;
+
+    SDL_Log("[Device] Frame sequence recording saved: %s (%d frames, %s)",
+            m_frameSequenceRecording->directory.c_str(),
+            m_frameSequenceRecording->framesWritten,
+            m_frameSequenceRecording->extension.c_str());
+    m_frameSequenceRecording.reset();
+    return true;
+}
+
+bool Device::IsFrameSequenceRecording() const
+{
+    return static_cast<bool>(m_frameSequenceRecording);
+}
+
+std::string Device::GetFrameSequenceDirectory() const
+{
+    return m_frameSequenceRecording ? m_frameSequenceRecording->directory : std::string();
+}
+
+std::string Device::GetFrameSequenceExtension() const
+{
+    return m_frameSequenceRecording ? m_frameSequenceRecording->extension : std::string();
+}
+
+int Device::GetFrameSequenceFPS() const
+{
+    return m_frameSequenceRecording ? m_frameSequenceRecording->fps : 0;
+}
+
+int Device::GetFrameSequenceFrameCount() const
+{
+    return m_frameSequenceRecording ? m_frameSequenceRecording->framesWritten : 0;
+}
+
+std::string Device::GetLastFrameSequenceDirectory() const
+{
+    return m_lastFrameSequenceDirectory;
+}
+
+std::string Device::GetLastFrameSequenceExtension() const
+{
+    return m_lastFrameSequenceExtension;
+}
+
+int Device::GetLastFrameSequenceFPS() const
+{
+    return m_lastFrameSequenceFPS;
+}
+
+bool Device::ExportLastFrameSequenceToVideo(const char* outputFilename) const
+{
+    if (m_lastFrameSequenceDirectory.empty() || m_lastFrameSequenceExtension.empty() || m_lastFrameSequenceFPS <= 0)
+        return false;
+
+    return ExportFrameSequenceToVideo(m_lastFrameSequenceDirectory,
+                                      m_lastFrameSequenceExtension,
+                                      m_lastFrameSequenceFPS,
+                                      outputFilename);
+}
+
+void Device::CaptureGifFrame()
+{
+    if (!m_gifRecording)
+        return;
+
+    GifRecordingState& recording = *m_gifRecording;
+    if (GetWidth() != recording.width || GetHeight() != recording.height)
+    {
+        SDL_Log("[Device] Window resized during GIF recording, stopping capture");
+        EndGifRecording();
+        return;
+    }
+
+    const double frameSeconds = (m_update > 0.0) ? m_update : ((m_target > 0.0) ? m_target : (1.0 / 60.0));
+    recording.accumulator += frameSeconds;
+    if (recording.framesWritten > 0 && recording.accumulator + 1e-9 < recording.captureInterval)
+        return;
+
+    recording.accumulator = std::max(0.0, recording.accumulator - recording.captureInterval);
+    glReadPixels(0, 0, recording.width, recording.height, GL_RGBA, GL_UNSIGNED_BYTE, recording.pixels.data());
+
+    const int rowBytes = recording.width * 4;
+    for (int y = 0; y < recording.height / 2; ++y)
+    {
+        uint8_t* top = recording.pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(rowBytes);
+        uint8_t* bottom = recording.pixels.data() +
+            static_cast<std::size_t>(recording.height - 1 - y) * static_cast<std::size_t>(rowBytes);
+        for (int x = 0; x < rowBytes; ++x)
+            std::swap(top[x], bottom[x]);
+    }
+
+    if (!msf_gif_frame_to_file(&recording.gif, recording.pixels.data(),
+                               recording.frameDelayCenti, 16, rowBytes))
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] Failed to append GIF frame");
+        EndGifRecording();
+        return;
+    }
+
+    recording.framesWritten++;
+}
+
+std::string Device::BuildDefaultGifPath() const
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tmNow = {};
+#if defined(_WIN32)
+    localtime_s(&tmNow, &now);
+#else
+    localtime_r(&now, &tmNow);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmNow);
+    std::filesystem::path output = std::filesystem::current_path() / "captures" /
+        ("minirender_" + std::string(stamp) + ".gif");
+    return output.generic_string();
+}
+
+void Device::CaptureFrameSequenceFrame()
+{
+    if (!m_frameSequenceRecording)
+        return;
+
+    FrameSequenceRecordingState& recording = *m_frameSequenceRecording;
+    if (GetWidth() != recording.width || GetHeight() != recording.height)
+    {
+        SDL_Log("[Device] Window resized during frame sequence recording, stopping capture");
+        EndFrameSequenceRecording();
+        return;
+    }
+
+    const double frameSeconds = (m_update > 0.0) ? m_update : ((m_target > 0.0) ? m_target : (1.0 / 60.0));
+    recording.accumulator += frameSeconds;
+    if (recording.framesWritten > 0 && recording.accumulator + 1e-9 < recording.captureInterval)
+        return;
+
+    recording.accumulator = std::max(0.0, recording.accumulator - recording.captureInterval);
+    glReadPixels(0, 0, recording.width, recording.height, GL_RGBA, GL_UNSIGNED_BYTE, recording.pixels.data());
+
+    Pixmap frame(recording.width, recording.height, 4, recording.pixels.data());
+    frame.FlipVertical();
+
+    char fileName[64];
+    std::snprintf(fileName, sizeof(fileName), "frame_%06d.%s",
+                  recording.framesWritten + 1, recording.extension.c_str());
+    const std::filesystem::path outputPath = std::filesystem::path(recording.directory) / fileName;
+
+    if (!frame.Save(outputPath.string().c_str()))
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] Failed to save frame: %s", outputPath.string().c_str());
+        EndFrameSequenceRecording();
+        return;
+    }
+
+    recording.framesWritten++;
+}
+
+std::string Device::BuildDefaultFrameSequenceDirectory(const char* extension) const
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tmNow = {};
+#if defined(_WIN32)
+    localtime_s(&tmNow, &now);
+#else
+    localtime_r(&now, &tmNow);
+#endif
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmNow);
+    std::filesystem::path output = std::filesystem::current_path() / "captures" /
+        ("frames_" + std::string(extension ? extension : "png") + "_" + std::string(stamp));
+    return output.generic_string();
+}
+
+std::string Device::BuildDefaultVideoPath(const std::string& frameDirectory) const
+{
+    std::filesystem::path directory(frameDirectory);
+    std::filesystem::path output = directory;
+    output += ".mp4";
+    return output.generic_string();
+}
+
+bool Device::ExportFrameSequenceToVideo(const std::string& directory,
+                                        const std::string& extension,
+                                        int fps,
+                                        const char* outputFilename) const
+{
+    if (directory.empty() || extension.empty() || fps <= 0)
+        return false;
+
+    const std::filesystem::path inputDir(directory);
+    if (!std::filesystem::exists(inputDir))
+        return false;
+
+    const std::string outputPath = (outputFilename && outputFilename[0] != '\0')
+        ? std::filesystem::path(outputFilename).generic_string()
+        : BuildDefaultVideoPath(directory);
+
+    const std::string ffmpegCheck = "ffmpeg -version > /dev/null 2>&1";
+    if (std::system(ffmpegCheck.c_str()) != 0)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] ffmpeg not found in PATH");
+        return false;
+    }
+
+    const std::filesystem::path inputPattern = inputDir / ("frame_%06d." + extension);
+    const std::string command =
+        "ffmpeg -y -framerate " + std::to_string(fps) +
+        " -i \"" + inputPattern.generic_string() +
+        "\" -vf \"pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p\""
+        " -c:v libx264 -pix_fmt yuv420p \"" + outputPath + "\"";
+
+    SDL_Log("[Device] Exporting video: %s", outputPath.c_str());
+    const int result = std::system(command.c_str());
+    if (result != 0)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "[Device] ffmpeg video export failed");
+        return false;
+    }
+
+    SDL_Log("[Device] Video exported: %s", outputPath.c_str());
+    return true;
 }

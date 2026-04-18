@@ -4,15 +4,6 @@
 #include <cassert>
 
 // ============================================================
-//  Helper: AABB ↔ AABB overlap in 2D (XZ)
-// ============================================================
-static bool aabbXZOverlap(const BoundingBox &a, const BoundingBox &b)
-{
-    return a.min.x <= b.max.x && a.max.x >= b.min.x &&
-           a.min.z <= b.max.z && a.max.z >= b.min.z;
-}
-
-// ============================================================
 //  QuadtreeNode
 // ============================================================
 QuadtreeNode::QuadtreeNode(const BoundingBox &b, int d)

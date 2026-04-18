@@ -82,6 +82,15 @@ public:
         Rotate
     };
 
+    struct MeshTransformState
+    {
+        int index = -1;
+        glm::vec3 position = glm::vec3(0.0f);
+        glm::vec3 rotationEuler = glm::vec3(0.0f);
+        glm::vec3 scale = glm::vec3(1.0f);
+        glm::vec3 pivot = glm::vec3(0.0f);
+    };
+
     LevelEditorApp();
     ~LevelEditorApp();
 
@@ -128,6 +137,15 @@ private:
         std::string path;
     };
 
+    struct FaceUvClipboard
+    {
+        bool hasData = false;
+        glm::vec2 uvOffset {0.0f, 0.0f};
+        glm::vec2 uvScale {1.0f, 1.0f};
+        float uvRotation = 0.0f;
+        UvProjection uvProjection = UvProjection::Box;
+    };
+
     void InitializeViews();
     void LayoutViews(const ImVec2& canvasPos, const ImVec2& canvasSize);
     void UpdateViewCameras();
@@ -138,6 +156,9 @@ private:
     void DrawViewportContextMenu();
     void DrawTransformGizmo();
     int PickMeshInPerspectiveView(const LevelEditorView& view, const glm::vec2& mouseScreen) const;
+    int PickFaceInPerspectiveView(const LevelEditorView& view, const glm::vec2& mouseScreen, int& outMeshIndex) const;
+    int PickVertexInPerspectiveView(const LevelEditorView& view, const glm::vec2& mouseScreen, int& outMeshIndex) const;
+    int PickVertexInOrthoView(const LevelEditorView& view, const glm::vec2& mouseScreen) const;
     std::vector<int> PickMeshesInOrthoRect(const LevelEditorView& view, const glm::vec2& startScreen, const glm::vec2& endScreen) const;
     std::vector<int> PickVerticesInOrthoRect(const LevelEditorView& view, const glm::vec2& startScreen, const glm::vec2& endScreen) const;
     std::vector<int> PickFacesInOrthoRect(const LevelEditorView& view, const glm::vec2& startScreen, const glm::vec2& endScreen) const;
@@ -148,13 +169,18 @@ private:
     LevelEditorView* HoveredView();
     bool IsMeshSelected(int index) const;
     bool IsVertexSelected(int index) const;
+    bool IsFaceSelected(int index) const;
+    void SyncCurrentTextureFromSelection();
     void SetSingleSelectedMesh(int index);
     void SyncSelectedMeshes();
+    void SetSingleSelectedFace(int index);
+    void SyncSelectedFaces();
 
     void ShowMenuBar();
     void ShowLeftPanel();
     void ShowCenterPanel();
     void ShowRightPanel();
+    void ShowUvMappingWindow();
     void ShowAssetsPanel();
     void ShowStatusBar(float deltaTime);
     void UpdatePanelLayout();
@@ -194,10 +220,17 @@ private:
     std::vector<int> selectedMeshIndices_;
     std::vector<int> selectedVertexIndices_;
     int selectedFaceIndex_ = -1;
+    std::vector<int> selectedFaceIndices_;
+    int hoveredFaceMeshIndex_ = -1;
+    int hoveredFaceIndex_ = -1;
+    int hoveredVertexMeshIndex_ = -1;
+    int hoveredVertexIndex_ = -1;
     int selectedEntityIndex_ = 0;
     bool showGrid_ = true;
     bool snapEnabled_ = true;
     bool snapToGeometry_ = false;
+    bool faceHighlightFillEnabled_ = true;
+    float faceHighlightFillAlpha_ = 0.60f;
 
     // Entity preview (animate doors/elevators/platforms in editor)
     bool entityPreviewActive_ = false;
@@ -237,6 +270,8 @@ private:
     std::vector<AssetEntry> assets_;
     AssetViewMode assetViewMode_ = AssetViewMode::Details;
     std::string currentTexturePath_;
+    FaceUvClipboard faceUvClipboard_;
+    bool showUvMappingWindow_ = false;
     float faceExtrudeDistance_ = 16.0f;
     float faceInsetAmount_ = 8.0f;
     float hollowWallThickness_ = 16.0f;
@@ -245,9 +280,16 @@ private:
     bool csgClipKeepFront_ = true;
 
     // Primitive creation
-    enum class PrimitiveType { Box, Cylinder, Sphere, Plane, Wedge, Stairs, SpiralStairs, Text };
+    enum class PrimitiveType { Box, Room, Sector, RoomBoxes, Cylinder, Sphere, Plane, Wedge, Stairs, SpiralStairs, Text };
     PrimitiveType primitiveType_ = PrimitiveType::Box;
     glm::vec3 primSize_ = glm::vec3(128.0f, 128.0f, 128.0f);
+    float primWallThickness_ = 16.0f;
+    bool primSectorLeft_ = true;
+    bool primSectorRight_ = true;
+    bool primSectorTop_ = true;
+    bool primSectorBottom_ = true;
+    bool primSectorFront_ = true;
+    bool primSectorBack_ = true;
     float primRadius_ = 64.0f;
     float primHeight_ = 128.0f;
     int primSegments_ = 16;
@@ -302,10 +344,16 @@ private:
     glm::vec3 dragStartObjectPosition_ = glm::vec3(0.0f);
     glm::vec3 dragStartObjectRotation_ = glm::vec3(0.0f);
     glm::vec3 dragStartObjectScale_ = glm::vec3(1.0f);
+    glm::vec3 dragStartSelectionCenter_ = glm::vec3(0.0f);
     glm::vec3 dragFaceNormalLocal_ = glm::vec3(0.0f, 1.0f, 0.0f);
+    std::vector<MeshTransformState> dragStartMeshStates_;
     std::vector<glm::vec3> dragStartVertexPositions_;
     std::vector<int> dragFaceVertexIndices_;
     bool dragUndoPushed_ = false;
+    glm::vec3 gizmoMultiSelectionCenter_ = glm::vec3(0.0f);
+    glm::vec3 gizmoVertexSelectionCenter_ = glm::vec3(0.0f);
+    std::vector<MeshTransformState> gizmoStartMeshStates_;
+    std::vector<glm::vec3> gizmoStartVertexPositions_;
 
     std::unique_ptr<RenderBatch> viewBatch_;
 

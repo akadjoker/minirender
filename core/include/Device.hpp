@@ -2,6 +2,8 @@
 
 #include "Config.hpp"
 #include <SDL2/SDL.h>
+#include <memory>
+#include <string>
 
 // Forward-declare so Device.hpp doesn't pull all of imgui.h into every TU
 struct ImGuiContext;
@@ -43,6 +45,23 @@ public:
 
     bool TakeScreenshot(const char* filename);
     Pixmap* CaptureFramebuffer();
+    bool BeginGifRecording(const char* filename = nullptr, int fps = 12);
+    bool EndGifRecording();
+    bool IsGifRecording() const;
+    std::string GetGifRecordingPath() const;
+    int GetGifRecordingFPS() const;
+    int GetGifRecordingFrameCount() const;
+    bool BeginFrameSequenceRecording(const char* directory = nullptr, const char* extension = "png", int fps = 30);
+    bool EndFrameSequenceRecording();
+    bool IsFrameSequenceRecording() const;
+    std::string GetFrameSequenceDirectory() const;
+    std::string GetFrameSequenceExtension() const;
+    int GetFrameSequenceFPS() const;
+    int GetFrameSequenceFrameCount() const;
+    std::string GetLastFrameSequenceDirectory() const;
+    std::string GetLastFrameSequenceExtension() const;
+    int GetLastFrameSequenceFPS() const;
+    bool ExportLastFrameSequenceToVideo(const char* outputFilename = nullptr) const;
 
     SDL_Window*   GetWindow() const { return m_window; }
     SDL_GLContext  GetGLContext() const { return m_context; }
@@ -62,6 +81,8 @@ public:
 
 
 private:
+    struct GifRecordingState;
+    struct FrameSequenceRecordingState;
  
     int m_width;
     int m_height;    
@@ -79,6 +100,11 @@ private:
     bool m_ready;
     Sint32 m_closekey;
     bool m_imguiReady = false;
+    std::unique_ptr<GifRecordingState> m_gifRecording;
+    std::unique_ptr<FrameSequenceRecordingState> m_frameSequenceRecording;
+    std::string m_lastFrameSequenceDirectory;
+    std::string m_lastFrameSequenceExtension;
+    int m_lastFrameSequenceFPS = 0;
 
     Device();
     ~Device();
@@ -88,6 +114,14 @@ private:
     Device(Device&&) = delete;
     Device& operator=(Device&&) = delete;
 
+    void CaptureGifFrame();
+    void CaptureFrameSequenceFrame();
+    std::string BuildDefaultGifPath() const;
+    std::string BuildDefaultFrameSequenceDirectory(const char* extension) const;
+    std::string BuildDefaultVideoPath(const std::string& frameDirectory) const;
+    bool ExportFrameSequenceToVideo(const std::string& directory,
+                                    const std::string& extension,
+                                    int fps,
+                                    const char* outputFilename) const;
+
 };
-
-

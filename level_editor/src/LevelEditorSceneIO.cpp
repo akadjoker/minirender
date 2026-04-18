@@ -57,6 +57,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
 {
     nlohmann::json root;
     root["version"] = 2;
+    root["asset_root"] = scene.assetRoot();
     root["mesh_objects"] = nlohmann::json::array();
     root["entities"] = nlohmann::json::array();
 
@@ -181,6 +182,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
     {
         scene.meshObjects().clear();
         scene.entities().clear();
+        scene.assetRoot() = root.value("asset_root", std::string("assets"));
 
         const auto& meshObjects = root.value("mesh_objects", nlohmann::json::array());
         for (const auto& meshJson : meshObjects)

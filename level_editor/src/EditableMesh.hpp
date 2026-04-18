@@ -35,6 +35,9 @@ class EditableMesh
 public:
     static EditableMesh MakeBox(const glm::vec3& minBounds, const glm::vec3& maxBounds);
     static EditableMesh MakeHollowBox(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness);
+    static EditableMesh MakeRoom(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness);
+    static EditableMesh MakeSector(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness,
+                                   bool left, bool right, bool top, bool bottom, bool front, bool back);
     static EditableMesh MakeCylinder(const glm::vec3& center, float radius, float height, int segments);
     static EditableMesh MakeSphere(const glm::vec3& center, float radius, int rings, int segments);
     static EditableMesh MakePlane(const glm::vec3& center, float width, float depth, int subdivX, int subdivZ);

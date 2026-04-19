@@ -5,7 +5,7 @@
 int main()
 {
     Device& device = Device::Instance();
-    if (!device.Create(1600, 920, "MiniRender Level Editor", true, 1))
+    if (!device.Create(1600, 920, "Bu Level Editor v2.0.1", true, 1))
         return 1;
 
     device.ImGuiInit();

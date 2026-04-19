@@ -230,6 +230,10 @@ private:
     void HandleFileDialogs();
     void SaveEditorSettings();
     void LoadEditorSettings();
+    std::filesystem::path SceneLightmapPathForSceneFile(const std::filesystem::path& scenePath) const;
+    bool SaveCurrentLightmapForScene(const std::filesystem::path& scenePath);
+    bool LoadLightmapTextureFromFile(const std::filesystem::path& path);
+    void ClearLoadedLightmap();
     void ShowTerrainRawHeightmapDialog();
     bool ExportSceneOBJ(const std::string& path);
     bool ExportSceneH3D(const std::string& path);
@@ -283,6 +287,8 @@ private:
     bool entityPreviewForward_ = true;
     glm::vec3 entityPreviewOrigPos_ {0.0f}; // backup of linked mesh position
     glm::vec3 entityPreviewOrigRot_ {0.0f}; // backup of linked mesh rotation
+    bool entityClipboardHasData_ = false;
+    LevelEntityObject entityClipboard_;
 
     bool useTransparency_ = true;
     CullMode cullMode_ = CullMode::Back;
@@ -371,6 +377,8 @@ private:
     std::string terrainRawPreviewError_;
     int terrainRawWidth_ = 513;
     int terrainRawHeight_ = 513;
+    int terrainRawResolvedWidth_ = 513;
+    int terrainRawResolvedHeight_ = 513;
     int terrainRawBitDepth_ = 16;
     RawHeightmapValueType terrainRawValueType_ = RawHeightmapValueType::UnsignedInt;
     RawHeightmapEndian terrainRawEndian_ = RawHeightmapEndian::Little;

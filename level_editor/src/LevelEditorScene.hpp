@@ -118,13 +118,16 @@ public:
     const std::vector<LevelMeshObject>& meshObjects() const { return meshObjects_; }
     const std::vector<LevelEntityObject>& entities() const { return entities_; }
     const std::string& assetRoot() const { return assetRoot_; }
+    const std::string& lightmapPath() const { return lightmapPath_; }
 
     std::vector<LevelMeshObject>& meshObjects() { return meshObjects_; }
     std::vector<LevelEntityObject>& entities() { return entities_; }
     std::string& assetRoot() { return assetRoot_; }
+    std::string& lightmapPath() { return lightmapPath_; }
 
 private:
     std::vector<LevelMeshObject> meshObjects_;
     std::vector<LevelEntityObject> entities_;
     std::string assetRoot_ = "assets";
+    std::string lightmapPath_;
 };

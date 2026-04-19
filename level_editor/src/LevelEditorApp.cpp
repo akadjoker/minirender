@@ -249,10 +249,10 @@ bool containsInsensitive(const std::string& text, const std::string& pattern)
 
 std::filesystem::path ensureSceneExtension(const std::filesystem::path& path)
 {
-    if (path.extension() == ".mred")
+    if (path.extension() == ".mred" || path.extension() == ".mredb" || path.extension() == ".mrbin")
         return path;
     std::filesystem::path out = path;
-    out.replace_extension(".mred");
+    out.replace_extension(".mredb");
     return out;
 }
 
@@ -1257,6 +1257,8 @@ void LevelEditorApp::StartBakeAsync()
     // Copy the scene so the thread doesn't touch live data
     bakeSceneCopy_ = scene_;
     LightmapSettings settings = lightmapSettings_;
+    if (!scenePath_.empty())
+        settings.outputPath = SceneLightmapPathForSceneFile(std::filesystem::path(scenePath_)).generic_string();
 
     bakeThread_ = std::make_unique<std::thread>([this, settings]() {
         bakeResult_ = BakeLightmaps(bakeSceneCopy_, settings, &bakeProgress_);
@@ -1322,7 +1324,10 @@ void LevelEditorApp::BakeAndUploadLightmap()
         }
     printf("[Lightmap]  %d lights found\n", lightCount);
 
-    lightmapResult_ = BakeLightmaps(scene_, lightmapSettings_);
+    LightmapSettings settings = lightmapSettings_;
+    if (!scenePath_.empty())
+        settings.outputPath = SceneLightmapPathForSceneFile(std::filesystem::path(scenePath_)).generic_string();
+    lightmapResult_ = BakeLightmaps(scene_, settings);
 
     printf("[Lightmap] Result: %dx%d, %d bytes, meshUVs=%d\n",
            lightmapResult_.width, lightmapResult_.height,
@@ -1926,7 +1931,7 @@ LevelEditorApp::LevelEditorApp()
 {
     applyLevelEditorTheme(theme_);
     InitializeViews();
-    scenePath_ = "scenes/level_scene.mred";
+    scenePath_ = "scenes/level_scene.mredb";
     LoadEditorSettings();
 
     // Auto-load last scene if path exists
@@ -2399,6 +2404,15 @@ void LevelEditorApp::RescanAssets()
 bool LevelEditorApp::SaveSceneToPath(const std::string& path, bool setAsCurrentPath)
 {
     std::filesystem::path savePath = ensureSceneExtension(std::filesystem::path(path));
+    scene_.lightmapPath().clear();
+    if (lightmapTexture_ != 0 || !lightmapResult_.pixels.empty())
+    {
+        const std::filesystem::path lightmapPath = SceneLightmapPathForSceneFile(savePath);
+        std::error_code relativeError;
+        const std::filesystem::path relativeLightmap = std::filesystem::relative(lightmapPath, savePath.parent_path(), relativeError);
+        scene_.lightmapPath() = relativeError ? lightmapPath.generic_string() : relativeLightmap.generic_string();
+    }
+
     std::string error;
     scene_.assetRoot() = assetRoot_.empty() ? std::string("assets") : assetRoot_;
     if (!saveLevelEditorScene(savePath, scene_, error))
@@ -2407,10 +2421,83 @@ bool LevelEditorApp::SaveSceneToPath(const std::string& path, bool setAsCurrentP
         return false;
     }
 
+    const bool lightmapSaved = SaveCurrentLightmapForScene(savePath);
+
     if (setAsCurrentPath)
         scenePath_ = savePath.generic_string();
     sceneDirty_ = false;
     sceneStatusMessage_ = "Saved: " + savePath.generic_string();
+    if (!lightmapSaved)
+        sceneStatusMessage_ += " (lightmap save failed)";
+    return true;
+}
+
+std::filesystem::path LevelEditorApp::SceneLightmapPathForSceneFile(const std::filesystem::path& scenePath) const
+{
+    const std::filesystem::path parent = scenePath.has_parent_path() ? scenePath.parent_path() : std::filesystem::current_path();
+    return parent / (scenePath.stem().generic_string() + "_lightmap.png");
+}
+
+bool LevelEditorApp::SaveCurrentLightmapForScene(const std::filesystem::path& scenePath)
+{
+    if (lightmapResult_.pixels.empty())
+        return true;
+
+    const std::filesystem::path lightmapPath = SceneLightmapPathForSceneFile(scenePath);
+    std::error_code createError;
+    std::filesystem::create_directories(lightmapPath.parent_path(), createError);
+    lightmapResult_.savedPath = lightmapPath.generic_string();
+    return stbi_write_png(lightmapResult_.savedPath.c_str(),
+                          lightmapResult_.width,
+                          lightmapResult_.height,
+                          3,
+                          lightmapResult_.pixels.data(),
+                          lightmapResult_.width * 3) != 0;
+}
+
+void LevelEditorApp::ClearLoadedLightmap()
+{
+    if (lightmapTexture_)
+        glDeleteTextures(1, &lightmapTexture_);
+    lightmapTexture_ = 0;
+    lightmapResult_ = {};
+    useLightmap_ = false;
+    RenderState::instance().resetCache();
+}
+
+bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& path)
+{
+    ClearLoadedLightmap();
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* pixels = stbi_load(path.string().c_str(), &width, &height, &channels, 3);
+    if (!pixels || width <= 0 || height <= 0)
+    {
+        if (pixels)
+            stbi_image_free(pixels);
+        return false;
+    }
+
+    lightmapResult_.width = width;
+    lightmapResult_.height = height;
+    lightmapResult_.savedPath = path.generic_string();
+    lightmapResult_.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u);
+    stbi_image_free(pixels);
+
+    glGenTextures(1, &lightmapTexture_);
+    glBindTexture(GL_TEXTURE_2D, lightmapTexture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, lightmapResult_.pixels.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    useLightmap_ = true;
+    meshCacheValid_ = false;
+    RenderState::instance().resetCache();
     return true;
 }
 
@@ -2808,20 +2895,18 @@ bool LoadRawHeightmap(const std::string& path,
                       LevelEditorApp::RawHeightmapEndian endian,
                       bool flipVertical,
                       std::vector<float>& outHeights,
+                      int& outResolvedWidth,
+                      int& outResolvedHeight,
                       float& outMinValue,
                       float& outMaxValue,
                       std::string& outError)
 {
     outHeights.clear();
     outError.clear();
+    outResolvedWidth = 0;
+    outResolvedHeight = 0;
     outMinValue = 0.0f;
     outMaxValue = 1.0f;
-
-    if (width < 2 || height < 2)
-    {
-        outError = "raw heightmap must be at least 2x2";
-        return false;
-    }
 
     if (valueType == LevelEditorApp::RawHeightmapValueType::Float && bitDepth != 32)
     {
@@ -2836,7 +2921,6 @@ bool LoadRawHeightmap(const std::string& path,
     }
 
     const int bytesPerSample = bitDepth / 8;
-    const std::uint64_t expectedSize = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * static_cast<std::uint64_t>(bytesPerSample);
 
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -2848,13 +2932,67 @@ bool LoadRawHeightmap(const std::string& path,
     in.seekg(0, std::ios::end);
     const std::uint64_t fileSize = static_cast<std::uint64_t>(in.tellg());
     in.seekg(0, std::ios::beg);
-    if (fileSize != expectedSize)
+    if (fileSize == 0)
     {
-        outError = "file size does not match width/height/bit depth";
+        outError = "RAW file is empty";
         return false;
     }
 
-    std::vector<unsigned char> bytes(static_cast<std::size_t>(expectedSize));
+    const std::uint64_t totalSamples = fileSize / static_cast<std::uint64_t>(bytesPerSample);
+    if (totalSamples == 0 || totalSamples * static_cast<std::uint64_t>(bytesPerSample) > fileSize)
+    {
+        outError = "file size does not contain complete samples for the selected bit depth";
+        return false;
+    }
+
+    int resolvedWidth = width;
+    int resolvedHeight = height;
+    if (resolvedWidth > 0 && resolvedHeight == 0)
+    {
+        if ((totalSamples % static_cast<std::uint64_t>(resolvedWidth)) != 0)
+        {
+            outError = "sample count is not divisible by Width; choose another Width or set both to 0";
+            return false;
+        }
+        resolvedHeight = static_cast<int>(totalSamples / static_cast<std::uint64_t>(resolvedWidth));
+    }
+    else if (resolvedWidth == 0 && resolvedHeight > 0)
+    {
+        if ((totalSamples % static_cast<std::uint64_t>(resolvedHeight)) != 0)
+        {
+            outError = "sample count is not divisible by Height; choose another Height or set both to 0";
+            return false;
+        }
+        resolvedWidth = static_cast<int>(totalSamples / static_cast<std::uint64_t>(resolvedHeight));
+    }
+    else if (resolvedWidth == 0 && resolvedHeight == 0)
+    {
+        resolvedWidth = static_cast<int>(std::sqrt(static_cast<double>(totalSamples)));
+        resolvedHeight = resolvedWidth;
+        if (static_cast<std::uint64_t>(resolvedWidth) * static_cast<std::uint64_t>(resolvedHeight) != totalSamples)
+        {
+            outError = "RAW sample count is not a perfect square; set Width or Height manually";
+            return false;
+        }
+    }
+
+    if (resolvedWidth < 2 || resolvedHeight < 2)
+    {
+        outError = "raw heightmap must resolve to at least 2x2";
+        return false;
+    }
+
+    const std::uint64_t requiredSamples = static_cast<std::uint64_t>(resolvedWidth) * static_cast<std::uint64_t>(resolvedHeight);
+    if (requiredSamples > totalSamples)
+    {
+        outError = "file size does not contain enough data for width/height/bit depth";
+        return false;
+    }
+
+    outResolvedWidth = resolvedWidth;
+    outResolvedHeight = resolvedHeight;
+
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(fileSize));
     if (!bytes.empty())
         in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!in && !bytes.empty())
@@ -2904,21 +3042,21 @@ bool LoadRawHeightmap(const std::string& path,
         return value;
     };
 
-    outHeights.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    outHeights.resize(static_cast<std::size_t>(resolvedWidth) * static_cast<std::size_t>(resolvedHeight));
     outMinValue = std::numeric_limits<float>::max();
     outMaxValue = std::numeric_limits<float>::lowest();
 
-    for (int y = 0; y < height; ++y)
+    for (int y = 0; y < resolvedHeight; ++y)
     {
-        const int srcY = flipVertical ? (height - 1 - y) : y;
-        for (int x = 0; x < width; ++x)
+        const int srcY = flipVertical ? (resolvedHeight - 1 - y) : y;
+        for (int x = 0; x < resolvedWidth; ++x)
         {
-            const std::size_t srcIndex = (static_cast<std::size_t>(srcY) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x))
+            const std::size_t srcIndex = (static_cast<std::size_t>(srcY) * static_cast<std::size_t>(resolvedWidth) + static_cast<std::size_t>(x))
                 * static_cast<std::size_t>(bytesPerSample);
             const float value = (valueType == LevelEditorApp::RawHeightmapValueType::Float)
                 ? readFloat32(bytes.data() + srcIndex)
                 : readUnsigned(bytes.data() + srcIndex);
-            outHeights[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] = value;
+            outHeights[static_cast<std::size_t>(y) * static_cast<std::size_t>(resolvedWidth) + static_cast<std::size_t>(x)] = value;
             outMinValue = std::min(outMinValue, value);
             outMaxValue = std::max(outMaxValue, value);
         }
@@ -3179,6 +3317,7 @@ bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
     }
 
     scene_ = loaded;
+    ClearLoadedLightmap();
     InvalidateTerrainCompositeCache();
     assetRoot_ = resolveSceneRelativePath(scene_.assetRoot().empty() ? std::string("assets") : scene_.assetRoot(),
                                           sceneFilePath);
@@ -3195,6 +3334,19 @@ bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
     selectedEntityIndex_ = std::clamp(selectedEntityIndex_, 0, std::max(0, static_cast<int>(scene_.entities().size()) - 1));
     meshCacheValid_ = false;
     sceneStatusMessage_ = "Loaded: " + scenePath_;
+
+    std::filesystem::path lightmapPath;
+    if (!scene_.lightmapPath().empty())
+        lightmapPath = resolveSceneRelativePath(scene_.lightmapPath(), sceneFilePath);
+    else
+        lightmapPath = SceneLightmapPathForSceneFile(sceneFilePath);
+
+    if (!lightmapPath.empty() && std::filesystem::exists(lightmapPath))
+    {
+        if (LoadLightmapTextureFromFile(lightmapPath))
+            sceneStatusMessage_ += " + lightmap";
+    }
+
     if (preloadedLegacyMaterials > 0)
         sceneStatusMessage_ += " (loaded " + std::to_string(preloadedLegacyMaterials) + " legacy texture sets)";
     return true;
@@ -3314,6 +3466,31 @@ void LevelEditorApp::HandleFileDialogs()
         {
             pendingTerrainRawHeightmapPath_ = result.path.generic_string();
             lastTerrainHeightmapDir_ = result.path.parent_path().generic_string();
+            terrainRawWidth_ = 0;
+            terrainRawHeight_ = 0;
+            terrainRawValueType_ = RawHeightmapValueType::UnsignedInt;
+            terrainRawEndian_ = RawHeightmapEndian::Little;
+            terrainRawFlipVertical_ = false;
+
+            std::error_code sizeEc;
+            const std::uint64_t fileSize = std::filesystem::file_size(result.path, sizeEc);
+            if (!sizeEc)
+            {
+                const auto isPerfectSquare = [](std::uint64_t value) -> bool
+                {
+                    const std::uint64_t root = static_cast<std::uint64_t>(std::llround(std::sqrt(static_cast<long double>(value))));
+                    return root * root == value;
+                };
+
+                if (isPerfectSquare(fileSize))
+                    terrainRawBitDepth_ = 8;
+                else if ((fileSize % 2ull) == 0ull && isPerfectSquare(fileSize / 2ull))
+                    terrainRawBitDepth_ = 16;
+                else if ((fileSize % 4ull) == 0ull && isPerfectSquare(fileSize / 4ull))
+                    terrainRawBitDepth_ = 32;
+                else if ((fileSize % 3ull) == 0ull && isPerfectSquare(fileSize / 3ull))
+                    terrainRawBitDepth_ = 24;
+            }
             terrainRawPreviewDirty_ = true;
             terrainRawPreviewValid_ = false;
             terrainRawPreviewHeights_.clear();
@@ -3435,6 +3612,8 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
                 terrainRawEndian_,
                 terrainRawFlipVertical_,
                 terrainRawPreviewHeights_,
+                terrainRawResolvedWidth_,
+                terrainRawResolvedHeight_,
                 terrainRawPreviewMin_,
                 terrainRawPreviewMax_,
                 terrainRawPreviewError_))
@@ -3442,7 +3621,7 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
             return;
         }
 
-        Pixmap previewPixmap(terrainRawWidth_, terrainRawHeight_, 4);
+        Pixmap previewPixmap(terrainRawResolvedWidth_, terrainRawResolvedHeight_, 4);
         if (!previewPixmap.IsValid())
         {
             terrainRawPreviewError_ = "Failed to allocate preview image.";
@@ -3453,11 +3632,11 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
         const float minValue = terrainRawPreviewMin_;
         const float maxValue = terrainRawPreviewMax_;
         const float invRange = (maxValue > minValue) ? (1.0f / (maxValue - minValue)) : 0.0f;
-        for (int y = 0; y < terrainRawHeight_; ++y)
+        for (int y = 0; y < terrainRawResolvedHeight_; ++y)
         {
-            for (int x = 0; x < terrainRawWidth_; ++x)
+            for (int x = 0; x < terrainRawResolvedWidth_; ++x)
             {
-                const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(terrainRawWidth_) + static_cast<std::size_t>(x);
+                const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(terrainRawResolvedWidth_) + static_cast<std::size_t>(x);
                 float normalized = invRange > 0.0f ? ((terrainRawPreviewHeights_[idx] - minValue) * invRange)
                                                    : terrainRawPreviewHeights_[idx];
                 normalized = glm::clamp(normalized, 0.0f, 1.0f);
@@ -3507,8 +3686,9 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
         bool changed = false;
         changed |= ImGui::InputInt("Width##TerrainRaw", &terrainRawWidth_);
         changed |= ImGui::InputInt("Height##TerrainRaw", &terrainRawHeight_);
-        terrainRawWidth_ = std::max(2, terrainRawWidth_);
-        terrainRawHeight_ = std::max(2, terrainRawHeight_);
+        terrainRawWidth_ = std::max(0, terrainRawWidth_);
+        terrainRawHeight_ = std::max(0, terrainRawHeight_);
+        ImGui::TextDisabled("Set Width/Height to 0 for auto-detect.");
 
         static const int rawBitDepthValues[] = {8, 16, 24, 32};
         static const char* rawBitDepthLabels[] = {"8-bit", "16-bit", "24-bit", "32-bit"};
@@ -3558,7 +3738,9 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
             ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", terrainRawPreviewError_.c_str());
         if (terrainRawPreviewValid_)
         {
-            ImGui::TextDisabled("Resolution: %d x %d", terrainRawWidth_, terrainRawHeight_);
+            ImGui::TextDisabled("Resolved: %d x %d", terrainRawResolvedWidth_, terrainRawResolvedHeight_);
+            if (terrainRawWidth_ == 0 || terrainRawHeight_ == 0)
+                ImGui::TextDisabled("Auto-detect is active for zero-valued dimensions.");
             ImGui::TextDisabled("Value Range: %.4f .. %.4f", terrainRawPreviewMin_, terrainRawPreviewMax_);
             Texture* previewTexture = TextureManager::instance().get(terrainRawPreviewTextureName_);
             if (previewTexture && previewTexture->id != 0)
@@ -3589,8 +3771,8 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
         {
             PushUndoState();
 
-            primSubdivX_ = std::max(1, terrainRawWidth_ - 1);
-            primSubdivZ_ = std::max(1, terrainRawHeight_ - 1);
+            primSubdivX_ = std::max(1, terrainRawResolvedWidth_ - 1);
+            primSubdivZ_ = std::max(1, terrainRawResolvedHeight_ - 1);
             primHeightmapPath_.clear();
 
             LevelMeshObject object;
@@ -3712,12 +3894,12 @@ void LevelEditorApp::HandleUndoRedoShortcuts()
     }
     else if (ImGui::IsKeyPressed(ImGuiKey_O))
     {
-        sceneDialog_.Open(ImGuiFileDialog::Mode::OpenFile, std::filesystem::current_path(), "scene.mred");
+        sceneDialog_.Open(ImGuiFileDialog::Mode::OpenFile, std::filesystem::current_path(), "scene.mredb");
     }
     else if (ImGui::IsKeyPressed(ImGuiKey_S))
     {
         if (shiftDown || scenePath_.empty())
-            sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mred");
+            sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mredb");
         else
             SaveSceneToPath(scenePath_, false);
     }
@@ -3770,12 +3952,37 @@ void LevelEditorApp::HandleToolShortcuts()
     const bool ctrlDown = io.KeyCtrl;
     const bool hasSelectedMesh = selectedMeshIndex_ >= 0 &&
                                  selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size());
+    const bool hasSelectedEntity = selectedEntityIndex_ >= 0 &&
+                                   selectedEntityIndex_ < static_cast<int>(scene_.entities().size()) &&
+                                   !hasSelectedMesh;
     const bool hasSelectedFace = hasSelectedMesh &&
                                  selectionMode_ == SelectionMode::Face &&
                                  selectedFaceIndex_ >= 0 &&
                                  selectedFaceIndex_ < static_cast<int>(scene_.meshObjects()[(size_t)selectedMeshIndex_].mesh.faceCount());
 
-    if (ctrlDown && hasSelectedFace && ImGui::IsKeyPressed(ImGuiKey_C))
+    if (ctrlDown && hasSelectedEntity && ImGui::IsKeyPressed(ImGuiKey_C))
+    {
+        entityClipboard_ = scene_.entities()[static_cast<std::size_t>(selectedEntityIndex_)];
+        entityClipboardHasData_ = true;
+        sceneStatusMessage_ = "Copied entity";
+    }
+    else if (ctrlDown && entityClipboardHasData_ && ImGui::IsKeyPressed(ImGuiKey_V))
+    {
+        PushUndoState();
+        LevelEntityObject copy = entityClipboard_;
+        copy.name += " (copy)";
+        copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
+        scene_.entities().push_back(copy);
+        selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+        selectedMeshIndex_ = -1;
+        selectedMeshIndices_.clear();
+        selectedFaceIndex_ = -1;
+        selectedFaceIndices_.clear();
+        selectedVertexIndices_.clear();
+        sceneDirty_ = true;
+        sceneStatusMessage_ = "Pasted entity";
+    }
+    else if (ctrlDown && hasSelectedFace && ImGui::IsKeyPressed(ImGuiKey_C))
     {
         const EditableFace& face = scene_.meshObjects()[(size_t)selectedMeshIndex_].mesh.faces()[(size_t)selectedFaceIndex_];
         faceUvClipboard_.hasData = true;
@@ -4911,7 +5118,13 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
     const glm::vec2 delta(io.MouseDelta.x, io.MouseDelta.y);
     const bool leftDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left, 2.0f);
     const bool rightDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Right, 2.0f);
+    const bool middleDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Middle, 2.0f);
     const glm::vec2 dragMouseDelta = mouseScreen - dragStartMouse_;
+    const bool orthoPanGesture =
+        hovered->type != ViewType::Perspective &&
+        !ImGuizmo::IsOver() &&
+        !ImGuizmo::IsUsing() &&
+        (middleDragging || (ctrlDown && rightDragging) || (ctrlDown && leftDragging && !boxSelecting_));
 
     const bool expensivePerspectiveHover =
         hovered->type == ViewType::Perspective &&
@@ -5667,14 +5880,17 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         }
         else if (currentTool_ == Tool::Select)
         {
-            boxSelecting_ = true;
-            boxSelectStart_ = mouseScreen;
-            boxSelectCurrent_ = mouseScreen;
-            boxSelectViewIndex_ = activeViewIndex_;
-            boxSelectFaces_ = selectionMode_ == SelectionMode::Face;
-            boxSelectVertices_ = selectionMode_ == SelectionMode::Vertex;
-            boxSelectAdditive_ = shiftDown;
-            boxSelectToggle_ = ctrlDown;
+            if (!ctrlDown)
+            {
+                boxSelecting_ = true;
+                boxSelectStart_ = mouseScreen;
+                boxSelectCurrent_ = mouseScreen;
+                boxSelectViewIndex_ = activeViewIndex_;
+                boxSelectFaces_ = selectionMode_ == SelectionMode::Face;
+                boxSelectVertices_ = selectionMode_ == SelectionMode::Vertex;
+                boxSelectAdditive_ = shiftDown;
+                boxSelectToggle_ = ctrlDown;
+            }
         }
     }
 
@@ -5730,15 +5946,14 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         hovered->type != ViewType::Perspective &&
         selectedMeshIndex_ >= 0 &&
         selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
-        selectedFaceIndex_ >= 0 &&
-        selectedFaceIndex_ < static_cast<int>(scene_.meshObjects()[selectedMeshIndex_].mesh.faces().size()) &&
+        !selectedFaceIndices_.empty() &&
         !ctrlDown &&
         !shiftDown &&
         leftDragging)
     {
         const LevelMeshObject& object = scene_.meshObjects()[selectedMeshIndex_];
-        const EditableFace& face = object.mesh.faces()[(size_t)selectedFaceIndex_];
-        if (!face.indices.empty())
+        if (selectedFaceIndex_ >= 0 &&
+            selectedFaceIndex_ < static_cast<int>(object.mesh.faces().size()))
         {
             if (!dragUndoPushed_)
             {
@@ -5751,14 +5966,20 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
             dragStartWorld_ = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen - delta);
             dragFaceVertexIndices_.clear();
             dragStartVertexPositions_.clear();
-            for (int vertexIndex : face.indices)
+            for (int faceIndex : selectedFaceIndices_)
             {
-                if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                if (faceIndex < 0 || faceIndex >= static_cast<int>(object.mesh.faces().size()))
                     continue;
-                if (std::find(dragFaceVertexIndices_.begin(), dragFaceVertexIndices_.end(), vertexIndex) != dragFaceVertexIndices_.end())
-                    continue;
-                dragFaceVertexIndices_.push_back(vertexIndex);
-                dragStartVertexPositions_.push_back(object.mesh.vertices()[(size_t)vertexIndex].position);
+                const EditableFace& face = object.mesh.faces()[static_cast<std::size_t>(faceIndex)];
+                for (int vertexIndex : face.indices)
+                {
+                    if (vertexIndex < 0 || vertexIndex >= static_cast<int>(object.mesh.vertices().size()))
+                        continue;
+                    if (std::find(dragFaceVertexIndices_.begin(), dragFaceVertexIndices_.end(), vertexIndex) != dragFaceVertexIndices_.end())
+                        continue;
+                    dragFaceVertexIndices_.push_back(vertexIndex);
+                    dragStartVertexPositions_.push_back(object.mesh.vertices()[static_cast<std::size_t>(vertexIndex)].position);
+                }
             }
             if (dragFaceVertexIndices_.empty())
             {
@@ -5885,8 +6106,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
     }
 
     if (hovered->type != ViewType::Perspective &&
-        ctrlDown &&
-        leftDragging &&
+        orthoPanGesture &&
         !draggingObjectInView_ &&
         !boxSelecting_)
     {
@@ -7681,16 +7901,16 @@ void LevelEditorApp::ShowMenuBar()
             sceneStatusMessage_ = "New scene";
         }
         if (ImGui::MenuItem("Open...", "Ctrl+O"))
-            sceneDialog_.Open(ImGuiFileDialog::Mode::OpenFile, std::filesystem::current_path(), "scene.mred");
+            sceneDialog_.Open(ImGuiFileDialog::Mode::OpenFile, std::filesystem::current_path(), "scene.mredb");
         if (ImGui::MenuItem("Save", "Ctrl+S"))
         {
             if (!scenePath_.empty())
                 SaveSceneToPath(scenePath_, false);
             else
-                sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mred");
+                sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mredb");
         }
         if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
-            sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mred");
+            sceneDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.mredb");
         ImGui::Separator();
         if (ImGui::MenuItem("Import Mesh..."))
         {
@@ -7718,6 +7938,11 @@ void LevelEditorApp::ShowMenuBar()
         if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack_.empty()))
             PerformRedo();
         ImGui::Separator();
+        ImGui::MenuItem("Copy Entity", "Ctrl+C", false,
+                        selectedEntityIndex_ >= 0 &&
+                        selectedEntityIndex_ < static_cast<int>(scene_.entities().size()) &&
+                        (selectedMeshIndex_ < 0 || selectedMeshIndex_ >= static_cast<int>(scene_.meshObjects().size())));
+        ImGui::MenuItem("Paste Entity", "Ctrl+V", false, entityClipboardHasData_);
         ImGui::MenuItem("Duplicate", "Ctrl+D", false, true);
         ImGui::EndMenu();
     }
@@ -9853,15 +10078,13 @@ void LevelEditorApp::ShowRightPanel()
                 ImGui::EndDisabled();
 
                 const float layerListHeight = std::clamp(ImGui::GetContentRegionAvail().y * 0.22f, 110.0f, 200.0f);
-                if (ImGui::BeginChild("TerrainLayerList##SelectedMesh", ImVec2(0.0f, layerListHeight), true, ImGuiWindowFlags_None))
+                ImGui::BeginChild("TerrainLayerList##SelectedMesh", ImVec2(0.0f, layerListHeight), true, ImGuiWindowFlags_None);
+                for (int layerIndex = 0; layerIndex < static_cast<int>(meshObject.terrainLayers.size()); ++layerIndex)
                 {
-                    for (int layerIndex = 0; layerIndex < static_cast<int>(meshObject.terrainLayers.size()); ++layerIndex)
-                    {
-                        const LevelMeshObject::TerrainTextureLayer& layer = meshObject.terrainLayers[static_cast<std::size_t>(layerIndex)];
-                        const std::string label = terrainLayerDisplayName(layer, layerIndex);
-                        if (ImGui::Selectable((label + "##TerrainLayerItem").c_str(), selectedTerrainLayerIndex_ == layerIndex))
-                            selectedTerrainLayerIndex_ = layerIndex;
-                    }
+                    const LevelMeshObject::TerrainTextureLayer& layer = meshObject.terrainLayers[static_cast<std::size_t>(layerIndex)];
+                    const std::string label = terrainLayerDisplayName(layer, layerIndex);
+                    if (ImGui::Selectable((label + "##TerrainLayerItem").c_str(), selectedTerrainLayerIndex_ == layerIndex))
+                        selectedTerrainLayerIndex_ = layerIndex;
                 }
                 ImGui::EndChild();
 
@@ -9962,47 +10185,52 @@ void LevelEditorApp::ShowRightPanel()
         if (Section("Faces", false))
         {
             const float faceListHeight = std::clamp(ImGui::GetContentRegionAvail().y * 0.4f, 160.0f, 320.0f);
-            if (ImGui::BeginChild("FacesListPanel##Mesh", ImVec2(0.0f, faceListHeight), true, ImGuiWindowFlags_None))
+            ImGui::BeginChild("FacesListPanel##Mesh", ImVec2(0.0f, faceListHeight), true, ImGuiWindowFlags_None);
+            if (ImGui::BeginTable("FacesTable##Mesh", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
             {
-                if (ImGui::BeginTable("FacesTable##Mesh", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
+                ImGui::TableSetupColumn("Face");
+                ImGui::TableSetupColumn("Material");
+                ImGui::TableHeadersRow();
+                const auto& faces = meshObject.mesh.faces();
+                ImGuiListClipper clipper;
+                clipper.Begin(static_cast<int>(faces.size()));
+                while (clipper.Step())
                 {
-                    ImGui::TableSetupColumn("Face");
-                    ImGui::TableSetupColumn("Material");
-                    ImGui::TableHeadersRow();
-                    const auto& faces = meshObject.mesh.faces();
-                    ImGuiListClipper clipper;
-                    clipper.Begin(static_cast<int>(faces.size()));
-                    while (clipper.Step())
+                    for (int rowFaceIndex = clipper.DisplayStart; rowFaceIndex < clipper.DisplayEnd; ++rowFaceIndex)
                     {
-                        for (int rowFaceIndex = clipper.DisplayStart; rowFaceIndex < clipper.DisplayEnd; ++rowFaceIndex)
+                        const EditableFace& face = faces[(size_t)rowFaceIndex];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        const bool rowSelected = IsFaceSelected(rowFaceIndex);
+                        if (ImGui::Selectable(("Face " + std::to_string(rowFaceIndex)).c_str(), rowSelected, ImGuiSelectableFlags_SpanAllColumns))
                         {
-                            const EditableFace& face = faces[(size_t)rowFaceIndex];
-                            ImGui::TableNextRow();
-                            ImGui::TableSetColumnIndex(0);
-                            const bool rowSelected = IsFaceSelected(rowFaceIndex);
-                            if (ImGui::Selectable(("Face " + std::to_string(rowFaceIndex)).c_str(), rowSelected, ImGuiSelectableFlags_SpanAllColumns))
+                            if (ImGui::GetIO().KeyCtrl)
                             {
-                                if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl)
-                                {
-                                    toggleIndexSelection(selectedFaceIndices_, rowFaceIndex);
-                                    selectedFaceIndex_ = selectedFaceIndices_.empty() ? -1 : rowFaceIndex;
-                                    SyncSelectedFaces();
-                                }
-                                else
-                                {
-                                    SetSingleSelectedFace(rowFaceIndex);
-                                }
-                                selectionMode_ = SelectionMode::Face;
+                                toggleIndexSelection(selectedFaceIndices_, rowFaceIndex);
+                                selectedFaceIndex_ = selectedFaceIndices_.empty() ? -1 : rowFaceIndex;
+                                SyncSelectedFaces();
                             }
-                            ImGui::TableSetColumnIndex(1);
-                            const std::string faceMaterialLabel = face.materialName.empty() ? "(none)" : PathFilename(face.materialName);
-                            ImGui::TextUnformatted(faceMaterialLabel.c_str());
+                            else if (ImGui::GetIO().KeyShift)
+                            {
+                                if (!IsFaceSelected(rowFaceIndex))
+                                    selectedFaceIndices_.push_back(rowFaceIndex);
+                                selectedFaceIndex_ = rowFaceIndex;
+                                SyncSelectedFaces();
+                            }
+                            else
+                            {
+                                SetSingleSelectedFace(rowFaceIndex);
+                            }
+                            selectionMode_ = SelectionMode::Face;
                         }
+                        ImGui::TableSetColumnIndex(1);
+                        const std::string faceMaterialLabel = face.materialName.empty() ? "(none)" : PathFilename(face.materialName);
+                        ImGui::TextUnformatted(faceMaterialLabel.c_str());
                     }
-                    ImGui::EndTable();
                 }
-                ImGui::EndChild();
+                ImGui::EndTable();
             }
+            ImGui::EndChild();
         }
         ImGui::PopID();
     }
@@ -10011,6 +10239,7 @@ void LevelEditorApp::ShowRightPanel()
         Section("Selected Entity"))
     {
         ImGui::PushID("SelectedEntitySection");
+        bool duplicateEntityRequested = false;
         LevelEntityObject& entity = scene_.entities()[selectedEntityIndex_];
         std::string editedEntityName = entity.name;
         if (ImGui::InputText("Name##EntityName", &editedEntityName) && editedEntityName != entity.name)
@@ -10024,6 +10253,17 @@ void LevelEditorApp::ShowRightPanel()
         {
             PushUndoState();
             entity.position = editedPosition;
+        }
+        if (ImGui::Button("Copy Entity##Inspector"))
+        {
+            entityClipboard_ = entity;
+            entityClipboardHasData_ = true;
+            sceneStatusMessage_ = "Copied entity";
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Duplicate Entity##Inspector"))
+        {
+            duplicateEntityRequested = true;
         }
 
         // Light-specific properties
@@ -10353,6 +10593,17 @@ void LevelEditorApp::ShowRightPanel()
                     entityPreviewOrigRot_ = scene_.meshObjects()[(size_t)entity.linkedMeshIndex].rotationEuler;
                 }
             }
+        }
+
+        if (duplicateEntityRequested)
+        {
+            PushUndoState();
+            LevelEntityObject copy = entity;
+            copy.name += " (copy)";
+            copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
+            scene_.entities().push_back(copy);
+            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            sceneDirty_ = true;
         }
 
         ImGui::PopID();

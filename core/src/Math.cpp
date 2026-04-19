@@ -48,7 +48,7 @@ float BoundingBox::intersects_ray(const glm::vec3 &origin, const glm::vec3 &dir)
     glm::vec3 tmax = glm::max(t0, t1);
     float enter = glm::max(glm::max(tmin.x, tmin.y), tmin.z);
     float exit = glm::min(glm::min(tmax.x, tmax.y), tmax.z);
-    return (exit >= enter && exit >= 0.0f) ? enter : -1.0f;
+    return (exit >= enter && exit >= 0.0f) ? ((enter < 0.0f) ? 0.0f : enter) : -1.0f;
 }
 
 BoundingBox BoundingBox::transformed(const glm::mat4 &m) const

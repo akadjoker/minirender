@@ -26,6 +26,9 @@ static std::vector<Triangle> collectTriangles(const LevelEditorScene& scene)
     std::vector<Triangle> tris;
     for (const auto& obj : scene.meshObjects())
     {
+        if (!obj.visible)
+            continue;
+
         const glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position)
             * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.y), glm::vec3(0,1,0))
             * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.x), glm::vec3(1,0,0))
@@ -298,6 +301,9 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
     for (int mi = 0; mi < static_cast<int>(scene.meshObjects().size()); ++mi)
     {
         const auto& obj = scene.meshObjects()[mi];
+        if (!obj.visible)
+            continue;
+
         const glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position)
             * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.y), glm::vec3(0,1,0))
             * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.x), glm::vec3(1,0,0))

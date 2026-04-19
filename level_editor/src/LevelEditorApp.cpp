@@ -1283,6 +1283,9 @@ void LevelEditorApp::FinishBakeAsync()
     bakeRunning_ = false;
 
     lightmapResult_ = std::move(bakeResult_);
+    scene_.lightmapUVs().resize(lightmapResult_.meshUVs.size());
+    for (std::size_t i = 0; i < lightmapResult_.meshUVs.size(); ++i)
+        scene_.lightmapUVs()[i].faceVertexUVs = lightmapResult_.meshUVs[i].faceVertexUVs;
 
     // Upload to GPU
     if (lightmapTexture_)
@@ -1338,6 +1341,9 @@ void LevelEditorApp::BakeAndUploadLightmap()
     if (!scenePath_.empty())
         settings.outputPath = SceneLightmapPathForSceneFile(std::filesystem::path(scenePath_)).generic_string();
     lightmapResult_ = BakeLightmaps(scene_, settings);
+    scene_.lightmapUVs().resize(lightmapResult_.meshUVs.size());
+    for (std::size_t i = 0; i < lightmapResult_.meshUVs.size(); ++i)
+        scene_.lightmapUVs()[i].faceVertexUVs = lightmapResult_.meshUVs[i].faceVertexUVs;
 
     printf("[Lightmap] Result: %dx%d, %d bytes, meshUVs=%d\n",
            lightmapResult_.width, lightmapResult_.height,
@@ -2500,6 +2506,9 @@ bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& pa
     lightmapResult_.height = height;
     lightmapResult_.savedPath = path.generic_string();
     lightmapResult_.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u);
+    lightmapResult_.meshUVs.resize(scene_.lightmapUVs().size());
+    for (std::size_t i = 0; i < scene_.lightmapUVs().size(); ++i)
+        lightmapResult_.meshUVs[i].faceVertexUVs = scene_.lightmapUVs()[i].faceVertexUVs;
     stbi_image_free(pixels);
 
     glGenTextures(1, &lightmapTexture_);
@@ -2511,10 +2520,10 @@ bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& pa
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    useLightmap_ = true;
+    useLightmap_ = !lightmapResult_.meshUVs.empty();
     meshCacheValid_ = false;
     RenderState::instance().resetCache();
-    return true;
+    return useLightmap_;
 }
 
 bool LevelEditorApp::IsMeshSelected(int index) const
@@ -3423,6 +3432,8 @@ void LevelEditorApp::HandleFileDialogs()
                 LevelMeshObject object;
                 object.name = result.path.stem().generic_string();
                 object.primitive = LevelMeshPrimitive::Imported;
+                object.position = scene_.creationPivotPosition();
+                object.rotationEuler = scene_.creationPivotRotation();
                 object.mesh = editable;
                 scene_.meshObjects().push_back(object);
                 SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
@@ -4627,6 +4638,9 @@ int LevelEditorApp::PickVertexInOrthoView(const LevelEditorView& view, const glm
     }
 
     const LevelMeshObject& object = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+    if (!object.visible || object.locked)
+        return -1;
+
     const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
     constexpr float pickRadius = 8.0f;
 
@@ -4874,6 +4888,9 @@ std::vector<int> LevelEditorApp::PickVerticesInOrthoRect(const LevelEditorView& 
     }
 
     const LevelMeshObject& object = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+    if (!object.visible || object.locked)
+        return indices;
+
     const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
     const float headerHeight = 26.0f;
     const float minX = static_cast<float>(view.rect.x);
@@ -4962,6 +4979,9 @@ std::vector<int> LevelEditorApp::PickFacesInOrthoRect(const LevelEditorView& vie
     }
 
     const LevelMeshObject& object = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+    if (!object.visible || object.locked)
+        return indices;
+
     const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
     const float headerHeight = 26.0f;
     const float minX = static_cast<float>(view.rect.x);

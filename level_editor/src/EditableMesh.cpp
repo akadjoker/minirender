@@ -11,6 +11,46 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+namespace
+{
+void RecomputeVertexNormals(EditableMesh& mesh)
+{
+    auto& vertices = mesh.verticesMutable();
+    auto& faces = mesh.facesMutable();
+    for (EditableVertex& vertex : vertices)
+        vertex.normal = glm::vec3(0.0f);
+
+    for (const EditableFace& face : faces)
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const glm::vec3& origin = vertices[face.indices[0]].position;
+        glm::vec3 faceNormal(0.0f);
+        for (std::size_t i = 1; i + 1 < face.indices.size(); ++i)
+        {
+            const glm::vec3& b = vertices[face.indices[i]].position;
+            const glm::vec3& c = vertices[face.indices[i + 1]].position;
+            faceNormal += glm::cross(b - origin, c - origin);
+        }
+
+        if (glm::length2(faceNormal) <= 1e-10f)
+            continue;
+
+        for (int index : face.indices)
+            vertices[index].normal += faceNormal;
+    }
+
+    for (EditableVertex& vertex : vertices)
+    {
+        if (glm::length2(vertex.normal) > 1e-10f)
+            vertex.normal = glm::normalize(vertex.normal);
+        else
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+}
+}
+
 EditableMesh EditableMesh::MakeBox(const glm::vec3& minBounds, const glm::vec3& maxBounds)
 {
     EditableMesh mesh;
@@ -25,13 +65,15 @@ EditableMesh EditableMesh::MakeBox(const glm::vec3& minBounds, const glm::vec3& 
         {{minBounds.x, maxBounds.y, maxBounds.z}},
     };
 
+    // Canonical outward winding (CCW viewed from outside)
+    // x- / x+ / y- / y+ / z+ / z-
     mesh.faces_ = {
-        {{0, 1, 2, 3}, "left"},
-        {{4, 5, 6, 7}, "right"},
-        {{0, 4, 5, 1}, "bottom"},
-        {{1, 5, 6, 2}, "front"},
-        {{2, 6, 7, 3}, "top"},
-        {{3, 7, 4, 0}, "back"},
+        {{0, 4, 7, 3}, "left"},
+        {{1, 2, 6, 5}, "right"},
+        {{0, 1, 5, 4}, "bottom"},
+        {{3, 7, 6, 2}, "top"},
+        {{4, 5, 6, 7}, "front"},
+        {{0, 3, 2, 1}, "back"},
     };
 
     return mesh;
@@ -255,17 +297,17 @@ EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, f
     const int botBase = 2;
     const int topBase = 2 + segments;
 
-    // Bottom cap (fan, winding reversed for outward normal)
+    // Bottom cap
     EditableFace bottomCap;
     bottomCap.materialName = "bottom";
-    for (int i = segments - 1; i >= 0; --i)
+    for (int i = 0; i < segments; ++i)
         bottomCap.indices.push_back(botBase + i);
     mesh.faces_.push_back(bottomCap);
 
     // Top cap
     EditableFace topCap;
     topCap.materialName = "top";
-    for (int i = 0; i < segments; ++i)
+    for (int i = segments - 1; i >= 0; --i)
         topCap.indices.push_back(topBase + i);
     mesh.faces_.push_back(topCap);
 
@@ -275,7 +317,47 @@ EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, f
         const int next = (i + 1) % segments;
         EditableFace side;
         side.materialName = "side";
-        side.indices = {botBase + i, botBase + next, topBase + next, topBase + i};
+        side.indices = {botBase + i, topBase + i, topBase + next, botBase + next};
+        mesh.faces_.push_back(side);
+    }
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeCone(const glm::vec3& center, float radius, float height, int segments)
+{
+    if (segments < 3) segments = 3;
+    EditableMesh mesh;
+    const float halfH = height * 0.5f;
+
+    const int apexIndex = 0;
+    mesh.vertices_.push_back({{center.x, center.y + halfH, center.z}});
+
+    mesh.vertices_.push_back({{center.x, center.y - halfH, center.z}});
+
+    const int baseRingStart = 2;
+    for (int i = 0; i < segments; ++i)
+    {
+        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+        mesh.vertices_.push_back({{
+            center.x + radius * std::cos(angle),
+            center.y - halfH,
+            center.z + radius * std::sin(angle)
+        }});
+    }
+
+    EditableFace baseCap;
+    baseCap.materialName = "bottom";
+    for (int i = 0; i < segments; ++i)
+        baseCap.indices.push_back(baseRingStart + i);
+    mesh.faces_.push_back(baseCap);
+
+    for (int i = 0; i < segments; ++i)
+    {
+        const int next = (i + 1) % segments;
+        EditableFace side;
+        side.materialName = "side";
+        side.indices = {apexIndex, baseRingStart + next, baseRingStart + i};
         mesh.faces_.push_back(side);
     }
 
@@ -318,7 +400,7 @@ EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int
         const int next = (s + 1) % segments;
         EditableFace f;
         f.materialName = "default";
-        f.indices = {0, 1 + s, 1 + next};
+        f.indices = {0, 1 + next, 1 + s};
         mesh.faces_.push_back(f);
     }
 
@@ -332,7 +414,7 @@ EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int
             const int next = (s + 1) % segments;
             EditableFace f;
             f.materialName = "default";
-            f.indices = {ringStart + s, nextRingStart + s, nextRingStart + next, ringStart + next};
+            f.indices = {ringStart + s, ringStart + next, nextRingStart + next, nextRingStart + s};
             mesh.faces_.push_back(f);
         }
     }
@@ -344,9 +426,362 @@ EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int
         const int next = (s + 1) % segments;
         EditableFace f;
         f.materialName = "default";
-        f.indices = {lastRingStart + s, bottomPole, lastRingStart + next};
+        f.indices = {lastRingStart + s, lastRingStart + next, bottomPole};
         mesh.faces_.push_back(f);
     }
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeTorus(const glm::vec3& center, float majorRadius, float minorRadius, int majorSegments, int minorSegments)
+{
+    if (majorSegments < 3) majorSegments = 3;
+    if (minorSegments < 3) minorSegments = 3;
+    if (majorRadius < 0.1f) majorRadius = 0.1f;
+    if (minorRadius < 0.1f) minorRadius = 0.1f;
+
+    EditableMesh mesh;
+
+    for (int i = 0; i < majorSegments; ++i)
+    {
+        const float u = static_cast<float>(2.0 * M_PI * i / majorSegments);
+        const float cu = std::cos(u);
+        const float su = std::sin(u);
+
+        for (int j = 0; j < minorSegments; ++j)
+        {
+            const float v = static_cast<float>(2.0 * M_PI * j / minorSegments);
+            const float cv = std::cos(v);
+            const float sv = std::sin(v);
+            const float ringRadius = majorRadius + minorRadius * cv;
+
+            EditableVertex vert;
+            vert.position = glm::vec3(
+                center.x + ringRadius * cu,
+                center.y + minorRadius * sv,
+                center.z + ringRadius * su);
+            vert.normal = glm::normalize(glm::vec3(cv * cu, sv, cv * su));
+            vert.uv = glm::vec2(
+                static_cast<float>(i) / majorSegments,
+                static_cast<float>(j) / minorSegments);
+            mesh.vertices_.push_back(vert);
+        }
+    }
+
+    for (int i = 0; i < majorSegments; ++i)
+    {
+        const int nextI = (i + 1) % majorSegments;
+        for (int j = 0; j < minorSegments; ++j)
+        {
+            const int nextJ = (j + 1) % minorSegments;
+            const int a = i * minorSegments + j;
+            const int b = i * minorSegments + nextJ;
+            const int c = nextI * minorSegments + nextJ;
+            const int d = nextI * minorSegments + j;
+
+            EditableFace face;
+            face.materialName = "default";
+            face.indices = {a, b, c, d};
+            mesh.faces_.push_back(face);
+        }
+    }
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeTube(const glm::vec3& center, float outerRadius, float innerRadius, float height, int segments)
+{
+    if (segments < 3) segments = 3;
+    if (outerRadius < 0.1f) outerRadius = 0.1f;
+    if (innerRadius < 0.05f) innerRadius = 0.05f;
+    if (innerRadius >= outerRadius) innerRadius = std::max(0.05f, outerRadius - 1.0f);
+
+    EditableMesh mesh;
+    const float halfH = height * 0.5f;
+
+    const int outerBottomStart = 0;
+    for (int i = 0; i < segments; ++i)
+    {
+        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+        mesh.vertices_.push_back({{
+            center.x + outerRadius * std::cos(angle),
+            center.y - halfH,
+            center.z + outerRadius * std::sin(angle)
+        }});
+    }
+
+    const int outerTopStart = static_cast<int>(mesh.vertices_.size());
+    for (int i = 0; i < segments; ++i)
+    {
+        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+        mesh.vertices_.push_back({{
+            center.x + outerRadius * std::cos(angle),
+            center.y + halfH,
+            center.z + outerRadius * std::sin(angle)
+        }});
+    }
+
+    const int innerBottomStart = static_cast<int>(mesh.vertices_.size());
+    for (int i = 0; i < segments; ++i)
+    {
+        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+        mesh.vertices_.push_back({{
+            center.x + innerRadius * std::cos(angle),
+            center.y - halfH,
+            center.z + innerRadius * std::sin(angle)
+        }});
+    }
+
+    const int innerTopStart = static_cast<int>(mesh.vertices_.size());
+    for (int i = 0; i < segments; ++i)
+    {
+        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+        mesh.vertices_.push_back({{
+            center.x + innerRadius * std::cos(angle),
+            center.y + halfH,
+            center.z + innerRadius * std::sin(angle)
+        }});
+    }
+
+    for (int i = 0; i < segments; ++i)
+    {
+        const int next = (i + 1) % segments;
+
+        EditableFace outer;
+        outer.materialName = "outer";
+        outer.indices = {
+            outerBottomStart + i,
+            outerTopStart + i,
+            outerTopStart + next,
+            outerBottomStart + next
+        };
+        mesh.faces_.push_back(outer);
+
+        EditableFace inner;
+        inner.materialName = "inner";
+        inner.indices = {
+            innerBottomStart + i,
+            innerBottomStart + next,
+            innerTopStart + next,
+            innerTopStart + i
+        };
+        mesh.faces_.push_back(inner);
+
+        EditableFace top;
+        top.materialName = "top";
+        top.indices = {
+            outerTopStart + i,
+            innerTopStart + i,
+            innerTopStart + next,
+            outerTopStart + next
+        };
+        mesh.faces_.push_back(top);
+
+        EditableFace bottom;
+        bottom.materialName = "bottom";
+        bottom.indices = {
+            outerBottomStart + i,
+            outerBottomStart + next,
+            innerBottomStart + next,
+            innerBottomStart + i
+        };
+        mesh.faces_.push_back(bottom);
+    }
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakePyramid(const glm::vec3& center, float width, float depth, float height)
+{
+    EditableMesh mesh;
+    const float halfW = width * 0.5f;
+    const float halfD = depth * 0.5f;
+    const float halfH = height * 0.5f;
+
+    mesh.vertices_ = {
+        {{center.x - halfW, center.y - halfH, center.z - halfD}},
+        {{center.x + halfW, center.y - halfH, center.z - halfD}},
+        {{center.x + halfW, center.y - halfH, center.z + halfD}},
+        {{center.x - halfW, center.y - halfH, center.z + halfD}},
+        {{center.x,         center.y + halfH, center.z}}
+    };
+
+    mesh.faces_ = {
+        {{0, 1, 2, 3}, "bottom"},
+        {{0, 4, 1}, "side"},
+        {{1, 4, 2}, "side"},
+        {{2, 4, 3}, "side"},
+        {{3, 4, 0}, "side"},
+    };
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeDoorFrame(const glm::vec3& minBounds, const glm::vec3& maxBounds,
+                                         float doorWidth, float doorHeight, float wallThickness)
+{
+    const glm::vec3 size = maxBounds - minBounds;
+    doorWidth = glm::clamp(doorWidth, 0.1f, std::max(0.1f, size.x - 0.01f));
+    doorHeight = glm::clamp(doorHeight, 0.1f, std::max(0.1f, size.y - 0.01f));
+    wallThickness = glm::clamp(wallThickness, 0.01f, std::max(0.01f, size.z));
+
+    const float midX = (minBounds.x + maxBounds.x) * 0.5f;
+    const float doorX0 = midX - doorWidth * 0.5f;
+    const float doorX1 = midX + doorWidth * 0.5f;
+    const float doorY1 = minBounds.y + doorHeight;
+    const float zFront = minBounds.z;
+    const float zBack = minBounds.z + wallThickness;
+
+    EditableMesh mesh;
+
+    auto appendBox = [&](const glm::vec3& boxMin, const glm::vec3& boxMax, const char* materialName)
+    {
+        if (boxMax.x <= boxMin.x || boxMax.y <= boxMin.y || boxMax.z <= boxMin.z)
+            return;
+
+        EditableMesh piece = MakeBox(boxMin, boxMax);
+        const int vertexOffset = static_cast<int>(mesh.vertices_.size());
+        mesh.vertices_.insert(mesh.vertices_.end(), piece.vertices_.begin(), piece.vertices_.end());
+        for (EditableFace face : piece.faces_)
+        {
+            face.materialName = materialName;
+            for (int& index : face.indices)
+                index += vertexOffset;
+            mesh.faces_.push_back(std::move(face));
+        }
+    };
+
+    appendBox(
+        glm::vec3(minBounds.x, minBounds.y, zFront),
+        glm::vec3(doorX0, maxBounds.y, zBack),
+        "frame");
+
+    appendBox(
+        glm::vec3(doorX1, minBounds.y, zFront),
+        glm::vec3(maxBounds.x, maxBounds.y, zBack),
+        "frame");
+
+    appendBox(
+        glm::vec3(doorX0, doorY1, zFront),
+        glm::vec3(doorX1, maxBounds.y, zBack),
+        "frame");
+
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakeTerrain(const glm::vec3& center,
+                                       float width, float depth,
+                                       int subdivX, int subdivZ,
+                                       const std::vector<float>& heights,
+                                       float heightScale)
+{
+    if (subdivX < 1) subdivX = 1;
+    if (subdivZ < 1) subdivZ = 1;
+
+    EditableMesh mesh;
+    const int cols = subdivX + 1;
+    const int rows = subdivZ + 1;
+    const bool hasHeights = static_cast<int>(heights.size()) == cols * rows;
+
+    const float halfW = width * 0.5f;
+    const float halfD = depth * 0.5f;
+    const float stepX = width / static_cast<float>(subdivX);
+    const float stepZ = depth / static_cast<float>(subdivZ);
+
+    for (int z = 0; z < rows; ++z)
+    {
+        for (int x = 0; x < cols; ++x)
+        {
+            const float px = center.x - halfW + static_cast<float>(x) * stepX;
+            const float pz = center.z - halfD + static_cast<float>(z) * stepZ;
+            const float py = center.y + (hasHeights ? heights[z * cols + x] * heightScale : 0.0f);
+
+            EditableVertex vertex;
+            vertex.position = glm::vec3(px, py, pz);
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            vertex.uv = glm::vec2(static_cast<float>(x) / static_cast<float>(subdivX),
+                                  static_cast<float>(z) / static_cast<float>(subdivZ));
+            mesh.vertices_.push_back(vertex);
+        }
+    }
+
+    for (int z = 0; z < subdivZ; ++z)
+    {
+        for (int x = 0; x < subdivX; ++x)
+        {
+            const int bl = z * cols + x;
+            const int br = bl + 1;
+            const int tl = bl + cols;
+            const int tr = tl + 1;
+
+            EditableFace face;
+            face.materialName = "terrain";
+            face.indices = {bl, tl, tr, br};
+            mesh.faces_.push_back(face);
+        }
+    }
+
+    RecomputeVertexNormals(mesh);
+    return mesh;
+}
+
+EditableMesh EditableMesh::MakePillar(const glm::vec3& minBounds, const glm::vec3& maxBounds,
+                                      float baseRatio, float capitalRatio, float flareRatio)
+{
+    baseRatio = glm::clamp(baseRatio, 0.0f, 0.45f);
+    capitalRatio = glm::clamp(capitalRatio, 0.0f, 0.45f - baseRatio);
+    flareRatio = glm::clamp(flareRatio, 0.0f, 1.0f);
+
+    const glm::vec3 size = maxBounds - minBounds;
+    const float baseHeight = size.y * baseRatio;
+    const float capitalHeight = size.y * capitalRatio;
+    const float shaftHeight = size.y - baseHeight - capitalHeight;
+
+    const float midX = (minBounds.x + maxBounds.x) * 0.5f;
+    const float midZ = (minBounds.z + maxBounds.z) * 0.5f;
+    const float halfW = size.x * 0.5f;
+    const float halfD = size.z * 0.5f;
+    const float flareX = halfW * flareRatio;
+    const float flareZ = halfD * flareRatio;
+
+    const float shaftX0 = midX - halfW + flareX;
+    const float shaftX1 = midX + halfW - flareX;
+    const float shaftZ0 = midZ - halfD + flareZ;
+    const float shaftZ1 = midZ + halfD - flareZ;
+
+    EditableMesh mesh;
+
+    auto appendBox = [&](const glm::vec3& boxMin, const glm::vec3& boxMax, const char* materialName)
+    {
+        if (boxMax.x <= boxMin.x || boxMax.y <= boxMin.y || boxMax.z <= boxMin.z)
+            return;
+
+        EditableMesh piece = MakeBox(boxMin, boxMax);
+        const int vertexOffset = static_cast<int>(mesh.vertices_.size());
+        mesh.vertices_.insert(mesh.vertices_.end(), piece.vertices_.begin(), piece.vertices_.end());
+        for (EditableFace face : piece.faces_)
+        {
+            face.materialName = materialName;
+            for (int& index : face.indices)
+                index += vertexOffset;
+            mesh.faces_.push_back(std::move(face));
+        }
+    };
+
+    appendBox(
+        glm::vec3(minBounds.x, minBounds.y, minBounds.z),
+        glm::vec3(maxBounds.x, minBounds.y + baseHeight, maxBounds.z),
+        "base");
+
+    appendBox(
+        glm::vec3(shaftX0, minBounds.y + baseHeight, shaftZ0),
+        glm::vec3(shaftX1, minBounds.y + baseHeight + shaftHeight, shaftZ1),
+        "shaft");
+
+    appendBox(
+        glm::vec3(minBounds.x, maxBounds.y - capitalHeight, minBounds.z),
+        glm::vec3(maxBounds.x, maxBounds.y, maxBounds.z),
+        "capital");
 
     return mesh;
 }

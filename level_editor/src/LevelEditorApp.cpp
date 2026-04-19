@@ -14,6 +14,7 @@
 #include "Utils.hpp"
 #include "MeshLoader.hpp"
 #include "BinaryStream.hpp"
+#include <stb_image.h>
 #include "stb_image_write.h"
 
 #include <json.hpp>
@@ -1331,6 +1332,7 @@ void LevelEditorApp::SaveEditorSettings()
     j["useTransparency"] = useTransparency_;
     j["transparency"] = transparency_;
     j["cullMode"] = static_cast<int>(cullMode_);
+    j["perspectiveMinDistance"] = perspectiveMinDistance_;
     j["perspectiveNearPlane"] = perspectiveNearPlane_;
     j["perspectiveFarPlane"] = perspectiveFarPlane_;
     j["faceHighlightFillEnabled"] = faceHighlightFillEnabled_;
@@ -1422,10 +1424,12 @@ void LevelEditorApp::LoadEditorSettings()
         // Backward compatibility with previous boolean setting.
         cullMode_ = j["disableBackfaceCulling"].get<bool>() ? CullMode::Off : CullMode::Back;
     }
+    if (j.contains("perspectiveMinDistance")) perspectiveMinDistance_ = j["perspectiveMinDistance"].get<float>();
     if (j.contains("perspectiveNearPlane")) perspectiveNearPlane_ = j["perspectiveNearPlane"].get<float>();
     if (j.contains("perspectiveFarPlane")) perspectiveFarPlane_ = j["perspectiveFarPlane"].get<float>();
     if (j.contains("faceHighlightFillEnabled")) faceHighlightFillEnabled_ = j["faceHighlightFillEnabled"].get<bool>();
     if (j.contains("faceHighlightFillAlpha")) faceHighlightFillAlpha_ = j["faceHighlightFillAlpha"].get<float>();
+    perspectiveMinDistance_ = std::max(0.01f, perspectiveMinDistance_);
     perspectiveNearPlane_ = std::max(0.001f, perspectiveNearPlane_);
     perspectiveFarPlane_ = std::max(perspectiveNearPlane_ + 1.0f, perspectiveFarPlane_);
     if (j.contains("selectionMode"))
@@ -1445,6 +1449,7 @@ void LevelEditorApp::LoadEditorSettings()
             if (v.contains("perspectiveYaw")) views_[i].perspectiveYaw = v["perspectiveYaw"].get<float>();
             if (v.contains("perspectivePitch")) views_[i].perspectivePitch = v["perspectivePitch"].get<float>();
             if (v.contains("perspectiveDistance")) views_[i].perspectiveDistance = v["perspectiveDistance"].get<float>();
+            views_[i].perspectiveDistance = std::max(views_[i].perspectiveDistance, perspectiveMinDistance_);
             if (v.contains("focus") && v["focus"].is_array() && v["focus"].size() == 3)
                 views_[i].focus = glm::vec3(v["focus"][0].get<float>(), v["focus"][1].get<float>(), v["focus"][2].get<float>());
             if (v.contains("clearColor") && v["clearColor"].is_array() && v["clearColor"].size() == 3)
@@ -2388,6 +2393,63 @@ int preloadLegacyImportedMaterials(const LevelEditorScene& scene,
     }
     return loadedCount;
 }
+
+bool LoadHeightmapImage(const std::string& path,
+                        std::vector<float>& outHeights,
+                        int& outWidth,
+                        int& outHeight,
+                        std::string& outError)
+{
+    outHeights.clear();
+    outWidth = 0;
+    outHeight = 0;
+    outError.clear();
+
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    if (!pixels)
+    {
+        outError = stbi_failure_reason() ? stbi_failure_reason() : "unknown image load error";
+        return false;
+    }
+
+    if (width < 2 || height < 2 || channels < 1)
+    {
+        stbi_image_free(pixels);
+        outError = "heightmap must be at least 2x2";
+        return false;
+    }
+
+    outHeights.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            const std::size_t srcIndex = (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x))
+                * static_cast<std::size_t>(channels);
+            float value = 0.0f;
+            if (channels == 1 || channels == 2)
+            {
+                value = static_cast<float>(pixels[srcIndex]) / 255.0f;
+            }
+            else
+            {
+                const float r = static_cast<float>(pixels[srcIndex + 0]) / 255.0f;
+                const float g = static_cast<float>(pixels[srcIndex + 1]) / 255.0f;
+                const float b = static_cast<float>(pixels[srcIndex + 2]) / 255.0f;
+                value = r * 0.299f + g * 0.587f + b * 0.114f;
+            }
+            outHeights[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] = value;
+        }
+    }
+
+    stbi_image_free(pixels);
+    outWidth = width;
+    outHeight = height;
+    return true;
+}
 }
 
 bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
@@ -2496,6 +2558,35 @@ void LevelEditorApp::HandleFileDialogs()
     }
     ImGui::PushID("ImportMeshDialog");
     importMeshDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
+    ImGui::PopID();
+
+    if (terrainHeightmapDialog_.HasResult())
+    {
+        const auto result = terrainHeightmapDialog_.ConsumeResult();
+        if (result.accepted)
+        {
+            std::vector<float> heights;
+            int width = 0;
+            int height = 0;
+            std::string error;
+            const std::string imagePath = result.path.generic_string();
+            if (LoadHeightmapImage(imagePath, heights, width, height, error))
+            {
+                primHeightmapPath_ = imagePath;
+                primSubdivX_ = std::max(1, width - 1);
+                primSubdivZ_ = std::max(1, height - 1);
+                sceneStatusMessage_ = "Heightmap selected: " + result.path.filename().generic_string() +
+                    " (" + std::to_string(width) + "x" + std::to_string(height) + ")";
+            }
+            else
+            {
+                primHeightmapPath_.clear();
+                sceneStatusMessage_ = "Heightmap load failed: " + error;
+            }
+        }
+    }
+    ImGui::PushID("TerrainHeightmapDialog");
+    terrainHeightmapDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
     ImGui::PopID();
 
     if (refPlaneImageDialog_.HasResult())
@@ -2774,6 +2865,7 @@ void LevelEditorApp::HandleToolShortcuts()
             }
 
             obj.mesh.setData(keptVerts, keptFaces);
+            meshCacheValid_ = false;
             selectedVertexIndices_.clear();
             selectedFaceIndex_ = -1;
             selectedFaceIndices_.clear();
@@ -2831,6 +2923,7 @@ void LevelEditorApp::HandleToolShortcuts()
             }
 
             obj.mesh.setData(keptVerts, keptFaces);
+            meshCacheValid_ = false;
             selectedFaceIndex_ = -1;
             selectedFaceIndices_.clear();
             selectedVertexIndices_.clear();
@@ -2840,9 +2933,13 @@ void LevelEditorApp::HandleToolShortcuts()
         {
             PushUndoState();
             std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
-            // Sort indices descending so erasing from the back doesn't shift earlier ones
-            std::vector<int> toDelete = selectedMeshIndices_;
-            if (toDelete.empty())
+            SyncSelectedMeshes();
+            // Delete current selection. If we have an explicit multi-selection, delete all selected;
+            // otherwise delete only the primary selected mesh index.
+            std::vector<int> toDelete;
+            if (selectedMeshIndices_.size() > 1 && IsMeshSelected(selectedMeshIndex_))
+                toDelete = selectedMeshIndices_;
+            else if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(meshObjects.size()))
                 toDelete.push_back(selectedMeshIndex_);
             std::sort(toDelete.begin(), toDelete.end(), std::greater<int>());
             // Remove duplicates
@@ -2852,6 +2949,7 @@ void LevelEditorApp::HandleToolShortcuts()
                 if (idx >= 0 && idx < static_cast<int>(meshObjects.size()))
                     meshObjects.erase(meshObjects.begin() + idx);
             }
+            meshCacheValid_ = false;
             selectedMeshIndex_ = -1;
             selectedMeshIndices_.clear();
             selectedFaceIndex_ = -1;
@@ -2885,6 +2983,7 @@ void LevelEditorApp::HandleToolShortcuts()
             copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
             scene_.meshObjects().push_back(copy);
             SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+            meshCacheValid_ = false;
             sceneDirty_ = true;
         }
         else if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
@@ -3013,6 +3112,7 @@ void LevelEditorApp::UpdateViewCameras()
 
         if (view.type == ViewType::Perspective)
         {
+            view.perspectiveDistance = std::max(view.perspectiveDistance, perspectiveMinDistance_);
             view.camera.setViewPlanes(nearPlane, farPlane);
             view.camera.setProjectionType(ProjectionType::Perspective);
             view.camera.setFov(60.0f);
@@ -4558,7 +4658,10 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         !ImGuizmo::IsUsing())
     {
         if (hovered->type == ViewType::Perspective)
-            hovered->perspectiveDistance = std::clamp(hovered->perspectiveDistance - wheel * 32.0f, 64.0f, 4096.0f);
+            hovered->perspectiveDistance = std::clamp(
+                hovered->perspectiveDistance - wheel * 32.0f,
+                std::max(0.01f, perspectiveMinDistance_),
+                4096.0f);
         else
             hovered->orthoSize = std::clamp(hovered->orthoSize - wheel * (hovered->orthoSize * 0.1f), 8.0f, 4096.0f);
     }
@@ -6604,10 +6707,10 @@ void LevelEditorApp::ShowLeftPanel()
         ImGui::TextUnformatted("Create Primitive");
         
         {
-            const char* primNames[] = {"Box", "Room", "Sector", "Room Boxes", "Cylinder", "Sphere", "Plane", "Wedge", "Stairs", "Spiral Stairs", "Text"};
+            const char* primNames[] = {"Box", "Room", "Sector", "Room Boxes", "Cylinder", "Cone", "Sphere", "Torus", "Tube", "Pyramid", "Door Frame", "Terrain", "Pillar", "Plane", "Wedge", "Stairs", "Spiral Stairs", "Text"};
             int primIdx = static_cast<int>(primitiveType_);
             ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::Combo("Type##Primitive", &primIdx, primNames, 11))
+            if (ImGui::Combo("Type##Primitive", &primIdx, primNames, IM_ARRAYSIZE(primNames)))
                 primitiveType_ = static_cast<PrimitiveType>(primIdx);
 
             switch (primitiveType_)
@@ -6657,10 +6760,61 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::DragFloat("Height##PrimCyl", &primHeight_, 1.0f, 1.0f, 4096.0f);
                 ImGui::DragInt("Segments##PrimCyl", &primSegments_, 1, 3, 128);
                 break;
+            case PrimitiveType::Cone:
+                ImGui::DragFloat("Radius##PrimCone", &primRadius_, 1.0f, 1.0f, 2048.0f);
+                ImGui::DragFloat("Height##PrimCone", &primHeight_, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragInt("Segments##PrimCone", &primSegments_, 1, 3, 128);
+                break;
             case PrimitiveType::Sphere:
                 ImGui::DragFloat("Radius##PrimSph", &primRadius_, 1.0f, 1.0f, 2048.0f);
                 ImGui::DragInt("Rings##PrimSph", &primRings_, 1, 2, 64);
                 ImGui::DragInt("Segments##PrimSph", &primSegments_, 1, 3, 128);
+                break;
+            case PrimitiveType::Torus:
+                ImGui::DragFloat("Major Radius##PrimTorusMajor", &primRadius_, 1.0f, 1.0f, 2048.0f);
+                ImGui::DragFloat("Minor Radius##PrimTorusMinor", &primMinorRadius_, 0.5f, 1.0f, 1024.0f);
+                ImGui::DragInt("Major Segments##PrimTorusMajorSeg", &primSegments_, 1, 3, 128);
+                ImGui::DragInt("Minor Segments##PrimTorusMinorSeg", &primRings_, 1, 3, 128);
+                break;
+            case PrimitiveType::Tube:
+                ImGui::DragFloat("Outer Radius##PrimTubeOuter", &primRadius_, 1.0f, 1.0f, 2048.0f);
+                ImGui::DragFloat("Inner Radius##PrimTubeInner", &primMinorRadius_, 0.5f, 1.0f, 1024.0f);
+                ImGui::DragFloat("Height##PrimTubeHeight", &primHeight_, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragInt("Segments##PrimTubeSeg", &primSegments_, 1, 3, 128);
+                break;
+            case PrimitiveType::Pyramid:
+                ImGui::DragFloat3("Size##PrimPyramid", &primSize_.x, 1.0f, 1.0f, 4096.0f);
+                break;
+            case PrimitiveType::DoorFrame:
+                ImGui::DragFloat3("Size##PrimDoorFrame", &primSize_.x, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragFloat("Door Width##PrimDoorWidth", &primDoorWidth_, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragFloat("Door Height##PrimDoorHeight", &primDoorHeight_, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragFloat("Wall Thickness##PrimDoorWall", &primWallThickness_, 0.5f, 1.0f, 1024.0f);
+                break;
+            case PrimitiveType::Terrain:
+                ImGui::DragFloat("Width##PrimTerrainWidth", &primPlaneW_, 1.0f, 1.0f, 8192.0f);
+                ImGui::DragFloat("Depth##PrimTerrainDepth", &primPlaneD_, 1.0f, 1.0f, 8192.0f);
+                ImGui::DragInt("Subdiv X##PrimTerrainSubdivX", &primSubdivX_, 1, 1, 2048);
+                ImGui::DragInt("Subdiv Z##PrimTerrainSubdivZ", &primSubdivZ_, 1, 1, 2048);
+                ImGui::DragFloat("Height Scale##PrimTerrainScale", &primHeightScale_, 1.0f, 0.0f, 4096.0f);
+                ImGui::TextWrapped("Heightmap");
+                ImGui::InputText("##PrimTerrainHeightmapPath", &primHeightmapPath_, ImGuiInputTextFlags_ReadOnly);
+                if (ImGui::Button("Choose Heightmap##PrimTerrain"))
+                {
+                    const std::filesystem::path startDir = primHeightmapPath_.empty()
+                        ? (assetRoot_.empty() ? std::filesystem::current_path() : std::filesystem::path(assetRoot_))
+                        : std::filesystem::path(primHeightmapPath_).parent_path();
+                    terrainHeightmapDialog_.Open(ImGuiFileDialog::Mode::OpenFile, startDir, "image");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Clear Heightmap##PrimTerrain"))
+                    primHeightmapPath_.clear();
+                break;
+            case PrimitiveType::Pillar:
+                ImGui::DragFloat3("Size##PrimPillar", &primSize_.x, 1.0f, 1.0f, 4096.0f);
+                ImGui::DragFloat("Base Ratio##PrimPillarBase", &primPillarBaseRatio_, 0.01f, 0.0f, 0.45f, "%.2f");
+                ImGui::DragFloat("Capital Ratio##PrimPillarCapital", &primPillarCapitalRatio_, 0.01f, 0.0f, 0.45f, "%.2f");
+                ImGui::DragFloat("Flare Ratio##PrimPillarFlare", &primPillarFlareRatio_, 0.01f, 0.0f, 1.0f, "%.2f");
                 break;
             case PrimitiveType::Plane:
             {
@@ -6701,10 +6855,11 @@ void LevelEditorApp::ShowLeftPanel()
                 PushUndoState();
                 LevelMeshObject object;
                 const glm::vec3 half = primSize_ * 0.5f;
+                const PrimitiveType primitiveTypeAtCreate = primitiveType_;
                 bool createdMultipleObjects = false;
                 bool cancelCreation = false;
 
-                switch (primitiveType_)
+                switch (primitiveTypeAtCreate)
                 {
                 case PrimitiveType::Box:
                     object.name = "Box " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
@@ -6761,6 +6916,7 @@ void LevelEditorApp::ShowLeftPanel()
                         scene_.meshObjects().push_back(std::move(part));
                     }
                     SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+                    meshCacheValid_ = false;
                     createdMultipleObjects = true;
                     break;
                 }
@@ -6768,9 +6924,58 @@ void LevelEditorApp::ShowLeftPanel()
                     object.name = "Cylinder " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeCylinder(glm::vec3(0.0f), primRadius_, primHeight_, primSegments_);
                     break;
+                case PrimitiveType::Cone:
+                    object.name = "Cone " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakeCone(glm::vec3(0.0f), primRadius_, primHeight_, primSegments_);
+                    break;
                 case PrimitiveType::Sphere:
                     object.name = "Sphere " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeSphere(glm::vec3(0.0f), primRadius_, primRings_, primSegments_);
+                    break;
+                case PrimitiveType::Torus:
+                    object.name = "Torus " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakeTorus(glm::vec3(0.0f), primRadius_, primMinorRadius_, primSegments_, primRings_);
+                    break;
+                case PrimitiveType::Tube:
+                    object.name = "Tube " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakeTube(glm::vec3(0.0f), primRadius_, primMinorRadius_, primHeight_, primSegments_);
+                    break;
+                case PrimitiveType::Pyramid:
+                    object.name = "Pyramid " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakePyramid(glm::vec3(0.0f), primSize_.x, primSize_.z, primSize_.y);
+                    break;
+                case PrimitiveType::DoorFrame:
+                    object.name = "Door Frame " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakeDoorFrame(-half, half, primDoorWidth_, primDoorHeight_, primWallThickness_);
+                    break;
+                case PrimitiveType::Terrain:
+                {
+                    object.name = "Terrain " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    std::vector<float> heights;
+                    if (!primHeightmapPath_.empty())
+                    {
+                        int width = 0;
+                        int height = 0;
+                        std::string error;
+                        if (!LoadHeightmapImage(primHeightmapPath_, heights, width, height, error))
+                        {
+                            sceneStatusMessage_ = "Heightmap load failed: " + error;
+                            cancelCreation = true;
+                            break;
+                        }
+                        if (width != primSubdivX_ + 1 || height != primSubdivZ_ + 1)
+                        {
+                            sceneStatusMessage_ = "Heightmap size must match subdivs + 1";
+                            cancelCreation = true;
+                            break;
+                        }
+                    }
+                    object.mesh = EditableMesh::MakeTerrain(glm::vec3(0.0f), primPlaneW_, primPlaneD_, primSubdivX_, primSubdivZ_, heights, primHeightScale_);
+                    break;
+                }
+                case PrimitiveType::Pillar:
+                    object.name = "Pillar " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.mesh = EditableMesh::MakePillar(-half, half, primPillarBaseRatio_, primPillarCapitalRatio_, primPillarFlareRatio_);
                     break;
                 case PrimitiveType::Plane:
                 {
@@ -6819,6 +7024,7 @@ void LevelEditorApp::ShowLeftPanel()
                 {
                     scene_.meshObjects().push_back(object);
                     SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+                    meshCacheValid_ = false;
                 }
                 if (!cancelCreation)
                     sceneDirty_ = true;
@@ -6835,6 +7041,7 @@ void LevelEditorApp::ShowLeftPanel()
             object.mesh = EditableMesh::FromData({}, {});
             scene_.meshObjects().push_back(object);
             SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+            meshCacheValid_ = false;
             sceneDirty_ = true;
         }
     if (Section("Entities"))
@@ -7417,6 +7624,29 @@ void LevelEditorApp::ShowLeftPanel()
                 }
             }
 
+            if (selectionMode_ == SelectionMode::Object)
+            {
+                if (ImGui::Button("Invert Mesh"))
+                {
+                    PushUndoState();
+                    int invertedCount = 0;
+                    for (EditableFace& face : meshObject.mesh.facesMutable())
+                    {
+                        if (face.indices.size() >= 3)
+                        {
+                            std::reverse(face.indices.begin(), face.indices.end());
+                            ++invertedCount;
+                        }
+                    }
+                    if (invertedCount > 0)
+                    {
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                        sceneStatusMessage_ = "Inverted mesh faces";
+                    }
+                }
+            }
+
             // UV operations — per-face if face selected, otherwise whole object
             ImGui::Separator();
             ImGui::TextUnformatted("UV Projection");
@@ -7446,6 +7676,7 @@ void LevelEditorApp::ShowLeftPanel()
                 }
                 else
                     for (auto& f : meshObject.mesh.facesMutable()) apply(f);
+                meshCacheValid_ = false;
                 sceneDirty_ = true;
             };
 
@@ -7459,6 +7690,35 @@ void LevelEditorApp::ShowLeftPanel()
             if (ImGui::Button("Reset UV"))
             {
                 applyProjection(UvProjection::Box);
+            }
+
+            if (uvPerFace)
+            {
+                if (ImGui::Button("Invert Face"))
+                {
+                    PushUndoState();
+                    int invertedCount = 0;
+                    for (int faceIndex : selectedFaceIndices_)
+                    {
+                        if (faceIndex >= 0 && faceIndex < static_cast<int>(meshObject.mesh.faceCount()))
+                        {
+                            EditableFace& face = meshObject.mesh.facesMutable()[(size_t)faceIndex];
+                            if (face.indices.size() >= 3)
+                            {
+                                std::reverse(face.indices.begin(), face.indices.end());
+                                ++invertedCount;
+                            }
+                        }
+                    }
+                    if (invertedCount > 0)
+                    {
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                        sceneStatusMessage_ = (invertedCount == 1)
+                            ? "Inverted selected face"
+                            : ("Inverted " + std::to_string(invertedCount) + " faces");
+                    }
+                }
             }
 
             ImGui::PopID();
@@ -7984,6 +8244,13 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         if (ImGui::Combo("##CullMode", &cullModeIndex, cullModeLabels, IM_ARRAYSIZE(cullModeLabels)))
             cullMode_ = static_cast<CullMode>(cullModeIndex);
+        ImGui::TextUnformatted("3D Zoom Min");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (ImGui::DragFloat("##PerspectiveMinDistance", &perspectiveMinDistance_, 1.0f, 0.01f, 1024.0f, "%.2f"))
+            perspectiveMinDistance_ = std::max(0.01f, perspectiveMinDistance_);
+        for (LevelEditorView& v : views_)
+            if (v.type == ViewType::Perspective)
+                v.perspectiveDistance = std::max(v.perspectiveDistance, perspectiveMinDistance_);
         ImGui::TextUnformatted("Perspective Near");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
         if (ImGui::DragFloat("##PerspectiveNear", &perspectiveNearPlane_, 0.01f, 0.001f, 100.0f, "%.3f"))

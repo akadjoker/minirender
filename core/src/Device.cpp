@@ -74,6 +74,7 @@ Device::Device() : m_width(0), m_height(0)
     m_draw = 0;
     m_frame = 0;
     m_target = 0;
+    m_vsyncEnabled = false;
     m_ready = false;
     m_is_resize = false;
 }
@@ -98,7 +99,9 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
     m_draw = 0;
     m_frame = 0;
 
-    SetTargetFPS(vzync ? 60 : 1000);
+    // Do not combine software frame limiter with VSync.
+    // Running both can cause pacing oscillation (e.g. bouncing 30/60 FPS).
+    SetTargetFPS(vzync ? 0 : 1000);
     m_closekey = 256;
     m_width = width;
     m_height = height;
@@ -167,6 +170,7 @@ bool Device::Create(int width, int height, const char *title, bool vzync, u16 mo
 
     // VSync
     SDL_GL_SetSwapInterval(vzync ? 1 : 0);
+    m_vsyncEnabled = vzync;
 
     SDL_Log("Load opengl extensions.");
 
@@ -440,7 +444,7 @@ void Device::Flip()
     m_frame = m_update + m_draw;
 
     // Wait for some milliseconds...
-    if (m_frame < m_target)
+    if (!m_vsyncEnabled && m_target > 0.0 && m_frame < m_target)
     {
         Wait((float)(m_target - m_frame) * 1000.0f);
 

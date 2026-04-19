@@ -1,22 +1,23 @@
 {
-    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/textures",
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures",
     "assetViewMode": 2,
-    "cullMode": 0,
-    "currentTexturePath": "import::sponza.obj/column_b_diffuse",
+    "cullMode": 2,
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures/gravel_a.png",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
     "faceHighlightFillAlpha": 0.8299999833106995,
     "faceHighlightFillEnabled": true,
     "gridSize": 16.0,
-    "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/obj",
-    "lmAmbient": 0.20999999344348907,
-    "lmBias": 1.5199999809265137,
-    "lmResolution": 1024,
-    "lmSamples": 1,
+    "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/powerplant",
+    "lmAmbient": 0.27000001072883606,
+    "lmBias": 0.8109999895095825,
+    "lmResolution": 2048,
+    "lmSamples": 16,
     "perspGridSize": 19.100000381469727,
     "perspectiveFarPlane": 8242.0,
-    "perspectiveNearPlane": 0.8009999990463257,
+    "perspectiveMinDistance": 0.009999999776482582,
+    "perspectiveNearPlane": 1.3609999418258667,
     "scenePath": "",
     "sections": {
         "CSG": true,
@@ -26,7 +27,7 @@
         "History": false,
         "Level Stats": true,
         "Lightmap": true,
-        "Mesh Edit": false,
+        "Mesh Edit": true,
         "Mesh Objects": true,
         "Plane Clip": false,
         "Reference Planes": false,
@@ -37,7 +38,7 @@
         "Tools": true,
         "View Settings": true
     },
-    "selectionMode": 0,
+    "selectionMode": 1,
     "showGrid": false,
     "snapEnabled": true,
     "snapToGeometry": false,
@@ -54,11 +55,11 @@
                 0.14000000059604645
             ],
             "focus": [
-                0.0051116943359375,
-                10.691619873046875,
-                4.62830924987793
+                0.0,
+                64.0,
+                0.0
             ],
-            "orthoSize": 12.562788963317871,
+            "orthoSize": 41.08192443847656,
             "perspectiveDistance": 332.5537414550781,
             "perspectivePitch": -4.0,
             "perspectiveYaw": 68.10002136230469,
@@ -72,11 +73,11 @@
                 0.14000000059604645
             ],
             "focus": [
-                0.0051116943359375,
-                10.691619873046875,
-                4.62830924987793
+                0.0,
+                64.0,
+                0.0
             ],
-            "orthoSize": 261.9437255859375,
+            "orthoSize": 24.561695098876953,
             "perspectiveDistance": 396.5537414550781,
             "perspectivePitch": 53.5,
             "perspectiveYaw": -195.449951171875,
@@ -90,11 +91,11 @@
                 0.14000000059604645
             ],
             "focus": [
-                0.0051116943359375,
-                10.691619873046875,
-                4.62830924987793
+                0.0,
+                64.0,
+                0.0
             ],
-            "orthoSize": 352.2474365234375,
+            "orthoSize": 277.12811279296875,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0,
@@ -108,14 +109,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                -243.52464294433594,
-                319.5478515625,
-                -14.06365966796875
+                41.312705993652344,
+                56.15556716918945,
+                5.880399227142334
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 2016.0,
-            "perspectivePitch": -1.0,
-            "perspectiveYaw": -6225.94775390625,
+            "perspectiveDistance": 96.00999450683594,
+            "perspectivePitch": 11.25,
+            "perspectiveYaw": -6850.7109375,
             "renderMode": 2,
             "type": 6
         }

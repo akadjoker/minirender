@@ -97,6 +97,7 @@ private:
     double m_draw;                       
     double m_frame;   
     double m_target;
+    bool m_vsyncEnabled;
     bool m_ready;
     Sint32 m_closekey;
     bool m_imguiReady = false;

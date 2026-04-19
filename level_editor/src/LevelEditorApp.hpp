@@ -254,6 +254,7 @@ private:
     float transparency_ = 0.45f;
     float gridSize_ = 16.0f;
     float perspGridSize_ = 16.0f;
+    float perspectiveMinDistance_ = 8.0f;
     float perspectiveNearPlane_ = 0.1f;
     float perspectiveFarPlane_ = 8192.0f;
     std::array<LevelEditorView, 4> views_ = {};
@@ -290,7 +291,7 @@ private:
     bool csgClipKeepFront_ = true;
 
     // Primitive creation
-    enum class PrimitiveType { Box, Room, Sector, RoomBoxes, Cylinder, Sphere, Plane, Wedge, Stairs, SpiralStairs, Text };
+    enum class PrimitiveType { Box, Room, Sector, RoomBoxes, Cylinder, Cone, Sphere, Torus, Tube, Pyramid, DoorFrame, Terrain, Pillar, Plane, Wedge, Stairs, SpiralStairs, Text };
     PrimitiveType primitiveType_ = PrimitiveType::Box;
     glm::vec3 primSize_ = glm::vec3(128.0f, 128.0f, 128.0f);
     float primWallThickness_ = 16.0f;
@@ -301,7 +302,14 @@ private:
     bool primSectorFront_ = true;
     bool primSectorBack_ = true;
     float primRadius_ = 64.0f;
+    float primMinorRadius_ = 24.0f;
     float primHeight_ = 128.0f;
+    float primHeightScale_ = 64.0f;
+    float primDoorWidth_ = 80.0f;
+    float primDoorHeight_ = 160.0f;
+    float primPillarBaseRatio_ = 0.12f;
+    float primPillarCapitalRatio_ = 0.12f;
+    float primPillarFlareRatio_ = 0.15f;
     int primSegments_ = 16;
     int primRings_ = 8;
     float primPlaneW_ = 256.0f;
@@ -309,6 +317,7 @@ private:
     int primSubdivX_ = 1;
     int primSubdivZ_ = 1;
     int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
+    std::string primHeightmapPath_;
     int primStairSteps_ = 8;
     float primInnerRadius_ = 32.0f;
     float primOuterRadius_ = 96.0f;
@@ -329,6 +338,7 @@ private:
     ImGuiFileDialog assetFolderDialog_;
     ImGuiFileDialog sceneDialog_;
     ImGuiFileDialog importMeshDialog_;
+    ImGuiFileDialog terrainHeightmapDialog_;
     ImGuiFileDialog refPlaneImageDialog_;
     ImGuiFileDialog exportDialog_;
     int refPlaneDialogTarget_ = -1;

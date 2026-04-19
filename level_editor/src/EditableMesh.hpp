@@ -40,7 +40,20 @@ public:
     static EditableMesh MakeSector(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness,
                                    bool left, bool right, bool top, bool bottom, bool front, bool back);
     static EditableMesh MakeCylinder(const glm::vec3& center, float radius, float height, int segments);
+    static EditableMesh MakeCone(const glm::vec3& center, float radius, float height, int segments);
     static EditableMesh MakeSphere(const glm::vec3& center, float radius, int rings, int segments);
+    static EditableMesh MakeTorus(const glm::vec3& center, float majorRadius, float minorRadius, int majorSegments, int minorSegments);
+    static EditableMesh MakeTube(const glm::vec3& center, float outerRadius, float innerRadius, float height, int segments);
+    static EditableMesh MakePyramid(const glm::vec3& center, float width, float depth, float height);
+    static EditableMesh MakeDoorFrame(const glm::vec3& minBounds, const glm::vec3& maxBounds,
+                                      float doorWidth, float doorHeight, float wallThickness);
+    static EditableMesh MakeTerrain(const glm::vec3& center,
+                                    float width, float depth,
+                                    int subdivX, int subdivZ,
+                                    const std::vector<float>& heights,
+                                    float heightScale);
+    static EditableMesh MakePillar(const glm::vec3& minBounds, const glm::vec3& maxBounds,
+                                   float baseRatio, float capitalRatio, float flareRatio);
     static EditableMesh MakePlane(const glm::vec3& center, float width, float depth, int subdivX, int subdivZ);
     static EditableMesh MakeWedge(const glm::vec3& minBounds, const glm::vec3& maxBounds);
     static EditableMesh MakeStairs(const glm::vec3& minBounds, const glm::vec3& maxBounds, int steps);

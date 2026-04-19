@@ -164,6 +164,16 @@ const char* meshPrimitiveName(LevelMeshPrimitive primitive)
     return "Unknown";
 }
 
+const char* meshBlendModeName(LevelMeshBlendMode mode)
+{
+    switch (mode)
+    {
+    case LevelMeshBlendMode::Alpha: return "Alpha";
+    case LevelMeshBlendMode::Additive: return "Additive";
+    }
+    return "Alpha";
+}
+
 std::string terrainLayerDisplayName(const LevelMeshObject::TerrainTextureLayer& layer, int index)
 {
     if (!layer.name.empty())
@@ -1440,12 +1450,15 @@ void LevelEditorApp::SaveEditorSettings()
     j["useTransparency"] = useTransparency_;
     j["transparency"] = transparency_;
     j["cullMode"] = static_cast<int>(cullMode_);
+    j["vertexFrontOnly"] = vertexFrontOnly_;
+    j["faceFrontOnly"] = faceFrontOnly_;
     j["perspectiveMinDistance"] = perspectiveMinDistance_;
     j["perspectiveNearPlane"] = perspectiveNearPlane_;
     j["perspectiveFarPlane"] = perspectiveFarPlane_;
     j["faceHighlightFillEnabled"] = faceHighlightFillEnabled_;
     j["faceHighlightFillAlpha"] = faceHighlightFillAlpha_;
     j["selectionMode"] = static_cast<int>(selectionMode_);
+    j["primPlaneDoubleSided"] = primPlaneDoubleSided_;
     // View types
     nlohmann::json viewsJson = nlohmann::json::array();
     for (int i = 0; i < 4; ++i)
@@ -1533,6 +1546,8 @@ void LevelEditorApp::LoadEditorSettings()
         // Backward compatibility with previous boolean setting.
         cullMode_ = j["disableBackfaceCulling"].get<bool>() ? CullMode::Off : CullMode::Back;
     }
+    if (j.contains("vertexFrontOnly")) vertexFrontOnly_ = j["vertexFrontOnly"].get<bool>();
+    if (j.contains("faceFrontOnly")) faceFrontOnly_ = j["faceFrontOnly"].get<bool>();
     if (j.contains("perspectiveMinDistance")) perspectiveMinDistance_ = j["perspectiveMinDistance"].get<float>();
     if (j.contains("perspectiveNearPlane")) perspectiveNearPlane_ = j["perspectiveNearPlane"].get<float>();
     if (j.contains("perspectiveFarPlane")) perspectiveFarPlane_ = j["perspectiveFarPlane"].get<float>();
@@ -1546,6 +1561,7 @@ void LevelEditorApp::LoadEditorSettings()
         const int sm = j["selectionMode"].get<int>();
         if (sm >= 0 && sm <= 3) selectionMode_ = static_cast<SelectionMode>(sm);
     }
+    if (j.contains("primPlaneDoubleSided")) primPlaneDoubleSided_ = j["primPlaneDoubleSided"].get<bool>();
     if (j.contains("views") && j["views"].is_array())
     {
         const auto& arr = j["views"];
@@ -4521,6 +4537,17 @@ int LevelEditorApp::PickFaceInPerspectiveView(const LevelEditorView& view, const
                 tri.v0 = baseVertex;
                 tri.v1 = glm::vec3(modelMatrix * glm::vec4(object.mesh.vertices()[(size_t)i1].position, 1.0f));
                 tri.v2 = glm::vec3(modelMatrix * glm::vec4(object.mesh.vertices()[(size_t)i2].position, 1.0f));
+
+                if (faceFrontOnly_)
+                {
+                    const glm::vec3 triNormal = glm::cross(tri.v1 - tri.v0, tri.v2 - tri.v0);
+                    if (glm::length2(triNormal) > 1e-8f &&
+                        glm::dot(glm::normalize(triNormal), ray.direction) >= 0.0f)
+                    {
+                        continue;
+                    }
+                }
+
                 const float triHit = tri.intersect_ray(ray.origin, ray.direction);
                 if (triHit >= 0.0f && triHit < faceBestHit)
                     faceBestHit = triHit;
@@ -6803,98 +6830,126 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
         if (wireMode && s_glPolygonMode)
             s_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
-        for (std::size_t objectIndex = 0; objectIndex < scene_.meshObjects().size(); ++objectIndex)
+        const float blendedAlpha = useTransparency_ ? glm::clamp(transparency_, 0.01f, 1.0f) : 1.0f;
+        const int passCount = wireMode ? 1 : 2;
+        for (int pass = 0; pass < passCount; ++pass)
         {
-            if (objectIndex >= meshGPUCacheCount_)
-                continue;
+            const bool drawBlendedPass = (!wireMode && pass == 1);
+            rs.setBlend(drawBlendedPass);
+            rs.setDepthWrite(!drawBlendedPass);
+            if (drawBlendedPass)
+                rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-            const LevelMeshObject& object = scene_.meshObjects()[objectIndex];
-            if (!object.visible) continue;
-            const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
-            solidShader_->setMat4("u_model", modelMatrix);
-
-            CachedMeshGPU& cached = meshGPUCache_[objectIndex];
-
-            if (!wireMode)
+            for (std::size_t objectIndex = 0; objectIndex < scene_.meshObjects().size(); ++objectIndex)
             {
-                if (texturedMode)
+                if (objectIndex >= meshGPUCacheCount_)
+                    continue;
+
+                const LevelMeshObject& object = scene_.meshObjects()[objectIndex];
+                if (!object.visible)
+                    continue;
+
+                const bool objectBlendEnabled = !wireMode && object.blendEnabled;
+                if (!wireMode && objectBlendEnabled != drawBlendedPass)
+                    continue;
+
+                if (drawBlendedPass)
                 {
-                    TextureManager& texMgr = TextureManager::instance();
-                    Texture* terrainCompositeTex = ResolveTerrainCompositeTexture(static_cast<int>(objectIndex), object);
+                    if (object.blendMode == LevelMeshBlendMode::Additive)
+                        rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    else
+                        rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                }
 
-                    for (const auto& range : cached.materialRanges)
+                const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
+                solidShader_->setMat4("u_model", modelMatrix);
+
+                CachedMeshGPU& cached = meshGPUCache_[objectIndex];
+
+                if (!wireMode)
+                {
+                    if (texturedMode)
                     {
-                        if (range.indexCount == 0) continue;
+                        TextureManager& texMgr = TextureManager::instance();
+                        Texture* terrainCompositeTex = ResolveTerrainCompositeTexture(static_cast<int>(objectIndex), object);
+                        solidShader_->setVec4("u_color", glm::vec4(1.0f, 1.0f, 1.0f, objectBlendEnabled ? blendedAlpha : 1.0f));
 
-                        Texture* faceTex = terrainCompositeTex;
-                        if (!faceTex && !range.materialName.empty() && range.materialName != "default")
+                        for (const auto& range : cached.materialRanges)
                         {
-                            faceTex = texMgr.get(range.materialName);
-                            if (!faceTex)
-                            {
-                                const std::string texName = "level_face_tex::" + range.materialName;
-                                faceTex = texMgr.get(texName);
-                                if (!faceTex && failedTextureLoads_.find(texName) == failedTextureLoads_.end())
-                                {
-                                    std::string resolvedPath = range.materialName;
-                                    const std::string baseDir = assetRoot_.empty() ? "assets" : assetRoot_;
-                                    std::string candidate = ResolveTexturePath(baseDir, range.materialName);
-                                    if (candidate.empty())
-                                        candidate = ResolveTexturePath(baseDir, PathFilename(range.materialName));
-                                    if (candidate.empty())
-                                    {
-                                        const std::string stem = PathStem(range.materialName);
-                                        if (!stem.empty() && stem != range.materialName)
-                                            candidate = ResolveTexturePath(baseDir, stem);
-                                    }
-                                    if (!candidate.empty())
-                                        resolvedPath = candidate;
+                            if (range.indexCount == 0) continue;
 
-                                    faceTex = texMgr.load(texName, resolvedPath);
-                                    if (!faceTex)
-                                        failedTextureLoads_.insert(texName);
+                            Texture* faceTex = terrainCompositeTex;
+                            if (!faceTex && !range.materialName.empty() && range.materialName != "default")
+                            {
+                                faceTex = texMgr.get(range.materialName);
+                                if (!faceTex)
+                                {
+                                    const std::string texName = "level_face_tex::" + range.materialName;
+                                    faceTex = texMgr.get(texName);
+                                    if (!faceTex && failedTextureLoads_.find(texName) == failedTextureLoads_.end())
+                                    {
+                                        std::string resolvedPath = range.materialName;
+                                        const std::string baseDir = assetRoot_.empty() ? "assets" : assetRoot_;
+                                        std::string candidate = ResolveTexturePath(baseDir, range.materialName);
+                                        if (candidate.empty())
+                                            candidate = ResolveTexturePath(baseDir, PathFilename(range.materialName));
+                                        if (candidate.empty())
+                                        {
+                                            const std::string stem = PathStem(range.materialName);
+                                            if (!stem.empty() && stem != range.materialName)
+                                                candidate = ResolveTexturePath(baseDir, stem);
+                                        }
+                                        if (!candidate.empty())
+                                            resolvedPath = candidate;
+
+                                        faceTex = texMgr.load(texName, resolvedPath);
+                                        if (!faceTex)
+                                            failedTextureLoads_.insert(texName);
+                                    }
                                 }
                             }
-                        }
 
-                        solidShader_->setInt("u_useTexture", 1);
-                        solidShader_->setInt("u_albedo", 0);
-                        rs.bindTexture(0, GL_TEXTURE_2D, (faceTex && faceTex->id != 0) ? faceTex->id : texMgr.getPattern()->id);
-                        cached.buffer.drawRange(range.indexStart, range.indexCount);
+                            solidShader_->setInt("u_useTexture", 1);
+                            solidShader_->setInt("u_albedo", 0);
+                            rs.bindTexture(0, GL_TEXTURE_2D, (faceTex && faceTex->id != 0) ? faceTex->id : texMgr.getPattern()->id);
+                            cached.buffer.drawRange(range.indexStart, range.indexCount);
+                        }
                     }
-                    solidShader_->setVec4("u_color", glm::vec4(1.0f));
+                    else
+                    {
+                        solidShader_->setInt("u_useTexture", 0);
+                        const std::size_t hv = std::hash<std::string>{}(object.name) ^ (objectIndex * 2654435761u);
+                        const float r = (80 + static_cast<int>((hv >> 0) & 0x7F)) / 255.0f;
+                        const float g = (90 + static_cast<int>((hv >> 8) & 0x7F)) / 255.0f;
+                        const float b = (100 + static_cast<int>((hv >> 16) & 0x7F)) / 255.0f;
+                        solidShader_->setVec4("u_color", glm::vec4(r, g, b, objectBlendEnabled ? blendedAlpha : 1.0f));
+
+                        for (const auto& range : cached.materialRanges)
+                        {
+                            if (range.indexCount == 0) continue;
+                            cached.buffer.drawRange(range.indexStart, range.indexCount);
+                        }
+                    }
                 }
                 else
                 {
+                    // Wireframe: 1 draw call per object
                     solidShader_->setInt("u_useTexture", 0);
                     const std::size_t hv = std::hash<std::string>{}(object.name) ^ (objectIndex * 2654435761u);
                     const float r = (80 + static_cast<int>((hv >> 0) & 0x7F)) / 255.0f;
                     const float g = (90 + static_cast<int>((hv >> 8) & 0x7F)) / 255.0f;
                     const float b = (100 + static_cast<int>((hv >> 16) & 0x7F)) / 255.0f;
                     solidShader_->setVec4("u_color", glm::vec4(r, g, b, 1.0f));
-
-                    for (const auto& range : cached.materialRanges)
-                    {
-                        if (range.indexCount == 0) continue;
-                        cached.buffer.drawRange(range.indexStart, range.indexCount);
-                    }
+                    cached.buffer.draw();
                 }
-            }
-            else
-            {
-                // Wireframe: 1 draw call per object
-                solidShader_->setInt("u_useTexture", 0);
-                const std::size_t hv = std::hash<std::string>{}(object.name) ^ (objectIndex * 2654435761u);
-                const float r = (80 + static_cast<int>((hv >> 0) & 0x7F)) / 255.0f;
-                const float g = (90 + static_cast<int>((hv >> 8) & 0x7F)) / 255.0f;
-                const float b = (100 + static_cast<int>((hv >> 16) & 0x7F)) / 255.0f;
-                solidShader_->setVec4("u_color", glm::vec4(r, g, b, 1.0f));
-                cached.buffer.draw();
             }
         }
 
         if (wireMode && s_glPolygonMode)
             s_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        rs.setBlend(false);
+        rs.setDepthWrite(true);
 
         rs.useProgram(0);
     }
@@ -8086,6 +8141,8 @@ void LevelEditorApp::ShowLeftPanel()
 
         if (selectionMode_ == SelectionMode::Vertex)
             ImGui::Checkbox("Front Vertices Only", &vertexFrontOnly_);
+        else if (selectionMode_ == SelectionMode::Face)
+            ImGui::Checkbox("Front Faces Only", &faceFrontOnly_);
     }
 
     if (Section("Mesh Objects"))
@@ -8347,6 +8404,7 @@ void LevelEditorApp::ShowLeftPanel()
                 const char* orientNames[] = {"Top", "Bottom", "Front", "Back", "Left", "Right"};
                 ImGui::SetNextItemWidth(100.0f);
                 ImGui::Combo("Orient##PrimPlane", &primPlaneOrient_, orientNames, 6);
+                ImGui::Checkbox("Double Face##PrimPlane", &primPlaneDoubleSided_);
                 ImGui::DragFloat("Width##PrimPlane", &primPlaneW_, 1.0f, 1.0f, 8192.0f);
                 ImGui::DragFloat("Depth##PrimPlane", &primPlaneD_, 1.0f, 1.0f, 8192.0f);
                 ImGui::DragInt("Subdiv X##PrimPlane", &primSubdivX_, 1, 1, 256);
@@ -8521,6 +8579,35 @@ void LevelEditorApp::ShowLeftPanel()
                     object.primitive = LevelMeshPrimitive::Plane;
                     object.name = "Plane " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakePlane(glm::vec3(0.0f), primPlaneW_, primPlaneD_, primSubdivX_, primSubdivZ_);
+
+                    if (primPlaneDoubleSided_)
+                    {
+                        std::vector<EditableVertex> vertices = object.mesh.vertices();
+                        std::vector<EditableFace> faces = object.mesh.faces();
+                        const std::size_t baseVertexCount = vertices.size();
+
+                        vertices.reserve(baseVertexCount * 2);
+                        for (std::size_t vertexIndex = 0; vertexIndex < baseVertexCount; ++vertexIndex)
+                        {
+                            EditableVertex backVertex = vertices[vertexIndex];
+                            backVertex.normal = -backVertex.normal;
+                            vertices.push_back(backVertex);
+                        }
+
+                        const std::size_t baseFaceCount = faces.size();
+                        faces.reserve(baseFaceCount * 2);
+                        for (std::size_t faceIndex = 0; faceIndex < baseFaceCount; ++faceIndex)
+                        {
+                            EditableFace backFace = faces[faceIndex];
+                            for (int& index : backFace.indices)
+                                index += static_cast<int>(baseVertexCount);
+                            std::reverse(backFace.indices.begin(), backFace.indices.end());
+                            faces.push_back(std::move(backFace));
+                        }
+
+                        object.mesh.setData(vertices, faces);
+                    }
+
                     // Rotate plane to match selected orientation
                     // MakePlane generates Y-up (Top). Rotate verts for other orientations.
                     if (primPlaneOrient_ != 0)
@@ -9871,6 +9958,28 @@ void LevelEditorApp::ShowRightPanel()
             PushUndoState();
             setMeshPivotPreserveWorld(meshObject, editedMeshPivot);
         }
+        bool blendEnabled = meshObject.blendEnabled;
+        if (ImGui::Checkbox("Blend Enabled##MeshBlend", &blendEnabled) && blendEnabled != meshObject.blendEnabled)
+        {
+            PushUndoState();
+            meshObject.blendEnabled = blendEnabled;
+            sceneDirty_ = true;
+        }
+        int blendModeIndex = static_cast<int>(meshObject.blendMode);
+        ImGui::BeginDisabled(!meshObject.blendEnabled);
+        ImGui::TextUnformatted("Blend Mode");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        const char* blendModeLabels[] = {"Alpha", "Additive"};
+        if (ImGui::Combo("##MeshBlendMode", &blendModeIndex, blendModeLabels, IM_ARRAYSIZE(blendModeLabels)) &&
+            blendModeIndex != static_cast<int>(meshObject.blendMode))
+        {
+            PushUndoState();
+            meshObject.blendMode = static_cast<LevelMeshBlendMode>(blendModeIndex);
+            sceneDirty_ = true;
+        }
+        ImGui::EndDisabled();
+        if (meshObject.blendEnabled)
+            ImGui::TextDisabled("Mode: %s", meshBlendModeName(meshObject.blendMode));
         if (ImGui::Button("Pivot To Bounds Center"))
         {
             const glm::vec3 pivotCenter = editableMeshBoundsCenter(meshObject.mesh);

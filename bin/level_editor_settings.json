@@ -2,10 +2,11 @@
     "assetRoot": "/media/projectos/projects/cpp/minirender/assets/h3d/textures",
     "assetViewMode": 2,
     "cullMode": 2,
-    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/terrain/Texture.jpg",
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/h3d/textures/ChainLink.tga",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
+    "faceFrontOnly": true,
     "faceHighlightFillAlpha": 0.8299999833106995,
     "faceHighlightFillEnabled": true,
     "gridSize": 16.0,
@@ -19,6 +20,7 @@
     "perspectiveFarPlane": 8242.0,
     "perspectiveMinDistance": 0.009999999776482582,
     "perspectiveNearPlane": 0.0010000000474974513,
+    "primPlaneDoubleSided": false,
     "scenePath": "/media/projectos/projects/cpp/minirender/bin/scenes/war.mredb",
     "sections": {
         "CSG": true,
@@ -40,16 +42,17 @@
         "Terrain Layers": false,
         "Texture": true,
         "Tools": true,
-        "View Settings": true
+        "View Settings": false
     },
     "selectionMode": 0,
     "showGrid": false,
     "snapEnabled": true,
     "snapToGeometry": false,
     "theme": 3,
-    "transparency": 0.3199999928474426,
+    "transparency": 0.2199999988079071,
     "useLightmap": false,
     "useTransparency": true,
+    "vertexFrontOnly": true,
     "viewLayout": 2,
     "views": [
         {
@@ -59,11 +62,11 @@
                 0.14000000059604645
             ],
             "focus": [
-                93.76641845703125,
-                35.0,
-                145.2591094970703
+                0.0,
+                48.0,
+                128.0
             ],
-            "orthoSize": 244.85267639160156,
+            "orthoSize": 210.0236053466797,
             "perspectiveDistance": 288.010009765625,
             "perspectivePitch": 37.75,
             "perspectiveYaw": -909.8002319335938,
@@ -77,14 +80,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                69.19905090332031,
-                19.621383666992188,
-                103.07980346679688
+                -2.9081060886383057,
+                142.38253784179688,
+                78.45841979980469
             ],
             "orthoSize": 203.4275360107422,
-            "perspectiveDistance": 64.00999450683594,
-            "perspectivePitch": 18.0,
-            "perspectiveYaw": -2034.69970703125,
+            "perspectiveDistance": 96.010009765625,
+            "perspectivePitch": 4.25,
+            "perspectiveYaw": -1859.3499755859375,
             "renderMode": 2,
             "type": 6
         },

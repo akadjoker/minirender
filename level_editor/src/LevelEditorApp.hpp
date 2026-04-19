@@ -293,6 +293,7 @@ private:
     bool useTransparency_ = true;
     CullMode cullMode_ = CullMode::Back;
     bool vertexFrontOnly_ = true;
+    bool faceFrontOnly_ = true;
     bool placeVertexMode_ = false;
     float transparency_ = 0.45f;
     float gridSize_ = 16.0f;
@@ -370,6 +371,7 @@ private:
     int primSubdivX_ = 1;
     int primSubdivZ_ = 1;
     int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
+    bool primPlaneDoubleSided_ = false;
     std::string primHeightmapPath_;
     std::string lastTerrainHeightmapDir_;
     std::string pendingTerrainRawHeightmapPath_;

@@ -30,7 +30,7 @@ struct adl_serializer<glm::vec3>
 namespace
 {
 constexpr std::uint32_t kBinarySceneMagic = 0x4D524C45u; // "ELRM"
-constexpr std::uint32_t kBinarySceneVersion = 2;
+constexpr std::uint32_t kBinarySceneVersion = 3;
  
 void writeVec2(BinaryStream& stream, const glm::vec2& value)
 {
@@ -168,6 +168,22 @@ LevelMeshPrimitive primitiveTypeFromString(const std::string& value)
     return LevelMeshPrimitive::Unknown;
 }
 
+std::string blendModeToString(LevelMeshBlendMode mode)
+{
+    switch (mode)
+    {
+    case LevelMeshBlendMode::Alpha: return "alpha";
+    case LevelMeshBlendMode::Additive: return "additive";
+    }
+    return "alpha";
+}
+
+LevelMeshBlendMode blendModeFromString(const std::string& value)
+{
+    if (value == "additive") return LevelMeshBlendMode::Additive;
+    return LevelMeshBlendMode::Alpha;
+}
+
 std::string entityTypeToString(LevelEntityType type)
 {
     switch (type)
@@ -220,6 +236,8 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
         writeVec3(stream, object.pivot);
         stream.writeU8(object.visible ? 1u : 0u);
         stream.writeU8(object.locked ? 1u : 0u);
+        stream.writeU8(object.blendEnabled ? 1u : 0u);
+        stream.writeU32(static_cast<std::uint32_t>(object.blendMode));
 
         const auto& vertices = object.mesh.vertices();
         stream.writeU32(static_cast<std::uint32_t>(vertices.size()));
@@ -329,6 +347,14 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
         object.pivot = readVec3(stream);
         object.visible = stream.readU8() != 0;
         object.locked = stream.readU8() != 0;
+        if (version >= 3)
+        {
+            object.blendEnabled = stream.readU8() != 0;
+            const std::uint32_t blendMode = stream.readU32();
+            object.blendMode = (blendMode <= static_cast<std::uint32_t>(LevelMeshBlendMode::Additive))
+                ? static_cast<LevelMeshBlendMode>(blendMode)
+                : LevelMeshBlendMode::Alpha;
+        }
 
         std::vector<EditableVertex> vertices;
         const std::uint32_t vertexCount = stream.readU32();
@@ -445,6 +471,8 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
         meshJson["pivot"] = object.pivot;
         meshJson["visible"] = object.visible;
         meshJson["locked"] = object.locked;
+        meshJson["blend_enabled"] = object.blendEnabled;
+        meshJson["blend_mode"] = blendModeToString(object.blendMode);
         meshJson["vertices"] = nlohmann::json::array();
         meshJson["faces"] = nlohmann::json::array();
         meshJson["terrain_layers"] = nlohmann::json::array();
@@ -593,6 +621,8 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
             object.pivot = meshJson.value("pivot", glm::vec3(0.0f));
             object.visible = meshJson.value("visible", true);
             object.locked = meshJson.value("locked", false);
+            object.blendEnabled = meshJson.value("blend_enabled", false);
+            object.blendMode = blendModeFromString(meshJson.value("blend_mode", std::string("alpha")));
 
             std::vector<EditableVertex> vertices;
             for (const auto& vertexJson : meshJson.value("vertices", nlohmann::json::array()))

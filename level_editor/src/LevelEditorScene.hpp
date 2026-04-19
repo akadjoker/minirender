@@ -48,6 +48,12 @@ enum class LevelMeshPrimitive
     Empty
 };
 
+enum class LevelMeshBlendMode
+{
+    Alpha = 0,
+    Additive
+};
+
 struct LevelMeshObject
 {
     std::string name = "Brush 01";
@@ -58,6 +64,8 @@ struct LevelMeshObject
     glm::vec3 pivot {0.0f, 0.0f, 0.0f};
     bool visible = true;
     bool locked = false;
+    bool blendEnabled = false;
+    LevelMeshBlendMode blendMode = LevelMeshBlendMode::Alpha;
     EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-64.0f, 0.0f, -64.0f), glm::vec3(64.0f, 128.0f, 64.0f));
     struct TerrainTextureLayer
     {

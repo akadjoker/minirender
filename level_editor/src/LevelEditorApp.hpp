@@ -89,6 +89,14 @@ public:
         Rotate
     };
 
+    enum class TerrainSculptMode
+    {
+        Raise = 0,
+        Lower,
+        Smooth,
+        Flatten
+    };
+
     struct MeshTransformState
     {
         int index = -1;
@@ -205,6 +213,10 @@ private:
     void LoadEditorSettings();
     bool ExportSceneOBJ(const std::string& path);
     bool ExportSceneH3D(const std::string& path);
+    bool PickTerrainLocalPointPerspective(const LevelEditorView& view,
+                                          const glm::vec2& mouseScreen,
+                                          const LevelMeshObject& object,
+                                          glm::vec3& outLocalPoint) const;
 
     enum class RefPlaneAxis { Front, Back, Left, Right, Top, Bottom };
     struct ReferencePlane
@@ -283,6 +295,11 @@ private:
     std::string currentTexturePath_;
     FaceUvClipboard faceUvClipboard_;
     bool showUvMappingWindow_ = false;
+    bool terrainSculptEnabled_ = false;
+    TerrainSculptMode terrainSculptMode_ = TerrainSculptMode::Raise;
+    float terrainBrushRadius_ = 48.0f;
+    float terrainBrushStrength_ = 8.0f;
+    float terrainFlattenHeight_ = 0.0f;
     float faceExtrudeDistance_ = 16.0f;
     float faceInsetAmount_ = 8.0f;
     float hollowWallThickness_ = 16.0f;
@@ -318,6 +335,7 @@ private:
     int primSubdivZ_ = 1;
     int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
     std::string primHeightmapPath_;
+    std::string lastTerrainHeightmapDir_;
     int primStairSteps_ = 8;
     float primInnerRadius_ = 32.0f;
     float primOuterRadius_ = 96.0f;
@@ -357,6 +375,11 @@ private:
     glm::vec2 boxSelectStart_ = glm::vec2(0.0f);
     glm::vec2 boxSelectCurrent_ = glm::vec2(0.0f);
     bool draggingVerticesInView_ = false;
+    bool terrainSculpting_ = false;
+    bool terrainSculptHasLastSample_ = false;
+    glm::vec3 terrainSculptLastLocalCenter_ = glm::vec3(0.0f);
+    bool terrainBrushPreviewValid_ = false;
+    glm::vec3 terrainBrushPreviewLocalCenter_ = glm::vec3(0.0f);
     bool draggingFaceInView_ = false;
     bool draggingFaceExtrudeInView_ = false;
     glm::vec2 dragStartMouse_ = glm::vec2(0.0f);
@@ -419,4 +442,6 @@ private:
     LevelEditorScene bakeSceneCopy_;
     void StartBakeAsync();
     void FinishBakeAsync();
+
+    bool SelectedMeshIsTerrain(int* outCols = nullptr, int* outRows = nullptr) const;
 };

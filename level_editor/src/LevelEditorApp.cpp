@@ -52,6 +52,17 @@ namespace
 glm::mat4 meshLocalPivotTransform(const LevelMeshObject& object,
                                   const glm::vec3& rotationEuler,
                                   const glm::vec3& scale);
+bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows);
+void recomputeEditableMeshNormals(EditableMesh& mesh);
+void applyTerrainBrushStroke(EditableMesh& mesh,
+                             int cols,
+                             int rows,
+                             const glm::vec3& centerLocal,
+                             float radius,
+                             float strength,
+                             float flattenHeight,
+                             LevelEditorApp::TerrainSculptMode mode);
+float sampleTerrainHeightLocal(const EditableMesh& mesh, int cols, int rows, float x, float z);
 
 const char* selectionModeName(LevelEditorApp::SelectionMode mode)
 {
@@ -1312,6 +1323,23 @@ bool LevelEditorApp::Section(const char* label, bool defaultOpen)
     return open;
 }
 
+bool LevelEditorApp::SelectedMeshIsTerrain(int* outCols, int* outRows) const
+{
+    if (selectedMeshIndex_ < 0 || selectedMeshIndex_ >= static_cast<int>(scene_.meshObjects().size()))
+        return false;
+
+    int cols = 0;
+    int rows = 0;
+    if (!detectTerrainGridDimensions(scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)].mesh, cols, rows))
+        return false;
+
+    if (outCols)
+        *outCols = cols;
+    if (outRows)
+        *outRows = rows;
+    return true;
+}
+
 static const char* kSettingsPath = "level_editor_settings.json";
 
 void LevelEditorApp::SaveEditorSettings()
@@ -1322,6 +1350,7 @@ void LevelEditorApp::SaveEditorSettings()
     j["viewLayout"] = static_cast<int>(viewLayout_);
     j["currentTexturePath"] = currentTexturePath_;
     j["lastImportDir"] = lastImportDir_;
+    j["lastTerrainHeightmapDir"] = lastTerrainHeightmapDir_;
     j["assetViewMode"] = static_cast<int>(assetViewMode_);
     j["theme"] = static_cast<int>(theme_);
     j["showGrid"] = showGrid_;
@@ -1396,6 +1425,7 @@ void LevelEditorApp::LoadEditorSettings()
     }
     if (j.contains("currentTexturePath")) currentTexturePath_ = j["currentTexturePath"].get<std::string>();
     if (j.contains("lastImportDir")) lastImportDir_ = j["lastImportDir"].get<std::string>();
+    if (j.contains("lastTerrainHeightmapDir")) lastTerrainHeightmapDir_ = j["lastTerrainHeightmapDir"].get<std::string>();
     if (j.contains("assetViewMode"))
     {
         const int av = j["assetViewMode"].get<int>();
@@ -2450,6 +2480,182 @@ bool LoadHeightmapImage(const std::string& path,
     outHeight = height;
     return true;
 }
+
+bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows)
+{
+    outCols = 0;
+    outRows = 0;
+    const auto& vertices = mesh.vertices();
+    const auto& faces = mesh.faces();
+    if (vertices.size() < 4 || faces.empty())
+        return false;
+
+    for (const EditableFace& face : faces)
+    {
+        if (face.indices.size() != 4 || face.materialName != "terrain")
+            return false;
+    }
+
+    const float firstZ = vertices.front().position.z;
+    constexpr float eps = 1e-3f;
+    int cols = 0;
+    while (cols < static_cast<int>(vertices.size()) &&
+           std::fabs(vertices[static_cast<std::size_t>(cols)].position.z - firstZ) <= eps)
+    {
+        ++cols;
+    }
+    if (cols < 2)
+        return false;
+    if (vertices.size() % static_cast<std::size_t>(cols) != 0)
+        return false;
+
+    const int rows = static_cast<int>(vertices.size() / static_cast<std::size_t>(cols));
+    if (rows < 2)
+        return false;
+    if (static_cast<int>(faces.size()) != (cols - 1) * (rows - 1))
+        return false;
+
+    outCols = cols;
+    outRows = rows;
+    return true;
+}
+
+float sampleTerrainHeightLocal(const EditableMesh& mesh, int cols, int rows, float x, float z)
+{
+    const auto& vertices = mesh.vertices();
+    if (vertices.empty() || cols < 2 || rows < 2)
+        return 0.0f;
+
+    const float minX = vertices.front().position.x;
+    const float minZ = vertices.front().position.z;
+    const float maxX = vertices[static_cast<std::size_t>(cols - 1)].position.x;
+    const float maxZ = vertices[static_cast<std::size_t>((rows - 1) * cols)].position.z;
+    const float cellX = (maxX - minX) / static_cast<float>(cols - 1);
+    const float cellZ = (maxZ - minZ) / static_cast<float>(rows - 1);
+    if (std::fabs(cellX) <= 1e-6f || std::fabs(cellZ) <= 1e-6f)
+        return vertices.front().position.y;
+
+    const float fx = glm::clamp((x - minX) / cellX, 0.0f, static_cast<float>(cols - 1));
+    const float fz = glm::clamp((z - minZ) / cellZ, 0.0f, static_cast<float>(rows - 1));
+    const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, cols - 1);
+    const int z0 = std::clamp(static_cast<int>(std::floor(fz)), 0, rows - 1);
+    const int x1 = std::min(x0 + 1, cols - 1);
+    const int z1 = std::min(z0 + 1, rows - 1);
+    const float tx = fx - static_cast<float>(x0);
+    const float tz = fz - static_cast<float>(z0);
+
+    const float h00 = vertices[static_cast<std::size_t>(z0 * cols + x0)].position.y;
+    const float h10 = vertices[static_cast<std::size_t>(z0 * cols + x1)].position.y;
+    const float h01 = vertices[static_cast<std::size_t>(z1 * cols + x0)].position.y;
+    const float h11 = vertices[static_cast<std::size_t>(z1 * cols + x1)].position.y;
+    const float hx0 = glm::mix(h00, h10, tx);
+    const float hx1 = glm::mix(h01, h11, tx);
+    return glm::mix(hx0, hx1, tz);
+}
+
+void recomputeEditableMeshNormals(EditableMesh& mesh)
+{
+    auto& vertices = mesh.verticesMutable();
+    for (EditableVertex& vertex : vertices)
+        vertex.normal = glm::vec3(0.0f);
+
+    for (const EditableFace& face : mesh.faces())
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const glm::vec3& origin = vertices[static_cast<std::size_t>(face.indices[0])].position;
+        glm::vec3 faceNormal(0.0f);
+        for (std::size_t i = 1; i + 1 < face.indices.size(); ++i)
+        {
+            const glm::vec3& b = vertices[static_cast<std::size_t>(face.indices[i])].position;
+            const glm::vec3& c = vertices[static_cast<std::size_t>(face.indices[i + 1])].position;
+            faceNormal += glm::cross(b - origin, c - origin);
+        }
+
+        if (glm::length2(faceNormal) <= 1e-10f)
+            continue;
+
+        for (int index : face.indices)
+            vertices[static_cast<std::size_t>(index)].normal += faceNormal;
+    }
+
+    for (EditableVertex& vertex : vertices)
+    {
+        if (glm::length2(vertex.normal) > 1e-10f)
+            vertex.normal = glm::normalize(vertex.normal);
+        else
+            vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+    }
+}
+
+void applyTerrainBrushStroke(EditableMesh& mesh,
+                             int cols,
+                             int rows,
+                             const glm::vec3& centerLocal,
+                             float radius,
+                             float strength,
+                             float flattenHeight,
+                             LevelEditorApp::TerrainSculptMode mode)
+{
+    auto& vertices = mesh.verticesMutable();
+    if (vertices.empty() || radius <= 0.0f)
+        return;
+
+    std::vector<float> sourceHeights(vertices.size(), 0.0f);
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+        sourceHeights[i] = vertices[i].position.y;
+
+    const float radiusSq = radius * radius;
+    for (int row = 0; row < rows; ++row)
+    {
+        for (int col = 0; col < cols; ++col)
+        {
+            const int index = row * cols + col;
+            EditableVertex& vertex = vertices[static_cast<std::size_t>(index)];
+            const float dx = vertex.position.x - centerLocal.x;
+            const float dz = vertex.position.z - centerLocal.z;
+            const float distSq = dx * dx + dz * dz;
+            if (distSq > radiusSq)
+                continue;
+
+            const float dist = std::sqrt(distSq);
+            const float falloff = 1.0f - (dist / radius);
+            const float weight = falloff * falloff * (3.0f - 2.0f * falloff);
+
+            switch (mode)
+            {
+            case LevelEditorApp::TerrainSculptMode::Raise:
+                vertex.position.y += strength * weight;
+                break;
+            case LevelEditorApp::TerrainSculptMode::Lower:
+                vertex.position.y -= strength * weight;
+                break;
+            case LevelEditorApp::TerrainSculptMode::Smooth:
+            {
+                float sum = sourceHeights[static_cast<std::size_t>(index)];
+                float count = 1.0f;
+                if (col > 0) { sum += sourceHeights[static_cast<std::size_t>(index - 1)]; count += 1.0f; }
+                if (col + 1 < cols) { sum += sourceHeights[static_cast<std::size_t>(index + 1)]; count += 1.0f; }
+                if (row > 0) { sum += sourceHeights[static_cast<std::size_t>(index - cols)]; count += 1.0f; }
+                if (row + 1 < rows) { sum += sourceHeights[static_cast<std::size_t>(index + cols)]; count += 1.0f; }
+                const float average = sum / count;
+                const float blend = glm::clamp(strength * 0.1f * weight, 0.0f, 1.0f);
+                vertex.position.y = glm::mix(sourceHeights[static_cast<std::size_t>(index)], average, blend);
+                break;
+            }
+            case LevelEditorApp::TerrainSculptMode::Flatten:
+            {
+                const float blend = glm::clamp(strength * 0.1f * weight, 0.0f, 1.0f);
+                vertex.position.y = glm::mix(sourceHeights[static_cast<std::size_t>(index)], flattenHeight, blend);
+                break;
+            }
+            }
+        }
+    }
+
+    recomputeEditableMeshNormals(mesh);
+}
 }
 
 bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
@@ -2573,6 +2779,7 @@ void LevelEditorApp::HandleFileDialogs()
             if (LoadHeightmapImage(imagePath, heights, width, height, error))
             {
                 primHeightmapPath_ = imagePath;
+                lastTerrainHeightmapDir_ = result.path.parent_path().generic_string();
                 primSubdivX_ = std::max(1, width - 1);
                 primSubdivZ_ = std::max(1, height - 1);
                 sceneStatusMessage_ = "Heightmap selected: " + result.path.filename().generic_string() +
@@ -3338,6 +3545,58 @@ int LevelEditorApp::PickFaceInPerspectiveView(const LevelEditorView& view, const
     return bestFaceIndex;
 }
 
+bool LevelEditorApp::PickTerrainLocalPointPerspective(const LevelEditorView& view,
+                                                      const glm::vec2& mouseScreen,
+                                                      const LevelMeshObject& object,
+                                                      glm::vec3& outLocalPoint) const
+{
+    const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
+    const glm::mat4 inverseModel = glm::inverse(modelMatrix);
+
+    const glm::vec2 localMouse(
+        mouseScreen.x - static_cast<float>(view.rect.x),
+        mouseScreen.y - static_cast<float>(view.rect.y));
+    const Ray ray = view.camera.getRay(localMouse.x, localMouse.y);
+    float bestHit = std::numeric_limits<float>::max();
+    bool found = false;
+
+    for (const EditableFace& face : object.mesh.faces())
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const int baseIndex = face.indices[0];
+        if (baseIndex < 0 || baseIndex >= static_cast<int>(object.mesh.vertices().size()))
+            continue;
+
+        const glm::vec3 baseVertex = glm::vec3(modelMatrix * glm::vec4(object.mesh.vertices()[static_cast<std::size_t>(baseIndex)].position, 1.0f));
+        for (std::size_t triIndex = 1; triIndex + 1 < face.indices.size(); ++triIndex)
+        {
+            const int i1 = face.indices[triIndex];
+            const int i2 = face.indices[triIndex + 1];
+            if (i1 < 0 || i1 >= static_cast<int>(object.mesh.vertices().size()) ||
+                i2 < 0 || i2 >= static_cast<int>(object.mesh.vertices().size()))
+            {
+                continue;
+            }
+
+            Triangle tri;
+            tri.v0 = baseVertex;
+            tri.v1 = glm::vec3(modelMatrix * glm::vec4(object.mesh.vertices()[static_cast<std::size_t>(i1)].position, 1.0f));
+            tri.v2 = glm::vec3(modelMatrix * glm::vec4(object.mesh.vertices()[static_cast<std::size_t>(i2)].position, 1.0f));
+            const float triHit = tri.intersect_ray(ray.origin, ray.direction);
+            if (triHit >= 0.0f && triHit < bestHit)
+            {
+                bestHit = triHit;
+                outLocalPoint = glm::vec3(inverseModel * glm::vec4(ray.at(triHit), 1.0f));
+                found = true;
+            }
+        }
+    }
+
+    return found;
+}
+
 int LevelEditorApp::PickVertexInOrthoView(const LevelEditorView& view, const glm::vec2& mouseScreen) const
 {
     if (view.type == ViewType::Perspective ||
@@ -3924,6 +4183,99 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         hoveredFaceIndex_ = -1;
         hoveredVertexMeshIndex_ = -1;
         hoveredVertexIndex_ = -1;
+    }
+
+    const bool canSculptTerrain =
+        terrainSculptEnabled_ &&
+        currentTool_ == Tool::Select &&
+        !ctrlDown &&
+        !ImGuizmo::IsOver() &&
+        !ImGuizmo::IsUsing() &&
+        selectedMeshIndex_ >= 0 &&
+        selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size());
+
+    int terrainCols = 0;
+    int terrainRows = 0;
+    const bool selectedMeshIsTerrain = canSculptTerrain && SelectedMeshIsTerrain(&terrainCols, &terrainRows);
+    if (selectedMeshIsTerrain)
+    {
+        LevelMeshObject& terrainObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
+        glm::vec3 sculptCenterLocal(0.0f);
+        bool hasSculptCenter = false;
+        if (hovered->type == ViewType::Perspective)
+        {
+            hasSculptCenter = PickTerrainLocalPointPerspective(*hovered, mouseScreen, terrainObject, sculptCenterLocal);
+        }
+        else if (hovered->type == ViewType::Top)
+        {
+            const glm::mat4 inverseModel = glm::inverse(meshObjectModelMatrix(terrainObject));
+            const glm::vec3 worldPoint = OrthoPointFromScreen(*hovered, hovered->focus, mouseScreen);
+            sculptCenterLocal = glm::vec3(inverseModel * glm::vec4(worldPoint, 1.0f));
+            sculptCenterLocal.y = sampleTerrainHeightLocal(terrainObject.mesh, terrainCols, terrainRows, sculptCenterLocal.x, sculptCenterLocal.z);
+            hasSculptCenter = true;
+        }
+
+        if (hasSculptCenter)
+        {
+            terrainBrushPreviewLocalCenter_ = sculptCenterLocal;
+            terrainBrushPreviewValid_ = true;
+        }
+        else if (!terrainSculpting_)
+        {
+            terrainBrushPreviewValid_ = false;
+        }
+
+        if (terrainSculpting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            terrainSculpting_ = false;
+            terrainSculptHasLastSample_ = false;
+            dragUndoPushed_ = false;
+        }
+
+        if (hasSculptCenter && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            if (!terrainSculpting_)
+            {
+                PushUndoState();
+                dragUndoPushed_ = true;
+                terrainSculpting_ = true;
+                terrainSculptHasLastSample_ = false;
+            }
+
+            const float spacing = std::max(1.0f, terrainBrushRadius_ * 0.2f);
+            const bool shouldApplySample =
+                !terrainSculptHasLastSample_ ||
+                glm::distance(glm::vec2(sculptCenterLocal.x, sculptCenterLocal.z),
+                              glm::vec2(terrainSculptLastLocalCenter_.x, terrainSculptLastLocalCenter_.z)) >= spacing;
+            if (shouldApplySample)
+            {
+                applyTerrainBrushStroke(
+                    terrainObject.mesh,
+                    terrainCols,
+                    terrainRows,
+                    sculptCenterLocal,
+                    terrainBrushRadius_,
+                    terrainBrushStrength_,
+                    terrainFlattenHeight_,
+                    terrainSculptMode_);
+                terrainSculptLastLocalCenter_ = sculptCenterLocal;
+                terrainSculptHasLastSample_ = true;
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
+            }
+
+            return;
+        }
+    }
+    else if (terrainSculpting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+        terrainSculpting_ = false;
+        terrainSculptHasLastSample_ = false;
+        dragUndoPushed_ = false;
+    }
+    else if (!selectedMeshIsTerrain)
+    {
+        terrainBrushPreviewValid_ = false;
     }
 
     if (boxSelecting_)
@@ -6187,6 +6539,79 @@ void LevelEditorApp::DrawViewTile(const LevelEditorView& view, ImDrawList* drawL
         return ProjectWorldToView(view, world, outPoint, outDepth);
     };
 
+    int terrainCols = 0;
+    int terrainRows = 0;
+    if (terrainSculptEnabled_ &&
+        SelectedMeshIsTerrain(&terrainCols, &terrainRows) &&
+        selectedMeshIndex_ >= 0 &&
+        selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
+    {
+        const LevelMeshObject& terrainObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
+        glm::vec3 brushCenterLocal(0.0f);
+        bool hasBrushCenter = false;
+        if (terrainBrushPreviewValid_)
+        {
+            brushCenterLocal = terrainBrushPreviewLocalCenter_;
+            hasBrushCenter = true;
+        }
+        else if (terrainSculpting_ && terrainSculptHasLastSample_)
+        {
+            brushCenterLocal = terrainSculptLastLocalCenter_;
+            hasBrushCenter = true;
+        }
+
+        if (hasBrushCenter)
+        {
+            const glm::mat4 modelMatrix = meshObjectModelMatrix(terrainObject);
+            constexpr int kBrushSegments = 48;
+            std::array<ImVec2, kBrushSegments> brushPoints {};
+            int projectedCount = 0;
+            for (int i = 0; i < kBrushSegments; ++i)
+            {
+                const float angle = (static_cast<float>(i) / static_cast<float>(kBrushSegments)) * glm::two_pi<float>();
+                const glm::vec3 localPoint(
+                    brushCenterLocal.x + std::cos(angle) * terrainBrushRadius_,
+                    sampleTerrainHeightLocal(
+                        terrainObject.mesh,
+                        terrainCols,
+                        terrainRows,
+                        brushCenterLocal.x + std::cos(angle) * terrainBrushRadius_,
+                        brushCenterLocal.z + std::sin(angle) * terrainBrushRadius_) + 0.25f,
+                    brushCenterLocal.z + std::sin(angle) * terrainBrushRadius_);
+                ImVec2 screenPoint;
+                float depth = 0.0f;
+                if (!projectWorld(glm::vec3(modelMatrix * glm::vec4(localPoint, 1.0f)), screenPoint, depth))
+                    continue;
+                brushPoints[projectedCount++] = screenPoint;
+            }
+
+            ImVec2 centerPoint;
+            float centerDepth = 0.0f;
+            const glm::vec3 centerLocalPoint(
+                brushCenterLocal.x,
+                sampleTerrainHeightLocal(terrainObject.mesh, terrainCols, terrainRows, brushCenterLocal.x, brushCenterLocal.z) + 0.25f,
+                brushCenterLocal.z);
+            const bool hasCenterPoint = projectWorld(
+                glm::vec3(modelMatrix * glm::vec4(centerLocalPoint, 1.0f)),
+                centerPoint,
+                centerDepth);
+
+            if (projectedCount >= 3)
+            {
+                const ImU32 fillColor = IM_COL32(255, 196, 96, 30);
+                const ImU32 strokeColor = IM_COL32(255, 220, 140, 240);
+                drawList->AddConvexPolyFilled(brushPoints.data(), projectedCount, fillColor);
+                drawList->AddPolyline(brushPoints.data(), projectedCount, strokeColor, ImDrawFlags_Closed, 2.0f);
+            }
+
+            if (hasCenterPoint)
+            {
+                drawList->AddCircleFilled(centerPoint, 4.0f, IM_COL32(255, 214, 122, 255), 12);
+                drawList->AddCircle(centerPoint, 7.0f, IM_COL32(255, 245, 210, 255), 12, 1.4f);
+            }
+        }
+    }
+
     for (std::size_t objectIndex = 0; objectIndex < scene_.meshObjects().size(); ++objectIndex)
     {
         if (!IsMeshSelected(static_cast<int>(objectIndex)))
@@ -6801,9 +7226,15 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::InputText("##PrimTerrainHeightmapPath", &primHeightmapPath_, ImGuiInputTextFlags_ReadOnly);
                 if (ImGui::Button("Choose Heightmap##PrimTerrain"))
                 {
-                    const std::filesystem::path startDir = primHeightmapPath_.empty()
-                        ? (assetRoot_.empty() ? std::filesystem::current_path() : std::filesystem::path(assetRoot_))
-                        : std::filesystem::path(primHeightmapPath_).parent_path();
+                    std::filesystem::path startDir;
+                    if (!lastTerrainHeightmapDir_.empty())
+                        startDir = std::filesystem::path(lastTerrainHeightmapDir_);
+                    else if (!primHeightmapPath_.empty())
+                        startDir = std::filesystem::path(primHeightmapPath_).parent_path();
+                    else if (!assetRoot_.empty())
+                        startDir = std::filesystem::path(assetRoot_);
+                    else
+                        startDir = std::filesystem::current_path();
                     terrainHeightmapDialog_.Open(ImGuiFileDialog::Mode::OpenFile, startDir, "image");
                 }
                 ImGui::SameLine();
@@ -7031,19 +7462,18 @@ void LevelEditorApp::ShowLeftPanel()
             }
         }
     }
-    
-    ImGui::SameLine();
+ 
     if (ImGui::Button("Create Empty"))
-        {
-            PushUndoState();
-            LevelMeshObject object;
-            object.name = "Empty " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
-            object.mesh = EditableMesh::FromData({}, {});
-            scene_.meshObjects().push_back(object);
-            SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
-            meshCacheValid_ = false;
-            sceneDirty_ = true;
-        }
+    {
+        PushUndoState();
+        LevelMeshObject object;
+        object.name = "Empty " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+        object.mesh = EditableMesh::FromData({}, {});
+        scene_.meshObjects().push_back(object);
+        SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+        meshCacheValid_ = false;
+        sceneDirty_ = true;
+    }
     if (Section("Entities"))
     {
         const auto& entities = scene_.entities();
@@ -8399,6 +8829,37 @@ void LevelEditorApp::ShowRightPanel()
             vertexBakeScale_ = glm::vec3(1.0f);
         }
         ImGui::TextDisabled("Pivot agora desloca sem mexer no visual. Este painel transforma a mesh local nos vertices.");
+
+        int terrainCols = 0;
+        int terrainRows = 0;
+        const bool isTerrainMesh = SelectedMeshIsTerrain(&terrainCols, &terrainRows);
+        if (isTerrainMesh)
+        {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Terrain Sculpt");
+            ImGui::Checkbox("Enable Sculpt##Terrain", &terrainSculptEnabled_);
+            static const char* sculptModeLabels[] = {"Raise", "Lower", "Smooth", "Flatten"};
+            int sculptModeIndex = static_cast<int>(terrainSculptMode_);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            if (ImGui::Combo("##TerrainSculptMode", &sculptModeIndex, sculptModeLabels, IM_ARRAYSIZE(sculptModeLabels)))
+                terrainSculptMode_ = static_cast<TerrainSculptMode>(sculptModeIndex);
+            ImGui::TextUnformatted("Brush Radius");
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::DragFloat("##TerrainBrushRadius", &terrainBrushRadius_, 1.0f, 1.0f, 1024.0f, "%.1f");
+            terrainBrushRadius_ = std::max(1.0f, terrainBrushRadius_);
+            ImGui::TextUnformatted("Brush Strength");
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::DragFloat("##TerrainBrushStrength", &terrainBrushStrength_, 0.25f, 0.1f, 128.0f, "%.2f");
+            terrainBrushStrength_ = std::max(0.1f, terrainBrushStrength_);
+            if (terrainSculptMode_ == TerrainSculptMode::Flatten)
+            {
+                ImGui::TextUnformatted("Target Height");
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                ImGui::DragFloat("##TerrainFlattenHeight", &terrainFlattenHeight_, 0.5f, -4096.0f, 4096.0f, "%.2f");
+            }
+            ImGui::TextDisabled("Use in Perspective or Top view.");
+            ImGui::TextDisabled("Grid: %d x %d", terrainCols, terrainRows);
+        }
 
         ImGui::Text("Vertices: %d  Faces: %d",
             static_cast<int>(meshObject.mesh.vertexCount()),

@@ -2,7 +2,7 @@
     "assetRoot": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures",
     "assetViewMode": 2,
     "cullMode": 2,
-    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures/gravel_a.png",
+    "currentTexturePath": "terrain",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
@@ -10,6 +10,7 @@
     "faceHighlightFillEnabled": true,
     "gridSize": 16.0,
     "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/powerplant",
+    "lastTerrainHeightmapDir": "/media/projectos/projects/cpp/minirender/assets",
     "lmAmbient": 0.27000001072883606,
     "lmBias": 0.8109999895095825,
     "lmResolution": 2048,
@@ -18,7 +19,7 @@
     "perspectiveFarPlane": 8242.0,
     "perspectiveMinDistance": 0.009999999776482582,
     "perspectiveNearPlane": 1.3609999418258667,
-    "scenePath": "",
+    "scenePath": "/media/projectos/projects/cpp/minirender/bin/scenes/terrein.mred",
     "sections": {
         "CSG": true,
         "Debug": true,
@@ -33,12 +34,12 @@
         "Reference Planes": false,
         "Roadmap": true,
         "Selected Entity": true,
-        "Selected Mesh": false,
+        "Selected Mesh": true,
         "Texture": true,
         "Tools": true,
-        "View Settings": true
+        "View Settings": false
     },
-    "selectionMode": 1,
+    "selectionMode": 0,
     "showGrid": false,
     "snapEnabled": true,
     "snapToGeometry": false,
@@ -59,7 +60,7 @@
                 64.0,
                 0.0
             ],
-            "orthoSize": 41.08192443847656,
+            "orthoSize": 132.29754638671875,
             "perspectiveDistance": 332.5537414550781,
             "perspectivePitch": -4.0,
             "perspectiveYaw": 68.10002136230469,
@@ -77,7 +78,7 @@
                 64.0,
                 0.0
             ],
-            "orthoSize": 24.561695098876953,
+            "orthoSize": 57.915191650390625,
             "perspectiveDistance": 396.5537414550781,
             "perspectivePitch": 53.5,
             "perspectiveYaw": -195.449951171875,
@@ -114,7 +115,7 @@
                 5.880399227142334
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 96.00999450683594,
+            "perspectiveDistance": 160.010009765625,
             "perspectivePitch": 11.25,
             "perspectiveYaw": -6850.7109375,
             "renderMode": 2,

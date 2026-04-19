@@ -74,6 +74,7 @@ void applyTerrainBrushStroke(EditableMesh& mesh,
                              float flattenHeight,
                              LevelEditorApp::TerrainSculptMode mode);
 float sampleTerrainHeightLocal(const EditableMesh& mesh, int cols, int rows, float x, float z);
+std::vector<std::filesystem::path> buildSceneLightmapPaths(const std::filesystem::path& firstPath, int atlasCount);
 
 const char* selectionModeName(LevelEditorApp::SelectionMode mode)
 {
@@ -179,6 +180,14 @@ std::string terrainLayerDisplayName(const LevelMeshObject::TerrainTextureLayer& 
     if (!layer.name.empty())
         return layer.name;
     return "Layer " + std::to_string(index + 1);
+}
+
+std::string formatMetersWithMetricHint(float meters)
+{
+    char buffer[128];
+    std::snprintf(buffer, sizeof(buffer), "%.3f m  |  %.1f cm  |  %.0f mm  |  %.6f km",
+                  meters, meters * 100.0f, meters * 1000.0f, meters / 1000.0f);
+    return std::string(buffer);
 }
 
 std::string terrainCompositeSignature(const LevelMeshObject& object)
@@ -1071,17 +1080,33 @@ void LevelEditorApp::RebuildMeshCache()
         const auto& verts = object.mesh.vertices();
         const std::size_t faceCount = faces.size();
 
-        // Build sorted face order by materialName for batched rendering
+        const auto atlasIndexForFace = [&](std::size_t fi) -> int
+        {
+            if (i < lightmapResult_.meshUVs.size() &&
+                fi < lightmapResult_.meshUVs[i].faceAtlasIndices.size())
+            {
+                return std::max(0, lightmapResult_.meshUVs[i].faceAtlasIndices[fi]);
+            }
+            return 0;
+        };
+
+        // Build sorted face order by materialName and lightmap atlas for batched rendering
         std::vector<std::size_t> sortedFaceIndices(faceCount);
         for (std::size_t fi = 0; fi < faceCount; ++fi) sortedFaceIndices[fi] = fi;
         std::sort(sortedFaceIndices.begin(), sortedFaceIndices.end(),
-            [&](std::size_t a, std::size_t b) { return faces[a].materialName < faces[b].materialName; });
+            [&](std::size_t a, std::size_t b)
+            {
+                if (faces[a].materialName != faces[b].materialName)
+                    return faces[a].materialName < faces[b].materialName;
+                return atlasIndexForFace(a) < atlasIndexForFace(b);
+            });
 
         // Initialize per-face ranges (indexed by original face index)
         cached.faceRanges.resize(faceCount, {0, 0});
 
         // Emit vertices/indices in sorted material order
         std::string currentMat;
+        int currentAtlas = 0;
         uint32_t matStart = 0;
 
         // Compute mesh center for cylindrical/spherical UV projection
@@ -1156,7 +1181,7 @@ void LevelEditorApp::RebuildMeshCache()
                     // Cylindrical: angle around Y axis -> U, height -> V
                     const glm::vec3 rel = ev.position - meshCenter;
                     uv.x = std::atan2(rel.x, rel.z) / 6.2831853f + 0.5f;
-                    uv.y = rel.y * 0.01f;
+                    uv.y = rel.y;
                     break;
                 }
                 case UvProjection::Spherical:
@@ -1185,9 +1210,7 @@ void LevelEditorApp::RebuildMeshCache()
                 }
                 }
 
-                const glm::vec2 uvScale = (effectiveUvProjection == UvProjection::Mesh)
-                    ? face.uvScale
-                    : (face.uvScale * 0.01f);
+                const glm::vec2 uvScale = face.uvScale;
                 uv *= uvScale;
                 const float ru = uv.x * cosR - uv.y * sinR;
                 const float rv = uv.x * sinR + uv.y * cosR;
@@ -1218,15 +1241,17 @@ void LevelEditorApp::RebuildMeshCache()
             if (si == 0)
             {
                 currentMat = mat;
+                currentAtlas = atlasIndexForFace(fi);
                 matStart = static_cast<uint32_t>(cached.buffer.indices.size());
             }
-            else if (mat != currentMat)
+            else if (mat != currentMat || atlasIndexForFace(fi) != currentAtlas)
             {
                 // Close previous material range
                 const uint32_t matEnd = static_cast<uint32_t>(cached.buffer.indices.size());
                 if (matEnd > matStart)
-                    cached.materialRanges.push_back({currentMat, matStart, matEnd - matStart});
+                    cached.materialRanges.push_back({currentMat, currentAtlas, matStart, matEnd - matStart});
                 currentMat = mat;
+                currentAtlas = atlasIndexForFace(fi);
                 matStart = matEnd;
             }
 
@@ -1237,7 +1262,7 @@ void LevelEditorApp::RebuildMeshCache()
         {
             const uint32_t matEnd = static_cast<uint32_t>(cached.buffer.indices.size());
             if (matEnd > matStart)
-                cached.materialRanges.push_back({currentMat, matStart, matEnd - matStart});
+                cached.materialRanges.push_back({currentMat, currentAtlas, matStart, matEnd - matStart});
         }
 
         // Compute normals
@@ -1291,28 +1316,17 @@ void LevelEditorApp::FinishBakeAsync()
         scene_.lightmapUVs()[i].faceAtlasIndices = lightmapResult_.meshUVs[i].faceAtlasIndices;
     }
 
-    // Upload to GPU
-    if (lightmapTexture_)
-        glDeleteTextures(1, &lightmapTexture_);
-    lightmapTexture_ = 0;
-
     if (!lightmapResult_.pixels.empty())
     {
         // Save PNG
         stbi_write_png(lightmapResult_.savedPath.c_str(),
                        lightmapResult_.width, lightmapResult_.height,
                        3, lightmapResult_.pixels.data(), lightmapResult_.width * 3);
-
-        glGenTextures(1, &lightmapTexture_);
-        glBindTexture(GL_TEXTURE_2D, lightmapTexture_);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, lightmapResult_.width, lightmapResult_.height,
-                     0, GL_RGB, GL_UNSIGNED_BYTE, lightmapResult_.pixels.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
     }
+
+    RefreshLightmapTexture();
+    lightmapPreviewAtlasIndex_ = 0;
+    RefreshLightmapPreviewTexture();
 
     // Reset RenderState cache so old texture ID doesn't alias
     RenderState::instance().resetCache();
@@ -1322,6 +1336,104 @@ void LevelEditorApp::FinishBakeAsync()
 
     printf("[Lightmap] Bake finished. Texture=%u, %dx%d\n",
            lightmapTexture_, lightmapResult_.width, lightmapResult_.height);
+}
+
+void LevelEditorApp::RefreshLightmapTexture()
+{
+    for (GLuint texture : lightmapTextures_)
+        glDeleteTextures(1, &texture);
+    lightmapTextures_.clear();
+
+    if (lightmapTexture_)
+    {
+        glDeleteTextures(1, &lightmapTexture_);
+        lightmapTexture_ = 0;
+    }
+
+    std::vector<LightmapResult::Atlas> fallbackAtlases;
+    std::vector<const LightmapResult::Atlas*> atlasPtrs;
+    if (!lightmapResult_.atlases.empty())
+    {
+        atlasPtrs.reserve(lightmapResult_.atlases.size());
+        for (const auto& atlas : lightmapResult_.atlases)
+            atlasPtrs.push_back(&atlas);
+    }
+    else if (!lightmapResult_.pixels.empty())
+    {
+        fallbackAtlases.push_back({});
+        fallbackAtlases.back().width = lightmapResult_.width;
+        fallbackAtlases.back().height = lightmapResult_.height;
+        fallbackAtlases.back().pixels = lightmapResult_.pixels;
+        fallbackAtlases.back().savedPath = lightmapResult_.savedPath;
+        atlasPtrs.push_back(&fallbackAtlases.back());
+    }
+
+    if (atlasPtrs.empty())
+        return;
+
+    lightmapTextures_.reserve(atlasPtrs.size());
+    for (const LightmapResult::Atlas* atlas : atlasPtrs)
+    {
+        if (!atlas || atlas->width <= 0 || atlas->height <= 0 || atlas->pixels.empty())
+            continue;
+
+        GLuint texture = 0;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, atlas->width, atlas->height, 0, GL_RGB, GL_UNSIGNED_BYTE, atlas->pixels.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        lightmapTextures_.push_back(texture);
+    }
+
+    if (!lightmapTextures_.empty())
+        lightmapTexture_ = lightmapTextures_.front();
+}
+
+void LevelEditorApp::RefreshLightmapPreviewTexture()
+{
+    if (lightmapPreviewTexture_)
+    {
+        glDeleteTextures(1, &lightmapPreviewTexture_);
+        lightmapPreviewTexture_ = 0;
+    }
+
+    const bool hasAtlases = !lightmapResult_.atlases.empty();
+    const int atlasCount = hasAtlases ? static_cast<int>(lightmapResult_.atlases.size())
+                                      : (lightmapResult_.pixels.empty() ? 0 : 1);
+    if (atlasCount <= 0)
+    {
+        lightmapPreviewAtlasIndex_ = 0;
+        return;
+    }
+
+    lightmapPreviewAtlasIndex_ = std::clamp(lightmapPreviewAtlasIndex_, 0, atlasCount - 1);
+
+    int width = lightmapResult_.width;
+    int height = lightmapResult_.height;
+    const uint8_t* pixels = lightmapResult_.pixels.empty() ? nullptr : lightmapResult_.pixels.data();
+    if (hasAtlases)
+    {
+        const LightmapResult::Atlas& atlas = lightmapResult_.atlases[static_cast<std::size_t>(lightmapPreviewAtlasIndex_)];
+        width = atlas.width;
+        height = atlas.height;
+        pixels = atlas.pixels.empty() ? nullptr : atlas.pixels.data();
+    }
+
+    if (!pixels || width <= 0 || height <= 0)
+        return;
+
+    glGenTextures(1, &lightmapPreviewTexture_);
+    glBindTexture(GL_TEXTURE_2D, lightmapPreviewTexture_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 
 void LevelEditorApp::BakeAndUploadLightmap()
@@ -1389,23 +1501,9 @@ void LevelEditorApp::BakeAndUploadLightmap()
                        3, lightmapResult_.pixels.data(), lightmapResult_.width * 3);
     }
 
-    // Upload to GPU
-    if (lightmapTexture_)
-        glDeleteTextures(1, &lightmapTexture_);
-    lightmapTexture_ = 0;
-
-    if (!lightmapResult_.pixels.empty())
-    {
-        glGenTextures(1, &lightmapTexture_);
-        glBindTexture(GL_TEXTURE_2D, lightmapTexture_);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, lightmapResult_.width, lightmapResult_.height,
-                     0, GL_RGB, GL_UNSIGNED_BYTE, lightmapResult_.pixels.data());
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
+    RefreshLightmapTexture();
+    lightmapPreviewAtlasIndex_ = 0;
+    RefreshLightmapPreviewTexture();
 
     // Force mesh cache rebuild to inject lightmap UVs into tangent.xy
     useLightmap_ = (lightmapTexture_ != 0);
@@ -1491,6 +1589,7 @@ void LevelEditorApp::SaveEditorSettings()
     j["views"] = viewsJson;
 
     // Debug visualization
+    j["debugDrawSelectedBounds"] = debugDrawSelectedBounds_;
     j["debugDrawNormals"] = debugDrawNormals_;
     j["debugDrawTangents"] = debugDrawTangents_;
     j["debugNormalLength"] = debugNormalLength_;
@@ -1597,6 +1696,7 @@ void LevelEditorApp::LoadEditorSettings()
     }
 
     // Debug visualization
+    if (j.contains("debugDrawSelectedBounds")) debugDrawSelectedBounds_ = j["debugDrawSelectedBounds"].get<bool>();
     if (j.contains("debugDrawNormals")) debugDrawNormals_ = j["debugDrawNormals"].get<bool>();
     if (j.contains("debugDrawTangents")) debugDrawTangents_ = j["debugDrawTangents"].get<bool>();
     if (j.contains("debugNormalLength")) debugNormalLength_ = j["debugNormalLength"].get<float>();
@@ -2042,6 +2142,13 @@ LevelEditorApp::~LevelEditorApp()
     SaveEditorSettings();
     InvalidateTerrainCompositeCache();
     InvalidateMeshCache();
+    for (GLuint texture : lightmapTextures_)
+        glDeleteTextures(1, &texture);
+    lightmapTextures_.clear();
+    if (lightmapTexture_)
+        glDeleteTextures(1, &lightmapTexture_);
+    if (lightmapPreviewTexture_)
+        glDeleteTextures(1, &lightmapPreviewTexture_);
     if (viewBatch_)
         viewBatch_->Release();
     for (auto& view : views_)
@@ -2554,9 +2661,16 @@ bool LevelEditorApp::SaveCurrentLightmapForScene(const std::filesystem::path& sc
 
 void LevelEditorApp::ClearLoadedLightmap()
 {
+    for (GLuint texture : lightmapTextures_)
+        glDeleteTextures(1, &texture);
+    lightmapTextures_.clear();
     if (lightmapTexture_)
         glDeleteTextures(1, &lightmapTexture_);
     lightmapTexture_ = 0;
+    if (lightmapPreviewTexture_)
+        glDeleteTextures(1, &lightmapPreviewTexture_);
+    lightmapPreviewTexture_ = 0;
+    lightmapPreviewAtlasIndex_ = 0;
     lightmapResult_ = {};
     useLightmap_ = false;
     RenderState::instance().resetCache();
@@ -2590,6 +2704,43 @@ bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& pa
         atlas.pixels = lightmapResult_.pixels;
         lightmapResult_.atlases.push_back(std::move(atlas));
     }
+    const int atlasCount = std::max(scene_.lightmapAtlasCount(), 1);
+    if (atlasCount > 1)
+    {
+        const auto atlasPaths = buildSceneLightmapPaths(path, atlasCount);
+        std::vector<LightmapResult::Atlas> loadedAtlases;
+        loadedAtlases.reserve(atlasPaths.size());
+        for (std::size_t atlasIndex = 0; atlasIndex < atlasPaths.size(); ++atlasIndex)
+        {
+            if (atlasIndex == 0)
+            {
+                loadedAtlases.push_back(lightmapResult_.atlases.front());
+                continue;
+            }
+
+            int atlasWidth = 0;
+            int atlasHeight = 0;
+            int atlasChannels = 0;
+            stbi_uc* atlasPixels = stbi_load(atlasPaths[atlasIndex].string().c_str(), &atlasWidth, &atlasHeight, &atlasChannels, 3);
+            if (!atlasPixels || atlasWidth <= 0 || atlasHeight <= 0)
+            {
+                if (atlasPixels)
+                    stbi_image_free(atlasPixels);
+                continue;
+            }
+
+            LightmapResult::Atlas atlas;
+            atlas.width = atlasWidth;
+            atlas.height = atlasHeight;
+            atlas.savedPath = atlasPaths[atlasIndex].generic_string();
+            atlas.pixels.assign(atlasPixels, atlasPixels + static_cast<std::size_t>(atlasWidth) * static_cast<std::size_t>(atlasHeight) * 3u);
+            loadedAtlases.push_back(std::move(atlas));
+            stbi_image_free(atlasPixels);
+        }
+
+        if (!loadedAtlases.empty())
+            lightmapResult_.atlases = std::move(loadedAtlases);
+    }
     lightmapResult_.meshUVs.resize(scene_.lightmapUVs().size());
     for (std::size_t i = 0; i < scene_.lightmapUVs().size(); ++i)
     {
@@ -2598,14 +2749,9 @@ bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& pa
     }
     stbi_image_free(pixels);
 
-    glGenTextures(1, &lightmapTexture_);
-    glBindTexture(GL_TEXTURE_2D, lightmapTexture_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, lightmapResult_.pixels.data());
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    RefreshLightmapTexture();
+    lightmapPreviewAtlasIndex_ = 0;
+    RefreshLightmapPreviewTexture();
 
     useLightmap_ = !lightmapResult_.meshUVs.empty();
     meshCacheValid_ = false;
@@ -4336,7 +4482,7 @@ void LevelEditorApp::HandleToolShortcuts()
             const BoundingBox worldBounds = localBounds.transformed(meshObjectModelMatrix(obj));
             target = (worldBounds.min + worldBounds.max) * 0.5f;
             radius = glm::length(worldBounds.max - worldBounds.min) * 0.5f;
-            if (radius < 1.0f) radius = 64.0f;
+            radius = std::max(radius, 0.25f);
             hasTarget = true;
         }
         else if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
@@ -4351,9 +4497,9 @@ void LevelEditorApp::HandleToolShortcuts()
             {
                 views_[vi].focus = target;
                 if (views_[vi].type == ViewType::Perspective)
-                    views_[vi].perspectiveDistance = radius * 3.0f;
+                    views_[vi].perspectiveDistance = std::max(radius * 3.0f, perspectiveMinDistance_);
                 else
-                    views_[vi].orthoSize = radius * 2.5f;
+                    views_[vi].orthoSize = std::max(radius * 2.5f, 0.5f);
             }
         }
     }
@@ -6232,11 +6378,11 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
     {
         if (hovered->type == ViewType::Perspective)
             hovered->perspectiveDistance = std::clamp(
-                hovered->perspectiveDistance - wheel * 32.0f,
+                hovered->perspectiveDistance - wheel * std::max(hovered->perspectiveDistance * 0.2f, 0.1f),
                 std::max(0.01f, perspectiveMinDistance_),
                 4096.0f);
         else
-            hovered->orthoSize = std::clamp(hovered->orthoSize - wheel * (hovered->orthoSize * 0.1f), 8.0f, 4096.0f);
+            hovered->orthoSize = std::clamp(hovered->orthoSize - wheel * (hovered->orthoSize * 0.1f), 0.1f, 4096.0f);
     }
 
     if (hovered->type == ViewType::Perspective &&
@@ -6387,7 +6533,7 @@ void LevelEditorApp::DrawViewportContextMenu()
         if (ImGui::MenuItem("Reset Camera"))
         {
             view.orthoSize = 256.0f;
-            view.perspectiveDistance = 720.0f;
+            view.perspectiveDistance = 24.0f;
             view.perspectiveYaw = 45.0f;
             view.perspectivePitch = 28.0f;
             view.focus = glm::vec3(0.0f, 64.0f, 0.0f);
@@ -6992,11 +7138,9 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
         const bool texturedMode = view.renderMode == RenderMode::Textured;
 
         // Keep Solid/Wire readable even when a baked lightmap exists.
-        const bool useEditorLightmap = texturedMode && useLightmap_ && lightmapTexture_;
+        const bool useEditorLightmap = texturedMode && useLightmap_ && !lightmapTextures_.empty();
         solidShader_->setInt("u_useLightmap", useEditorLightmap ? 1 : 0);
         solidShader_->setInt("u_lightmap", 1); // texture unit 1
-        if (useEditorLightmap)
-            rs.bindTexture(1, GL_TEXTURE_2D, lightmapTexture_);
 
         if (wireMode && s_glPolygonMode)
             s_glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -7085,6 +7229,16 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                             solidShader_->setInt("u_useTexture", 1);
                             solidShader_->setInt("u_albedo", 0);
                             rs.bindTexture(0, GL_TEXTURE_2D, (faceTex && faceTex->id != 0) ? faceTex->id : texMgr.getPattern()->id);
+                            if (useEditorLightmap &&
+                                range.lightmapAtlasIndex >= 0 &&
+                                range.lightmapAtlasIndex < static_cast<int>(lightmapTextures_.size()))
+                            {
+                                rs.bindTexture(1, GL_TEXTURE_2D, lightmapTextures_[static_cast<std::size_t>(range.lightmapAtlasIndex)]);
+                            }
+                            else
+                            {
+                                rs.bindTexture(1, GL_TEXTURE_2D, 0);
+                            }
                             cached.buffer.drawRange(range.indexStart, range.indexCount);
                         }
                     }
@@ -7251,6 +7405,13 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
         const LevelMeshObject& object = scene_.meshObjects()[(size_t)selectedMeshIndex_];
         const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
         viewBatch_->SetMatrix(vp);
+
+        if (debugDrawSelectedBounds_)
+        {
+            viewBatch_->SetColor(255, 210, 90, 255);
+            viewBatch_->Box(editableMeshLocalBounds(object.mesh), modelMatrix);
+        }
+
         viewBatch_->BeginTransform(modelMatrix);
 
         if (selectionMode_ == SelectionMode::Face &&
@@ -8155,9 +8316,16 @@ void LevelEditorApp::ShowMenuBar()
         {
             PushUndoState();
             scene_.reset();
+            for (GLuint texture : lightmapTextures_)
+                glDeleteTextures(1, &texture);
+            lightmapTextures_.clear();
             if (lightmapTexture_)
                 glDeleteTextures(1, &lightmapTexture_);
             lightmapTexture_ = 0;
+            if (lightmapPreviewTexture_)
+                glDeleteTextures(1, &lightmapPreviewTexture_);
+            lightmapPreviewTexture_ = 0;
+            lightmapPreviewAtlasIndex_ = 0;
             lightmapResult_ = {};
             useLightmap_ = false;
             currentTexturePath_.clear();
@@ -10093,8 +10261,35 @@ void LevelEditorApp::ShowRightPanel()
 
         if (lightmapTexture_)
         {
-            ImGui::Text("Lightmap: %dx%d", lightmapResult_.width, lightmapResult_.height);
-            ImGui::Image((ImTextureID)(intptr_t)lightmapTexture_, ImVec2(128, 128));
+            const int atlasCount = !lightmapResult_.atlases.empty() ? static_cast<int>(lightmapResult_.atlases.size()) : 1;
+            if (atlasCount > 1)
+            {
+                if (ImGui::ArrowButton("##LightmapPrevAtlas", ImGuiDir_Left))
+                {
+                    lightmapPreviewAtlasIndex_ = (lightmapPreviewAtlasIndex_ - 1 + atlasCount) % atlasCount;
+                    RefreshLightmapPreviewTexture();
+                }
+                ImGui::SameLine();
+                ImGui::Text("Atlas %d / %d", lightmapPreviewAtlasIndex_ + 1, atlasCount);
+                ImGui::SameLine();
+                if (ImGui::ArrowButton("##LightmapNextAtlas", ImGuiDir_Right))
+                {
+                    lightmapPreviewAtlasIndex_ = (lightmapPreviewAtlasIndex_ + 1) % atlasCount;
+                    RefreshLightmapPreviewTexture();
+                }
+            }
+
+            const LightmapResult::Atlas* previewAtlas =
+                (!lightmapResult_.atlases.empty() &&
+                 lightmapPreviewAtlasIndex_ >= 0 &&
+                 lightmapPreviewAtlasIndex_ < static_cast<int>(lightmapResult_.atlases.size()))
+                    ? &lightmapResult_.atlases[static_cast<std::size_t>(lightmapPreviewAtlasIndex_)]
+                    : nullptr;
+            const int previewWidth = previewAtlas ? previewAtlas->width : lightmapResult_.width;
+            const int previewHeight = previewAtlas ? previewAtlas->height : lightmapResult_.height;
+
+            ImGui::Text("Lightmap: %dx%d", previewWidth, previewHeight);
+            ImGui::Image((ImTextureID)(intptr_t)(lightmapPreviewTexture_ ? lightmapPreviewTexture_ : lightmapTexture_), ImVec2(128, 128));
         }
     }
 
@@ -10175,11 +10370,12 @@ void LevelEditorApp::ShowRightPanel()
     ImGui::Separator();
     if (Section("Debug", false))
     {
+        ImGui::Checkbox("Draw Selected Bounds", &debugDrawSelectedBounds_);
         ImGui::Checkbox("Draw Normals", &debugDrawNormals_);
         ImGui::SameLine();
         ImGui::Checkbox("Draw Tangents", &debugDrawTangents_);
         if (debugDrawNormals_ || debugDrawTangents_)
-            ImGui::DragFloat("Line Length", &debugNormalLength_, 0.5f, 1.0f, 100.0f);
+            ImGui::DragFloat("Line Length", &debugNormalLength_, 0.5f, 0.01f, 100.0f);
     }
 
     if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
@@ -10189,6 +10385,20 @@ void LevelEditorApp::ShowRightPanel()
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
         if (selectedMeshIndices_.size() > 1)
             ImGui::Text("Primary selection: %d of %d", selectedMeshIndex_ + 1, static_cast<int>(selectedMeshIndices_.size()));
+
+        const BoundingBox localBounds = editableMeshLocalBounds(meshObject.mesh);
+        const BoundingBox worldBounds = localBounds.transformed(meshObjectModelMatrix(meshObject));
+        const glm::vec3 localSize = localBounds.max - localBounds.min;
+        const glm::vec3 worldSize = worldBounds.max - worldBounds.min;
+        ImGui::TextDisabled("Primitive: %s", meshPrimitiveName(meshObject.primitive));
+        ImGui::Text("Local Size: %.3f x %.3f x %.3f u", localSize.x, localSize.y, localSize.z);
+        ImGui::Text("World Size: %.3f x %.3f x %.3f u", worldSize.x, worldSize.y, worldSize.z);
+        ImGui::TextDisabled("Metric hint assumes 1 unit = 1 meter");
+        ImGui::TextWrapped("X: %s", formatMetersWithMetricHint(worldSize.x).c_str());
+        ImGui::TextWrapped("Y: %s", formatMetersWithMetricHint(worldSize.y).c_str());
+        ImGui::TextWrapped("Z: %s", formatMetersWithMetricHint(worldSize.z).c_str());
+        ImGui::Separator();
+
         std::string editedMeshName = meshObject.name;
         if (ImGui::InputText("Name##MeshName", &editedMeshName) && editedMeshName != meshObject.name)
         {
@@ -11483,7 +11693,7 @@ void LevelEditorApp::ShowUvMappingWindow()
         {
             const glm::vec3 rel = ev.position - meshCenter;
             uv.x = std::atan2(rel.x, rel.z) / 6.2831853f + 0.5f;
-            uv.y = rel.y * 0.01f;
+            uv.y = rel.y;
             break;
         }
         case UvProjection::Spherical:
@@ -11508,7 +11718,7 @@ void LevelEditorApp::ShowUvMappingWindow()
                 uv = glm::vec2(ev.position.x, ev.position.y);
             break;
         }
-        return uv * 0.01f;
+        return uv;
     };
 
     std::vector<glm::vec2> overlayBaseUvs;

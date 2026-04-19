@@ -67,7 +67,7 @@ struct LevelMeshObject
     bool blendEnabled = false;
     bool twoSided = false;
     LevelMeshBlendMode blendMode = LevelMeshBlendMode::Alpha;
-    EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-64.0f, 0.0f, -64.0f), glm::vec3(64.0f, 128.0f, 64.0f));
+    EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-0.5f, -0.5f, -0.5f), glm::vec3(0.5f, 0.5f, 0.5f));
     struct TerrainTextureLayer
     {
         std::string name = "Layer";

@@ -49,6 +49,111 @@ void RecomputeVertexNormals(EditableMesh& mesh)
             vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
     }
 }
+
+void FlattenMeshNormals(EditableMesh& mesh)
+{
+    const std::vector<EditableVertex> sourceVertices = mesh.vertices();
+    const std::vector<EditableFace> sourceFaces = mesh.faces();
+
+    std::vector<EditableVertex> flatVertices;
+    std::vector<EditableFace> flatFaces;
+    flatVertices.reserve(sourceFaces.size() * 4);
+    flatFaces.reserve(sourceFaces.size());
+
+    for (const EditableFace& face : sourceFaces)
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const glm::vec3& origin = sourceVertices[static_cast<std::size_t>(face.indices[0])].position;
+        glm::vec3 faceNormal(0.0f);
+        for (std::size_t i = 1; i + 1 < face.indices.size(); ++i)
+        {
+            const glm::vec3& b = sourceVertices[static_cast<std::size_t>(face.indices[i])].position;
+            const glm::vec3& c = sourceVertices[static_cast<std::size_t>(face.indices[i + 1])].position;
+            faceNormal += glm::cross(b - origin, c - origin);
+        }
+        if (glm::length2(faceNormal) <= 1e-10f)
+            faceNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+        else
+            faceNormal = glm::normalize(faceNormal);
+
+        EditableFace flatFace = face;
+        flatFace.indices.clear();
+        flatFace.indices.reserve(face.indices.size());
+        for (int index : face.indices)
+        {
+            EditableVertex vertex = sourceVertices[static_cast<std::size_t>(index)];
+            vertex.normal = faceNormal;
+            flatVertices.push_back(vertex);
+            flatFace.indices.push_back(static_cast<int>(flatVertices.size()) - 1);
+        }
+        flatFaces.push_back(std::move(flatFace));
+    }
+
+    mesh.verticesMutable() = std::move(flatVertices);
+    mesh.facesMutable() = std::move(flatFaces);
+}
+
+void GenerateNormalizedFaceMeshUvs(EditableMesh& mesh)
+{
+    auto& vertices = mesh.verticesMutable();
+    auto& faces = mesh.facesMutable();
+
+    for (EditableFace& face : faces)
+    {
+        if (face.indices.size() < 3)
+            continue;
+
+        const glm::vec3& p0 = vertices[static_cast<std::size_t>(face.indices[0])].position;
+        const glm::vec3& p1 = vertices[static_cast<std::size_t>(face.indices[1])].position;
+        const glm::vec3& p2 = vertices[static_cast<std::size_t>(face.indices[2])].position;
+        glm::vec3 faceNormal = glm::cross(p1 - p0, p2 - p0);
+        if (glm::length2(faceNormal) <= 1e-10f)
+            faceNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+        else
+            faceNormal = glm::normalize(faceNormal);
+
+        const glm::vec3 absNormal = glm::abs(faceNormal);
+        std::vector<glm::vec2> projected;
+        projected.reserve(face.indices.size());
+
+        for (int index : face.indices)
+        {
+            const glm::vec3& p = vertices[static_cast<std::size_t>(index)].position;
+            if (absNormal.y >= absNormal.x && absNormal.y >= absNormal.z)
+                projected.push_back(glm::vec2(p.x, faceNormal.y >= 0.0f ? -p.z : p.z));
+            else if (absNormal.x >= absNormal.y && absNormal.x >= absNormal.z)
+                projected.push_back(glm::vec2(faceNormal.x >= 0.0f ? -p.z : p.z, p.y));
+            else
+                projected.push_back(glm::vec2(faceNormal.z >= 0.0f ? p.x : -p.x, p.y));
+        }
+
+        glm::vec2 uvMin = projected.front();
+        glm::vec2 uvMax = projected.front();
+        for (const glm::vec2& uv : projected)
+        {
+            uvMin = glm::min(uvMin, uv);
+            uvMax = glm::max(uvMax, uv);
+        }
+
+        const glm::vec2 uvSpan = glm::max(uvMax - uvMin, glm::vec2(1e-6f));
+        for (std::size_t i = 0; i < face.indices.size(); ++i)
+        {
+            glm::vec2 uv = (projected[i] - uvMin) / uvSpan;
+            uv.y = 1.0f - uv.y;
+            vertices[static_cast<std::size_t>(face.indices[i])].uv = uv;
+        }
+
+        face.uvProjection = UvProjection::Mesh;
+    }
+}
+
+EditableMesh finalizeEditableMesh(EditableMesh mesh)
+{
+    RecomputeVertexNormals(mesh);
+    return mesh;
+}
 }
 
 EditableMesh EditableMesh::MakeBox(const glm::vec3& minBounds, const glm::vec3& maxBounds)
@@ -76,6 +181,8 @@ EditableMesh EditableMesh::MakeBox(const glm::vec3& minBounds, const glm::vec3& 
         {{0, 3, 2, 1}, "back"},
     };
 
+    FlattenMeshNormals(mesh);
+    GenerateNormalizedFaceMeshUvs(mesh);
     return mesh;
 }
 
@@ -112,22 +219,22 @@ EditableMesh EditableMesh::MakeHollowBox(const glm::vec3& minBounds, const glm::
     };
 
     mesh.faces_ = {
-        {{0, 1, 2, 3}, "wall"},
+        {{0, 4, 7, 3}, "wall"},
+        {{1, 2, 6, 5}, "wall"},
+        {{0, 1, 5, 4}, "wall"},
+        {{3, 7, 6, 2}, "wall"},
         {{4, 5, 6, 7}, "wall"},
-        {{0, 4, 5, 1}, "wall"},
-        {{1, 5, 6, 2}, "wall"},
-        {{2, 6, 7, 3}, "wall"},
-        {{3, 7, 4, 0}, "wall"},
+        {{0, 3, 2, 1}, "wall"},
 
-        {{11, 10, 9, 8}, "inner"},
-        {{12, 13, 14, 15}, "inner"},
-        {{9, 13, 12, 8}, "inner"},
-        {{10, 14, 13, 9}, "inner"},
-        {{11, 15, 14, 10}, "inner"},
-        {{8, 12, 15, 11}, "inner"},
+        {{11, 15, 12, 8}, "inner"},
+        {{13, 14, 10, 9}, "inner"},
+        {{12, 13, 9, 8}, "inner"},
+        {{10, 14, 15, 11}, "inner"},
+        {{15, 14, 13, 12}, "inner"},
+        {{9, 10, 11, 8}, "inner"},
     };
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeRoom(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness)
@@ -189,7 +296,7 @@ EditableMesh EditableMesh::MakeRoom(const glm::vec3& minBounds, const glm::vec3&
         glm::vec3(innerMax.x, innerMax.y, outerMax.z),
         "wall");
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeSector(const glm::vec3& minBounds, const glm::vec3& maxBounds, float wallThickness,
@@ -265,7 +372,7 @@ EditableMesh EditableMesh::MakeSector(const glm::vec3& minBounds, const glm::vec
             "wall");
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, float height, int segments)
@@ -321,7 +428,7 @@ EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, f
         mesh.faces_.push_back(side);
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeCone(const glm::vec3& center, float radius, float height, int segments)
@@ -361,7 +468,7 @@ EditableMesh EditableMesh::MakeCone(const glm::vec3& center, float radius, float
         mesh.faces_.push_back(side);
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int rings, int segments)
@@ -430,7 +537,7 @@ EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int
         mesh.faces_.push_back(f);
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeTorus(const glm::vec3& center, float majorRadius, float minorRadius, int majorSegments, int minorSegments)
@@ -486,7 +593,7 @@ EditableMesh EditableMesh::MakeTorus(const glm::vec3& center, float majorRadius,
         }
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeTube(const glm::vec3& center, float outerRadius, float innerRadius, float height, int segments)
@@ -588,7 +695,7 @@ EditableMesh EditableMesh::MakeTube(const glm::vec3& center, float outerRadius, 
         mesh.faces_.push_back(bottom);
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakePyramid(const glm::vec3& center, float width, float depth, float height)
@@ -614,7 +721,7 @@ EditableMesh EditableMesh::MakePyramid(const glm::vec3& center, float width, flo
         {{3, 4, 0}, "side"},
     };
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeDoorFrame(const glm::vec3& minBounds, const glm::vec3& maxBounds,
@@ -666,7 +773,7 @@ EditableMesh EditableMesh::MakeDoorFrame(const glm::vec3& minBounds, const glm::
         glm::vec3(doorX1, maxBounds.y, zBack),
         "frame");
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeTerrain(const glm::vec3& center,
@@ -722,8 +829,7 @@ EditableMesh EditableMesh::MakeTerrain(const glm::vec3& center,
         }
     }
 
-    RecomputeVertexNormals(mesh);
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakePillar(const glm::vec3& minBounds, const glm::vec3& maxBounds,
@@ -784,7 +890,7 @@ EditableMesh EditableMesh::MakePillar(const glm::vec3& minBounds, const glm::vec
         glm::vec3(maxBounds.x, maxBounds.y, maxBounds.z),
         "capital");
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakePlane(const glm::vec3& center, float width, float depth, int subdivX, int subdivZ)
@@ -822,12 +928,12 @@ EditableMesh EditableMesh::MakePlane(const glm::vec3& center, float width, float
             EditableFace f;
             f.materialName = "default";
             f.uvProjection = UvProjection::Mesh;
-            f.indices = {bl, br, tr, tl};
+            f.indices = {bl, tl, tr, br};
             mesh.faces_.push_back(f);
         }
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeWedge(const glm::vec3& minBounds, const glm::vec3& maxBounds)
@@ -851,7 +957,7 @@ EditableMesh EditableMesh::MakeWedge(const glm::vec3& minBounds, const glm::vec3
         {{1, 2, 4}, "right"},            // right triangle
     };
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeStairs(const glm::vec3& minBounds, const glm::vec3& maxBounds, int steps)
@@ -888,20 +994,13 @@ EditableMesh EditableMesh::MakeStairs(const glm::vec3& minBounds, const glm::vec
         mesh.faces_.push_back({{base + 0, base + 3, base + 7, base + 4}, "side"});
         // Right side
         mesh.faces_.push_back({{base + 1, base + 5, base + 6, base + 2}, "side"});
-
-        if (s == 0)
-        {
-            // Bottom of first step
-            mesh.faces_.push_back({{base + 3, base + 2, base + 1, base + 0}, "bottom"});
-        }
-        if (s == steps - 1)
-        {
-            // Back of last step at the very back
-            mesh.faces_.push_back({{base + 2, base + 3, base + 7, base + 6}, "back"});
-        }
+        // Bottom face
+        mesh.faces_.push_back({{base + 3, base + 2, base + 1, base + 0}, "bottom"});
+        // Back face
+        mesh.faces_.push_back({{base + 2, base + 3, base + 7, base + 6}, "back"});
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::MakeSpiralStairs(const glm::vec3& center, float innerRadius, float outerRadius,
@@ -952,7 +1051,7 @@ EditableMesh EditableMesh::MakeSpiralStairs(const glm::vec3& center, float inner
         mesh.faces_.push_back({{base + 3, base + 0, base + 4, base + 7}, "inner"});
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 EditableMesh EditableMesh::FromData(const std::vector<EditableVertex>& vertices, const std::vector<EditableFace>& faces)
@@ -960,13 +1059,14 @@ EditableMesh EditableMesh::FromData(const std::vector<EditableVertex>& vertices,
     EditableMesh mesh;
     mesh.vertices_ = vertices;
     mesh.faces_ = faces;
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }
 
 void EditableMesh::setData(const std::vector<EditableVertex>& vertices, const std::vector<EditableFace>& faces)
 {
     vertices_ = vertices;
     faces_ = faces;
+    RecomputeVertexNormals(*this);
 }
 
 // ── Text mesh generation helpers ──────────────────────────────────────────────
@@ -1322,5 +1422,5 @@ EditableMesh EditableMesh::MakeText(const std::string& text, const std::string& 
         }
     }
 
-    return mesh;
+    return finalizeEditableMesh(std::move(mesh));
 }

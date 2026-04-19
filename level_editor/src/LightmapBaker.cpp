@@ -10,9 +10,31 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+//  Helpers ─────────────────────────────────────────────────────────────────
 
 namespace {
+
+static glm::mat4 buildLightmapModelMatrix(const LevelMeshObject& obj)
+{
+    return glm::translate(glm::mat4(1.0f), obj.position)
+        * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.y), glm::vec3(0,1,0))
+        * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.x), glm::vec3(1,0,0))
+        * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.z), glm::vec3(0,0,1))
+        * glm::scale(glm::mat4(1.0f), obj.scale);
+}
+
+static float halton(int index, int base)
+{
+    float result = 0.0f;
+    float fraction = 1.0f / static_cast<float>(base);
+    while (index > 0)
+    {
+        result += fraction * static_cast<float>(index % base);
+        index /= base;
+        fraction /= static_cast<float>(base);
+    }
+    return result;
+}
 
 struct Triangle
 {
@@ -29,11 +51,7 @@ static std::vector<Triangle> collectTriangles(const LevelEditorScene& scene)
         if (!obj.visible)
             continue;
 
-        const glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position)
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.y), glm::vec3(0,1,0))
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.x), glm::vec3(1,0,0))
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.z), glm::vec3(0,0,1))
-            * glm::scale(glm::mat4(1.0f), obj.scale);
+        const glm::mat4 model = buildLightmapModelMatrix(obj);
         const auto& verts = obj.mesh.vertices();
         for (const auto& face : obj.mesh.faces())
         {
@@ -76,7 +94,7 @@ static bool rayTriangle(const glm::vec3& orig, const glm::vec3& dir, const Trian
     return (t > EPSILON && t < maxT - EPSILON);
 }
 
-// ── Simple BVH for accelerated shadow ray traversal ─────────────────────────
+//  Simple BVH for accelerated shadow ray traversal ─────────────────────────
 
 struct AABB {
     glm::vec3 mn{1e18f}, mx{-1e18f};
@@ -181,12 +199,13 @@ struct BVH {
             std::abs(dir.z) > 1e-8f ? 1.0f / dir.z : 1e8f * (dir.z >= 0 ? 1.0f : -1.0f)
         );
         // Iterative traversal with explicit stack
-        int stack[64];
-        int sp = 0;
-        stack[sp++] = 0;
-        while (sp > 0)
+        std::vector<int> stack;
+        stack.reserve(std::max<std::size_t>(128, nodes.size()));
+        stack.push_back(0);
+        while (!stack.empty())
         {
-            const auto& node = nodes[stack[--sp]];
+            const auto& node = nodes[stack.back()];
+            stack.pop_back();
             if (!rayAABB(orig, invDir, node.bounds, maxT)) continue;
             if (node.left == -1)  // leaf
             {
@@ -198,8 +217,8 @@ struct BVH {
             }
             else
             {
-                stack[sp++] = node.left;
-                stack[sp++] = node.right;
+                stack.push_back(node.left);
+                stack.push_back(node.right);
             }
         }
         return false;
@@ -225,7 +244,7 @@ static bool isOccluded(const glm::vec3& point, const glm::vec3& lightPos,
 
 } // namespace
 
-// ── Main bake function ──────────────────────────────────────────────────────
+//  Main bake function ──────────────────────────────────────────────────────
 
 LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettings& settings,
                               std::atomic<float>* progress)
@@ -233,9 +252,6 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
     if (progress) progress->store(0.0f);
     LightmapResult result;
     const int atlasSize = settings.resolution;
-    result.width = atlasSize;
-    result.height = atlasSize;
-    result.pixels.resize(atlasSize * atlasSize * 3, 0);
 
     // Collect lights
     struct Light {
@@ -266,12 +282,6 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
             l.spotCosInner = std::cos(innerRad);
             lights.push_back(l);
         }
-    }
-
-    // Always fill atlas with ambient so unmapped texels aren't black
-    {
-        const uint8_t amb = static_cast<uint8_t>(std::min(255.0f, settings.ambient * 255.0f));
-        std::fill(result.pixels.begin(), result.pixels.end(), amb);
     }
 
     // Collect all triangles for shadow testing and build BVH
@@ -310,11 +320,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         if (!obj.visible)
             continue;
 
-        const glm::mat4 model = glm::translate(glm::mat4(1.0f), obj.position)
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.y), glm::vec3(0,1,0))
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.x), glm::vec3(1,0,0))
-            * glm::rotate(glm::mat4(1.0f), glm::radians(obj.rotationEuler.z), glm::vec3(0,0,1))
-            * glm::scale(glm::mat4(1.0f), obj.scale);
+        const glm::mat4 model = buildLightmapModelMatrix(obj);
         const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(model)));
 
         const auto& verts = obj.mesh.vertices();
@@ -379,11 +385,8 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
             entry.tangentV = tV;
             entry.localMin = lMin;
             entry.localMax = lMax;
-            // Face origin = world point at localMin, using centroid for robust normal distance
-            glm::vec3 centroid(0.0f);
-            for (int i = 0; i < nVerts2; ++i) centroid += entry.worldPositions[i];
-            centroid /= static_cast<float>(nVerts2);
-            const float normalDist = glm::dot(fN, centroid);
+            // Anchor the bake plane to an actual face vertex to avoid drifting off-plane.
+            const float normalDist = glm::dot(fN, entry.worldPositions.front());
             entry.faceOrigin = tU * lMin.x + tV * lMin.y + fN * normalDist;
 
             float faceW = lMax.x - lMin.x;
@@ -534,14 +537,10 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
             localPts[v] = glm::vec2(pu, pv);
         }
 
-        // For small faces (tiny atlas rects), skip point-in-polygon — just light all texels
-        const bool skipPIP = (pr.w <= 4 && pr.h <= 4);
-
         // Debug: test face center lighting
         bool faceGotLight = false;
 
         const int sampleCount = std::max(1, settings.samplesPerTexel);
-        const int sampleGrid = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<float>(sampleCount)))));
 
         auto computeLightingAtPoint = [&](const glm::vec3& worldP, bool& outLit) -> glm::vec3
         {
@@ -621,10 +620,8 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
                 for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
                 {
-                    const int sampleX = sampleIndex % sampleGrid;
-                    const int sampleY = sampleIndex / sampleGrid;
-                    const float sampleOffsetX = (static_cast<float>(sampleX) + 0.5f) / static_cast<float>(sampleGrid);
-                    const float sampleOffsetY = (static_cast<float>(sampleY) + 0.5f) / static_cast<float>(sampleGrid);
+                    const float sampleOffsetX = halton(sampleIndex + 1, 2);
+                    const float sampleOffsetY = halton(sampleIndex + 1, 3);
 
                     // Normalized position within the face rect
                     const float u = (static_cast<float>(tx) + sampleOffsetX) / static_cast<float>(pr.w);
@@ -636,8 +633,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
                     // localP in absolute tangent-space (for point-in-polygon)
                     const glm::vec2 localP = localMin + glm::vec2(u, v) * localSize;
 
-                    // Check if point is inside the face polygon (skip for tiny faces)
-                    if (!skipPIP)
+                    // Check if the sample lies inside the projected face polygon.
                     {
                         bool inside = false;
                         for (int i = 0, j = nVerts - 1; i < nVerts; j = i++)
@@ -713,7 +709,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
     if (progress) progress->store(1.0f);
 
-    // ── Dilation pass: expand lit pixels into empty neighbors to prevent black seams ──
+    //  Dilation pass: expand lit pixels into empty neighbors to prevent black seams 
     {
         for (std::size_t atlasIndex = 0; atlasIndex < result.atlases.size(); ++atlasIndex)
         {

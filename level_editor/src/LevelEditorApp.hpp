@@ -156,7 +156,7 @@ private:
         glm::vec3 focus = glm::vec3(0.0f);
         glm::vec4 clearColor = glm::vec4(0.12f, 0.12f, 0.14f, 1.0f);
         float orthoSize = 256.0f;
-        float perspectiveDistance = 720.0f;
+        float perspectiveDistance = 24.0f;
         float perspectiveYaw = 45.0f;
         float perspectivePitch = 28.0f;
         RenderMode renderMode = RenderMode::Solid;
@@ -298,7 +298,7 @@ private:
     float transparency_ = 0.45f;
     float gridSize_ = 16.0f;
     float perspGridSize_ = 16.0f;
-    float perspectiveMinDistance_ = 8.0f;
+    float perspectiveMinDistance_ = 0.1f;
     float perspectiveNearPlane_ = 0.1f;
     float perspectiveFarPlane_ = 8192.0f;
     std::array<LevelEditorView, 4> views_ = {};
@@ -347,7 +347,7 @@ private:
     // Primitive creation
     enum class PrimitiveType { Box, Room, Sector, RoomBoxes, Cylinder, Cone, Sphere, Torus, Tube, Pyramid, DoorFrame, Terrain, Pillar, Plane, Wedge, Stairs, SpiralStairs, Text };
     PrimitiveType primitiveType_ = PrimitiveType::Box;
-    glm::vec3 primSize_ = glm::vec3(128.0f, 128.0f, 128.0f);
+    glm::vec3 primSize_ = glm::vec3(1.0f, 1.0f, 1.0f);
     float primWallThickness_ = 16.0f;
     bool primSectorLeft_ = true;
     bool primSectorRight_ = true;
@@ -469,6 +469,7 @@ private:
     struct MaterialRange
     {
         std::string materialName;
+        int lightmapAtlasIndex = 0;
         uint32_t indexStart;
         uint32_t indexCount;
     };
@@ -492,6 +493,7 @@ private:
     void RebuildMeshCache();
 
     // Debug visualization
+    bool debugDrawSelectedBounds_ = false;
     bool debugDrawNormals_ = false;
     bool debugDrawTangents_ = false;
     float debugNormalLength_ = 10.0f;
@@ -500,8 +502,13 @@ private:
     LightmapResult lightmapResult_;
     LightmapSettings lightmapSettings_;
     GLuint lightmapTexture_ = 0;
+    std::vector<GLuint> lightmapTextures_;
+    GLuint lightmapPreviewTexture_ = 0;
+    int lightmapPreviewAtlasIndex_ = 0;
     bool useLightmap_ = false;
     void BakeAndUploadLightmap();
+    void RefreshLightmapTexture();
+    void RefreshLightmapPreviewTexture();
 
     // Async bake
     std::atomic<float> bakeProgress_{0.0f};

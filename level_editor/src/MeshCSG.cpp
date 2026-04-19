@@ -95,6 +95,20 @@ void appendUniquePoint(std::vector<glm::vec3>& points, const glm::vec3& point, f
     points.push_back(point);
 }
 
+int findOrAppendVertex(std::vector<EditableVertex>& vertices, const glm::vec3& position, float epsilon)
+{
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+    {
+        if (nearlySamePoint(vertices[i].position, position, epsilon))
+            return static_cast<int>(i);
+    }
+
+    EditableVertex vertex;
+    vertex.position = position;
+    vertices.push_back(vertex);
+    return static_cast<int>(vertices.size()) - 1;
+}
+
 EditableFace buildCapFace(const std::vector<glm::vec3>& cutPoints,
                           std::vector<EditableVertex>& outVertices,
                           const MeshPlane& plane,
@@ -139,14 +153,18 @@ EditableFace buildCapFace(const std::vector<glm::vec3>& cutPoints,
         return a.angle < b.angle;
     });
 
+    // Flipping the cap normal changes the tangent basis, so the angle sort
+    // naturally produces the opposite winding for the kept half-space.
     for (const OrderedPoint& point : ordered)
     {
-        EditableVertex vertex;
-        vertex.position = point.position;
-        outVertices.push_back(vertex);
-        face.indices.push_back(static_cast<int>(outVertices.size()) - 1);
+        const int vertexIndex = findOrAppendVertex(outVertices, point.position, epsilon);
+        if (!face.indices.empty() && face.indices.back() == vertexIndex)
+            continue;
+        face.indices.push_back(vertexIndex);
     }
 
+    if (face.indices.size() >= 2 && face.indices.front() == face.indices.back())
+        face.indices.pop_back();
     if (face.indices.size() < 3)
         face.indices.clear();
     face.materialName = "csg_cap";
@@ -211,10 +229,12 @@ EditableMesh clipEditableMeshAgainstPlane(const EditableMesh& mesh,
 
             if (currentOn)
                 appendUniquePoint(cutPoints, current, epsilon);
+            if (nextOn)
+                appendUniquePoint(cutPoints, next, epsilon);
 
             const bool crosses = (currentDistance > epsilon && nextDistance < -epsilon) ||
                                  (currentDistance < -epsilon && nextDistance > epsilon);
-            if (crosses || (currentOn && !nextOn) || (!currentOn && nextOn))
+            if (crosses)
             {
                 const float denom = currentDistance - nextDistance;
                 const float t = std::fabs(denom) <= epsilon ? 0.0f : (currentDistance / denom);
@@ -231,12 +251,15 @@ EditableMesh clipEditableMeshAgainstPlane(const EditableMesh& mesh,
         outFace.indices.reserve(clipped.size());
         for (const ClippedPolygonVertex& clippedVertex : clipped)
         {
-            EditableVertex outVertex;
-            outVertex.position = clippedVertex.position;
-            vertices.push_back(outVertex);
-            outFace.indices.push_back(static_cast<int>(vertices.size()) - 1);
+            const int vertexIndex = findOrAppendVertex(vertices, clippedVertex.position, epsilon);
+            if (!outFace.indices.empty() && outFace.indices.back() == vertexIndex)
+                continue;
+            outFace.indices.push_back(vertexIndex);
         }
-        faces.push_back(outFace);
+        if (outFace.indices.size() >= 2 && outFace.indices.front() == outFace.indices.back())
+            outFace.indices.pop_back();
+        if (outFace.indices.size() >= 3)
+            faces.push_back(std::move(outFace));
     }
 
     if (addCap)

@@ -1,25 +1,26 @@
 {
-    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/h3d/textures",
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/terrain",
     "assetViewMode": 2,
     "cullMode": 2,
-    "currentTexturePath": "left",
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/terrain/align.jpg",
     "debugDrawNormals": true,
+    "debugDrawSelectedBounds": true,
     "debugDrawTangents": false,
-    "debugNormalLength": 32.5,
+    "debugNormalLength": 1.0,
     "faceFrontOnly": false,
     "faceHighlightFillAlpha": 0.8299999833106995,
     "faceHighlightFillEnabled": true,
     "gridSize": 1.0,
     "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/h3d",
     "lastTerrainHeightmapDir": "/media/projectos/projects/cpp/minirender/assets/terrain",
-    "lmAmbient": 0.49000000953674316,
-    "lmBias": 1.659999966621399,
-    "lmResolution": 2024,
+    "lmAmbient": 0.6700000166893005,
+    "lmBias": 2.109999895095825,
+    "lmResolution": 512,
     "lmSamples": 5,
     "perspGridSize": 19.100000381469727,
     "perspectiveFarPlane": 8242.0,
     "perspectiveMinDistance": 0.009999999776482582,
-    "perspectiveNearPlane": 0.6209999918937683,
+    "perspectiveNearPlane": 0.050999999046325684,
     "primPlaneDoubleSided": false,
     "scenePath": "",
     "sections": {
@@ -38,10 +39,10 @@
         "Reference Planes": false,
         "Roadmap": false,
         "Selected Entity": true,
-        "Selected Mesh": true,
+        "Selected Mesh": false,
         "Terrain Export": true,
         "Terrain Layers": false,
-        "Texture": false,
+        "Texture": true,
         "Tools": true,
         "View Settings": false
     },
@@ -51,9 +52,9 @@
     "snapToGeometry": false,
     "theme": 3,
     "transparency": 0.2199999988079071,
-    "useLightmap": true,
+    "useLightmap": false,
     "useTransparency": true,
-    "vertexFrontOnly": true,
+    "vertexFrontOnly": false,
     "viewLayout": 4,
     "views": [
         {
@@ -63,15 +64,15 @@
                 0.14000000059604645
             ],
             "focus": [
-                97.48799896240234,
-                53.18861389160156,
-                205.0881805419922
+                0.0,
+                0.0,
+                0.0
             ],
-            "orthoSize": 484.7747497558594,
-            "perspectiveDistance": 720.0,
+            "orthoSize": 2.1650633811950684,
+            "perspectiveDistance": 24.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0,
-            "renderMode": 2,
+            "renderMode": 1,
             "type": 0
         },
         {
@@ -81,16 +82,16 @@
                 0.14000000059604645
             ],
             "focus": [
-                -69.20907592773438,
-                14.454065322875977,
-                91.2149429321289
+                0.0,
+                0.0,
+                0.0
             ],
-            "orthoSize": 256.0,
-            "perspectiveDistance": 4096.0,
-            "perspectivePitch": 45.75,
-            "perspectiveYaw": -618.6002197265625,
-            "renderMode": 2,
-            "type": 6
+            "orthoSize": 2.1650633811950684,
+            "perspectiveDistance": 9.488264083862305,
+            "perspectivePitch": 14.75,
+            "perspectiveYaw": -453.74993896484375,
+            "renderMode": 1,
+            "type": 2
         },
         {
             "clearColor": [
@@ -100,15 +101,15 @@
             ],
             "focus": [
                 0.0,
-                64.0,
+                0.0,
                 0.0
             ],
-            "orthoSize": 148.15725708007813,
-            "perspectiveDistance": 720.0,
+            "orthoSize": 0.8681356310844421,
+            "perspectiveDistance": 24.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0,
             "renderMode": 1,
-            "type": 5
+            "type": 4
         },
         {
             "clearColor": [
@@ -117,14 +118,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                -148.91204833984375,
-                -76.77567291259766,
-                -180.1931610107422
+                -10.913697242736816,
+                60.48881530761719,
+                0.8331690430641174
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 832.010009765625,
-            "perspectivePitch": 32.0,
-            "perspectiveYaw": -7825.4619140625,
+            "perspectiveDistance": 230.2272186279297,
+            "perspectivePitch": 9.25,
+            "perspectiveYaw": -1095.6480712890625,
             "renderMode": 2,
             "type": 6
         }

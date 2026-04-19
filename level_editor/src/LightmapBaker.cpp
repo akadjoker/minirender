@@ -501,100 +501,128 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         // Debug: test face center lighting
         bool faceGotLight = false;
 
+        const int sampleCount = std::max(1, settings.samplesPerTexel);
+        const int sampleGrid = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<float>(sampleCount)))));
+
+        auto computeLightingAtPoint = [&](const glm::vec3& worldP, bool& outLit) -> glm::vec3
+        {
+            glm::vec3 lighting(settings.ambient);
+
+            for (const auto& light : lights)
+            {
+                glm::vec3 lightDir;   // direction FROM surface TO light
+                float NdotL;
+                float atten = 1.0f;
+                glm::vec3 shadowTarget;
+
+                if (light.type == LightType::Directional)
+                {
+                    // Sun: parallel rays, no distance falloff
+                    lightDir = -light.direction; // direction points toward light
+                    NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
+                    if (NdotL < 1e-4f) continue;
+
+                    // Shadow: cast ray very far in light direction
+                    shadowTarget = worldP + lightDir * 10000.0f;
+                    if (isOccluded(worldP, shadowTarget, faceNormal, shadowBVH, settings.bias))
+                        continue;
+
+                    atten = 1.0f; // no distance falloff for sun
+                }
+                else // Point or Spot
+                {
+                    const glm::vec3 toLight = light.position - worldP;
+                    const float dist = glm::length(toLight);
+                    if (dist > light.radius || dist < 1e-4f) continue;
+
+                    lightDir = toLight / dist;
+                    NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
+                    if (NdotL < 1e-4f) continue;
+
+                    // Spot cone check
+                    if (light.type == LightType::Spot)
+                    {
+                        // lightDir is surface→light, light.direction is light→target
+                        const float cosAngle = glm::dot(-lightDir, light.direction);
+                        if (cosAngle < light.spotCosOuter) continue; // outside cone
+                        // Smooth falloff between inner and outer cone
+                        if (cosAngle < light.spotCosInner)
+                        {
+                            const float t = (cosAngle - light.spotCosOuter) /
+                                            std::max(1e-6f, light.spotCosInner - light.spotCosOuter);
+                            atten *= t * t; // quadratic smooth
+                        }
+                    }
+
+                    // Shadow test
+                    if (isOccluded(worldP, light.position, faceNormal, shadowBVH, settings.bias))
+                        continue;
+
+                    // Distance attenuation: smooth quadratic falloff
+                    const float ratio = dist / light.radius;
+                    atten *= std::max(0.0f, 1.0f - ratio * ratio);
+                }
+
+                const float contribution = NdotL * atten * light.intensity;
+                lighting += light.color * contribution;
+                if (contribution > 0.001f)
+                    outLit = true;
+            }
+
+            return lighting;
+        };
+
         // For each texel in this face's atlas rect, compute world position and light
         for (int ty = 0; ty < pr.h; ++ty)
         {
             for (int tx = 0; tx < pr.w; ++tx)
             {
-                // Normalized position within the face rect
-                const float u = (static_cast<float>(tx) + 0.5f) / static_cast<float>(pr.w);
-                const float v = (static_cast<float>(ty) + 0.5f) / static_cast<float>(pr.h);
+                glm::vec3 accumulated(0.0f);
+                int validSamples = 0;
 
-                // Map to world space: faceOrigin is the point at localMin
-                const glm::vec3 worldP = faceOrigin + tangentU * (u * localSize.x) + tangentV * (v * localSize.y);
-
-                // localP in absolute tangent-space (for point-in-polygon)
-                const glm::vec2 localP = localMin + glm::vec2(u, v) * localSize;
-
-                // Check if point is inside the face polygon (skip for tiny faces)
-                if (!skipPIP)
+                for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
                 {
-                    bool inside = false;
-                    for (int i = 0, j = nVerts - 1; i < nVerts; j = i++)
+                    const int sampleX = sampleIndex % sampleGrid;
+                    const int sampleY = sampleIndex / sampleGrid;
+                    const float sampleOffsetX = (static_cast<float>(sampleX) + 0.5f) / static_cast<float>(sampleGrid);
+                    const float sampleOffsetY = (static_cast<float>(sampleY) + 0.5f) / static_cast<float>(sampleGrid);
+
+                    // Normalized position within the face rect
+                    const float u = (static_cast<float>(tx) + sampleOffsetX) / static_cast<float>(pr.w);
+                    const float v = (static_cast<float>(ty) + sampleOffsetY) / static_cast<float>(pr.h);
+
+                    // Map to world space: faceOrigin is the point at localMin
+                    const glm::vec3 worldP = faceOrigin + tangentU * (u * localSize.x) + tangentV * (v * localSize.y);
+
+                    // localP in absolute tangent-space (for point-in-polygon)
+                    const glm::vec2 localP = localMin + glm::vec2(u, v) * localSize;
+
+                    // Check if point is inside the face polygon (skip for tiny faces)
+                    if (!skipPIP)
                     {
-                        if ((localPts[i].y > localP.y) != (localPts[j].y > localP.y) &&
-                            localP.x < (localPts[j].x - localPts[i].x) * (localP.y - localPts[i].y) / (localPts[j].y - localPts[i].y) + localPts[i].x)
-                            inside = !inside;
-                    }
-                    if (!inside) continue;
-                }
-
-                // Compute lighting
-                float r = settings.ambient;
-                float g = settings.ambient;
-                float b = settings.ambient;
-
-                for (const auto& light : lights)
-                {
-                    glm::vec3 lightDir;   // direction FROM surface TO light
-                    float NdotL;
-                    float atten = 1.0f;
-                    glm::vec3 shadowTarget;
-
-                    if (light.type == LightType::Directional)
-                    {
-                        // Sun: parallel rays, no distance falloff
-                        lightDir = -light.direction; // direction points toward light
-                        NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
-                        if (NdotL < 1e-4f) continue;
-
-                        // Shadow: cast ray very far in light direction
-                        shadowTarget = worldP + lightDir * 10000.0f;
-                        if (isOccluded(worldP, shadowTarget, faceNormal, shadowBVH, settings.bias))
-                            continue;
-
-                        atten = 1.0f; // no distance falloff for sun
-                    }
-                    else // Point or Spot
-                    {
-                        const glm::vec3 toLight = light.position - worldP;
-                        const float dist = glm::length(toLight);
-                        if (dist > light.radius || dist < 1e-4f) continue;
-
-                        lightDir = toLight / dist;
-                        NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
-                        if (NdotL < 1e-4f) continue;
-
-                        // Spot cone check
-                        if (light.type == LightType::Spot)
+                        bool inside = false;
+                        for (int i = 0, j = nVerts - 1; i < nVerts; j = i++)
                         {
-                            // lightDir is surface→light, light.direction is light→target
-                            const float cosAngle = glm::dot(-lightDir, light.direction);
-                            if (cosAngle < light.spotCosOuter) continue; // outside cone
-                            // Smooth falloff between inner and outer cone
-                            if (cosAngle < light.spotCosInner)
+                            if ((localPts[i].y > localP.y) != (localPts[j].y > localP.y) &&
+                                localP.x < (localPts[j].x - localPts[i].x) * (localP.y - localPts[i].y) / (localPts[j].y - localPts[i].y) + localPts[i].x)
                             {
-                                const float t = (cosAngle - light.spotCosOuter) /
-                                                std::max(1e-6f, light.spotCosInner - light.spotCosOuter);
-                                atten *= t * t; // quadratic smooth
+                                inside = !inside;
                             }
                         }
-
-                        // Shadow test
-                        if (isOccluded(worldP, light.position, faceNormal, shadowBVH, settings.bias))
+                        if (!inside)
                             continue;
-
-                        // Distance attenuation: smooth quadratic falloff
-                        const float ratio = dist / light.radius;
-                        atten *= std::max(0.0f, 1.0f - ratio * ratio);
                     }
 
-                    const float contribution = NdotL * atten * light.intensity;
-                    r += light.color.r * contribution;
-                    g += light.color.g * contribution;
-                    b += light.color.b * contribution;
-                    if (contribution > 0.001f) faceGotLight = true;
+                    bool sampleLit = false;
+                    accumulated += computeLightingAtPoint(worldP, sampleLit);
+                    faceGotLight = faceGotLight || sampleLit;
+                    ++validSamples;
                 }
+
+                if (validSamples == 0)
+                    continue;
+
+                const glm::vec3 lighting = accumulated / static_cast<float>(validSamples);
 
                 // Write to atlas
                 const int px = pr.x + tx;
@@ -602,9 +630,9 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
                 if (px >= 0 && px < atlasSize && py >= 0 && py < atlasSize)
                 {
                     const int idx = (py * atlasSize + px) * 3;
-                    result.pixels[idx + 0] = static_cast<uint8_t>(std::min(255.0f, r * 255.0f));
-                    result.pixels[idx + 1] = static_cast<uint8_t>(std::min(255.0f, g * 255.0f));
-                    result.pixels[idx + 2] = static_cast<uint8_t>(std::min(255.0f, b * 255.0f));
+                    result.pixels[idx + 0] = static_cast<uint8_t>(std::min(255.0f, lighting.r * 255.0f));
+                    result.pixels[idx + 1] = static_cast<uint8_t>(std::min(255.0f, lighting.g * 255.0f));
+                    result.pixels[idx + 2] = static_cast<uint8_t>(std::min(255.0f, lighting.b * 255.0f));
                     occupied[py * atlasSize + px] = 1;
                 }
             }

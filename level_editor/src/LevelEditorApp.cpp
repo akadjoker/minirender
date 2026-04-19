@@ -9976,7 +9976,7 @@ void LevelEditorApp::ShowRightPanel()
         const bool isBaking = bakeRunning_;
         if (isBaking) ImGui::BeginDisabled();
         ImGui::DragInt("Resolution", &lightmapSettings_.resolution, 16, 64, 8192);
-        ImGui::DragInt("Samples/Texel", &lightmapSettings_.samplesPerTexel, 1, 1, 16);
+        ImGui::DragInt("Samples/Texel", &lightmapSettings_.samplesPerTexel, 1, 1, 1024);
         ImGui::DragFloat("Bias", &lightmapSettings_.bias, 0.01f, 0.001f, 10.0f);
         ImGui::DragFloat("Ambient", &lightmapSettings_.ambient, 0.01f, 0.0f, 1.0f);
         ImGui::Checkbox("Use Lightmap", &useLightmap_);

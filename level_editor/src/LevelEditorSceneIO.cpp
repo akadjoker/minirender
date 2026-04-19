@@ -30,7 +30,7 @@ struct adl_serializer<glm::vec3>
 namespace
 {
 constexpr std::uint32_t kBinarySceneMagic = 0x4D524C45u; // "ELRM"
-constexpr std::uint32_t kBinarySceneVersion = 6;
+constexpr std::uint32_t kBinarySceneVersion = 7;
  
 void writeVec2(BinaryStream& stream, const glm::vec2& value)
 {
@@ -224,6 +224,7 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
     stream.writeU32(kBinarySceneVersion);
     stream.writeStr(scene.assetRoot());
     stream.writeStr(scene.lightmapPath());
+    stream.writeI32(scene.lightmapAtlasCount());
     writeVec3(stream, scene.creationPivotPosition());
     writeVec3(stream, scene.creationPivotRotation());
     stream.writeU32(static_cast<std::uint32_t>(scene.lightmapUVs().size()));
@@ -236,6 +237,9 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
             for (const glm::vec2& uv : faceUVs)
                 writeVec2(stream, uv);
         }
+        stream.writeU32(static_cast<std::uint32_t>(meshUVs.faceAtlasIndices.size()));
+        for (int atlasIndex : meshUVs.faceAtlasIndices)
+            stream.writeI32(atlasIndex);
     }
 
     stream.writeU32(static_cast<std::uint32_t>(scene.meshObjects().size()));
@@ -347,6 +351,7 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
     scene.entities().clear();
     scene.assetRoot() = stream.readStr();
     scene.lightmapPath() = (version >= 2) ? stream.readStr() : std::string();
+    scene.lightmapAtlasCount() = (version >= 7) ? stream.readI32() : (!scene.lightmapPath().empty() ? 1 : 0);
     scene.creationPivotPosition() = (version >= 4) ? readVec3(stream) : glm::vec3(0.0f);
     scene.creationPivotRotation() = (version >= 4) ? readVec3(stream) : glm::vec3(0.0f);
     scene.lightmapUVs().clear();
@@ -364,6 +369,17 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
                 scene.lightmapUVs()[meshIndex].faceVertexUVs[faceIndex].reserve(uvCount);
                 for (std::uint32_t uvIndex = 0; uvIndex < uvCount; ++uvIndex)
                     scene.lightmapUVs()[meshIndex].faceVertexUVs[faceIndex].push_back(readVec2(stream));
+            }
+            if (version >= 7)
+            {
+                const std::uint32_t atlasIndexCount = stream.readU32();
+                scene.lightmapUVs()[meshIndex].faceAtlasIndices.reserve(atlasIndexCount);
+                for (std::uint32_t atlasIndex = 0; atlasIndex < atlasIndexCount; ++atlasIndex)
+                    scene.lightmapUVs()[meshIndex].faceAtlasIndices.push_back(stream.readI32());
+            }
+            else
+            {
+                scene.lightmapUVs()[meshIndex].faceAtlasIndices.assign(faceCount, 0);
             }
         }
     }
@@ -489,9 +505,10 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
         return saveBinaryLevelEditorScene(path, scene, error);
 
     nlohmann::json root;
-    root["version"] = 5;
+    root["version"] = 6;
     root["asset_root"] = scene.assetRoot();
     root["lightmap_path"] = scene.lightmapPath();
+    root["lightmap_atlas_count"] = scene.lightmapAtlasCount();
     root["creation_pivot_position"] = scene.creationPivotPosition();
     root["creation_pivot_rotation"] = scene.creationPivotRotation();
     root["lightmap_uvs"] = nlohmann::json::array();
@@ -500,14 +517,16 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
 
     for (const LevelMeshLightmapUVs& meshUVs : scene.lightmapUVs())
     {
-        nlohmann::json meshUvJson = nlohmann::json::array();
+        nlohmann::json meshUvJson;
+        meshUvJson["face_uvs"] = nlohmann::json::array();
         for (const auto& faceUVs : meshUVs.faceVertexUVs)
         {
             nlohmann::json faceUvJson = nlohmann::json::array();
             for (const glm::vec2& uv : faceUVs)
                 faceUvJson.push_back({uv.x, uv.y});
-            meshUvJson.push_back(faceUvJson);
+            meshUvJson["face_uvs"].push_back(faceUvJson);
         }
+        meshUvJson["face_atlas_indices"] = meshUVs.faceAtlasIndices;
         root["lightmap_uvs"].push_back(meshUvJson);
     }
 
@@ -660,6 +679,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
         scene.entities().clear();
         scene.assetRoot() = root.value("asset_root", std::string("assets"));
         scene.lightmapPath() = root.value("lightmap_path", std::string());
+        scene.lightmapAtlasCount() = root.value("lightmap_atlas_count", scene.lightmapPath().empty() ? 0 : 1);
         scene.creationPivotPosition() = root.value("creation_pivot_position", glm::vec3(0.0f));
         scene.creationPivotRotation() = root.value("creation_pivot_rotation", glm::vec3(0.0f));
         scene.lightmapUVs().clear();
@@ -667,16 +687,35 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
         for (const auto& meshUvJson : root.value("lightmap_uvs", nlohmann::json::array()))
         {
             LevelMeshLightmapUVs meshUVs;
-            for (const auto& faceUvJson : meshUvJson)
+            if (meshUvJson.is_object())
             {
-                std::vector<glm::vec2> faceUVs;
-                for (const auto& uvJson : faceUvJson)
+                for (const auto& faceUvJson : meshUvJson.value("face_uvs", nlohmann::json::array()))
                 {
-                    if (uvJson.is_array() && uvJson.size() >= 2)
-                        faceUVs.emplace_back(uvJson[0].get<float>(), uvJson[1].get<float>());
+                    std::vector<glm::vec2> faceUVs;
+                    for (const auto& uvJson : faceUvJson)
+                    {
+                        if (uvJson.is_array() && uvJson.size() >= 2)
+                            faceUVs.emplace_back(uvJson[0].get<float>(), uvJson[1].get<float>());
+                    }
+                    meshUVs.faceVertexUVs.push_back(std::move(faceUVs));
                 }
-                meshUVs.faceVertexUVs.push_back(std::move(faceUVs));
+                meshUVs.faceAtlasIndices = meshUvJson.value("face_atlas_indices", std::vector<int>{});
             }
+            else
+            {
+                for (const auto& faceUvJson : meshUvJson)
+                {
+                    std::vector<glm::vec2> faceUVs;
+                    for (const auto& uvJson : faceUvJson)
+                    {
+                        if (uvJson.is_array() && uvJson.size() >= 2)
+                            faceUVs.emplace_back(uvJson[0].get<float>(), uvJson[1].get<float>());
+                    }
+                    meshUVs.faceVertexUVs.push_back(std::move(faceUVs));
+                }
+            }
+            if (meshUVs.faceAtlasIndices.empty())
+                meshUVs.faceAtlasIndices.assign(meshUVs.faceVertexUVs.size(), 0);
             scene.lightmapUVs().push_back(std::move(meshUVs));
         }
 

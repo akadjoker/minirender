@@ -11,6 +11,7 @@ void LevelEditorScene::reset()
     entities_.clear();
     assetRoot_ = "assets";
     lightmapPath_.clear();
+    lightmapAtlasCount_ = 0;
     lightmapUVs_.clear();
     creationPivotPosition_ = glm::vec3(0.0f);
     creationPivotRotation_ = glm::vec3(0.0f);

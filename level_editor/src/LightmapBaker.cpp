@@ -296,7 +296,13 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         glm::vec2 localMin, localMax;
     };
     std::vector<FaceEntry> faceEntries;
-    std::vector<stbrp_rect> packRects_vec;
+    struct PackedFaceRect
+    {
+        stbrp_rect rect{};
+        int atlasIndex = 0;
+    };
+    std::vector<PackedFaceRect> packRects_vec;
+    std::vector<std::pair<int, int>> packRectSizes;
 
     for (int mi = 0; mi < static_cast<int>(scene.meshObjects().size()); ++mi)
     {
@@ -395,84 +401,117 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
             pr.w = rw;
             pr.h = rh;
             pr.id = static_cast<int>(faceEntries.size());
-            packRects_vec.push_back(pr);
+            packRects_vec.push_back({pr, 0});
+            packRectSizes.push_back({rw, rh});
 
             faceEntries.push_back(std::move(entry));
         }
     }
 
-    // Pack rects into atlas using stb_rect_pack — shrink until all fit
+    // Pack rects into as many atlas pages as needed.
     {
         const int numNodes = atlasSize * 2;
         const int padding = 2; // 1px border on each side
+        std::vector<int> remaining;
+        remaining.reserve(packRects_vec.size());
+        for (int rectIndex = 0; rectIndex < static_cast<int>(packRects_vec.size()); ++rectIndex)
+            remaining.push_back(rectIndex);
 
-        // Store original content sizes before any padding/scaling
-        std::vector<std::pair<int,int>> origSizes(packRects_vec.size());
-        for (size_t i = 0; i < packRects_vec.size(); ++i)
-            origSizes[i] = {packRects_vec[i].w, packRects_vec[i].h};
-
-        bool allPacked = false;
-        int shrinkShift = 0;
-        for (int attempt = 0; attempt < 8 && !allPacked; ++attempt)
+        int atlasIndex = 0;
+        while (!remaining.empty())
         {
-            // Recompute rect sizes: original >> shrinkShift + padding
-            for (size_t i = 0; i < packRects_vec.size(); ++i)
+            std::vector<stbrp_rect> pageRects;
+            pageRects.reserve(remaining.size());
+            for (int rectIndex : remaining)
             {
-                int cw = std::max(2, origSizes[i].first >> shrinkShift);
-                int ch = std::max(2, origSizes[i].second >> shrinkShift);
-                packRects_vec[i].w = cw + padding;
-                packRects_vec[i].h = ch + padding;
-                packRects_vec[i].was_packed = 0;
+                stbrp_rect rect = packRects_vec[rectIndex].rect;
+                rect.w = packRectSizes[rectIndex].first + padding;
+                rect.h = packRectSizes[rectIndex].second + padding;
+                rect.was_packed = 0;
+                pageRects.push_back(rect);
             }
 
             std::vector<stbrp_node> nodes(numNodes);
             stbrp_context ctx;
             stbrp_init_target(&ctx, atlasSize, atlasSize, nodes.data(), numNodes);
-            stbrp_pack_rects(&ctx, packRects_vec.data(), static_cast<int>(packRects_vec.size()));
+            stbrp_pack_rects(&ctx, pageRects.data(), static_cast<int>(pageRects.size()));
 
-            allPacked = true;
-            for (const auto& r : packRects_vec)
+            std::vector<int> nextRemaining;
+            nextRemaining.reserve(remaining.size());
+            bool packedAny = false;
+            for (std::size_t i = 0; i < pageRects.size(); ++i)
             {
-                if (!r.was_packed) { allPacked = false; break; }
+                const int rectIndex = remaining[i];
+                if (!pageRects[i].was_packed)
+                {
+                    nextRemaining.push_back(rectIndex);
+                    continue;
+                }
+
+                packedAny = true;
+                packRects_vec[rectIndex].atlasIndex = atlasIndex;
+                packRects_vec[rectIndex].rect = pageRects[i];
+                packRects_vec[rectIndex].rect.x += padding / 2;
+                packRects_vec[rectIndex].rect.y += padding / 2;
+                packRects_vec[rectIndex].rect.w -= padding;
+                packRects_vec[rectIndex].rect.h -= padding;
             }
 
-            if (!allPacked)
+            if (!packedAny)
             {
-                shrinkShift++;
-                printf("[Lightmap] Atlas full, shrinking rects (attempt %d, shift %d)\n", attempt + 1, shrinkShift);
+                printf("[Lightmap] Failed to pack any rect into atlas page %d\n", atlasIndex);
+                break;
             }
-        }
 
-        // Inset by half-padding to get content rect
-        for (auto& r : packRects_vec)
-        {
-            if (r.was_packed)
-            {
-                r.x += padding / 2;
-                r.y += padding / 2;
-                r.w -= padding;
-                r.h -= padding;
-            }
+            LightmapResult::Atlas atlas;
+            atlas.width = atlasSize;
+            atlas.height = atlasSize;
+            atlas.pixels.resize(static_cast<std::size_t>(atlasSize) * static_cast<std::size_t>(atlasSize) * 3u, 0);
+            result.atlases.push_back(std::move(atlas));
+            remaining = std::move(nextRemaining);
+            ++atlasIndex;
         }
     }
 
     // Build UV mapping result
     result.meshUVs.resize(scene.meshObjects().size());
     for (int mi = 0; mi < static_cast<int>(scene.meshObjects().size()); ++mi)
+    {
         result.meshUVs[mi].faceVertexUVs.resize(scene.meshObjects()[mi].mesh.faceCount());
+        result.meshUVs[mi].faceAtlasIndices.assign(scene.meshObjects()[mi].mesh.faceCount(), 0);
+    }
 
-    // Occupancy mask — only set when we actually write a pixel (for correct dilation)
-    std::vector<uint8_t> occupied(atlasSize * atlasSize, 0);
+    if (result.atlases.empty())
+    {
+        LightmapResult::Atlas atlas;
+        atlas.width = atlasSize;
+        atlas.height = atlasSize;
+        atlas.pixels.resize(static_cast<std::size_t>(atlasSize) * static_cast<std::size_t>(atlasSize) * 3u, 0);
+        result.atlases.push_back(std::move(atlas));
+    }
+
+    const uint8_t amb = static_cast<uint8_t>(std::min(255.0f, settings.ambient * 255.0f));
+    for (auto& atlas : result.atlases)
+        std::fill(atlas.pixels.begin(), atlas.pixels.end(), amb);
+
+    // Occupancy masks — only set when we actually write a pixel (for correct dilation)
+    std::vector<std::vector<uint8_t>> occupiedMaps(
+        result.atlases.size(),
+        std::vector<uint8_t>(static_cast<std::size_t>(atlasSize) * static_cast<std::size_t>(atlasSize), 0));
 
     // Bake each face
     const int totalFaces = static_cast<int>(packRects_vec.size());
     int bakedFaces = 0;
     int dbgLitFaces = 0, dbgNotPacked = 0;
-    for (const auto& pr : packRects_vec)
+    for (const auto& packedRect : packRects_vec)
     {
+        const auto& pr = packedRect.rect;
         if (!pr.was_packed) { bakedFaces++; dbgNotPacked++; continue; }
         if (progress) progress->store(static_cast<float>(bakedFaces) / static_cast<float>(std::max(1, totalFaces)));
         const auto& entry = faceEntries[pr.id];
+        const int atlasPage = std::clamp(packedRect.atlasIndex, 0, static_cast<int>(result.atlases.size()) - 1);
+        auto& atlasPixels = result.atlases[static_cast<std::size_t>(atlasPage)].pixels;
+        auto& occupied = occupiedMaps[static_cast<std::size_t>(atlasPage)];
         const int nVerts = static_cast<int>(entry.worldPositions.size());
         if (nVerts < 3) continue;
 
@@ -630,9 +669,9 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
                 if (px >= 0 && px < atlasSize && py >= 0 && py < atlasSize)
                 {
                     const int idx = (py * atlasSize + px) * 3;
-                    result.pixels[idx + 0] = static_cast<uint8_t>(std::min(255.0f, lighting.r * 255.0f));
-                    result.pixels[idx + 1] = static_cast<uint8_t>(std::min(255.0f, lighting.g * 255.0f));
-                    result.pixels[idx + 2] = static_cast<uint8_t>(std::min(255.0f, lighting.b * 255.0f));
+                    atlasPixels[idx + 0] = static_cast<uint8_t>(std::min(255.0f, lighting.r * 255.0f));
+                    atlasPixels[idx + 1] = static_cast<uint8_t>(std::min(255.0f, lighting.g * 255.0f));
+                    atlasPixels[idx + 2] = static_cast<uint8_t>(std::min(255.0f, lighting.b * 255.0f));
                     occupied[py * atlasSize + px] = 1;
                 }
             }
@@ -640,6 +679,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
         // Store lightmap UVs for this face's vertices
         auto& meshUVs = result.meshUVs[entry.meshIdx].faceVertexUVs[entry.faceIdx];
+        result.meshUVs[entry.meshIdx].faceAtlasIndices[entry.faceIdx] = atlasPage;
         meshUVs.resize(nVerts);
         for (int v = 0; v < nVerts; ++v)
         {
@@ -675,48 +715,50 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
     // ── Dilation pass: expand lit pixels into empty neighbors to prevent black seams ──
     {
-        // Dilate: for each empty pixel, average neighboring occupied pixels
-        // Run multiple passes for wider coverage
-        std::vector<uint8_t> pixels_copy(result.pixels);
-        for (int pass = 0; pass < 4; ++pass)
+        for (std::size_t atlasIndex = 0; atlasIndex < result.atlases.size(); ++atlasIndex)
         {
-            std::vector<uint8_t> newOccupied(occupied);
-            std::vector<uint8_t> newPixels(pixels_copy);
-            for (int y = 0; y < atlasSize; ++y)
+            std::vector<uint8_t> pixels_copy(result.atlases[atlasIndex].pixels);
+            auto occupied = occupiedMaps[atlasIndex];
+            for (int pass = 0; pass < 4; ++pass)
             {
-                for (int x = 0; x < atlasSize; ++x)
+                std::vector<uint8_t> newOccupied(occupied);
+                std::vector<uint8_t> newPixels(pixels_copy);
+                for (int y = 0; y < atlasSize; ++y)
                 {
-                    if (occupied[y * atlasSize + x]) continue; // already filled
-                    int count = 0;
-                    int sumR = 0, sumG = 0, sumB = 0;
-                    for (int dy = -1; dy <= 1; ++dy)
+                    for (int x = 0; x < atlasSize; ++x)
                     {
-                        for (int dx = -1; dx <= 1; ++dx)
+                        if (occupied[y * atlasSize + x]) continue; // already filled
+                        int count = 0;
+                        int sumR = 0, sumG = 0, sumB = 0;
+                        for (int dy = -1; dy <= 1; ++dy)
                         {
-                            const int nx = x + dx, ny = y + dy;
-                            if (nx < 0 || nx >= atlasSize || ny < 0 || ny >= atlasSize) continue;
-                            if (!occupied[ny * atlasSize + nx]) continue;
-                            const int ni = (ny * atlasSize + nx) * 3;
-                            sumR += pixels_copy[ni + 0];
-                            sumG += pixels_copy[ni + 1];
-                            sumB += pixels_copy[ni + 2];
-                            count++;
+                            for (int dx = -1; dx <= 1; ++dx)
+                            {
+                                const int nx = x + dx, ny = y + dy;
+                                if (nx < 0 || nx >= atlasSize || ny < 0 || ny >= atlasSize) continue;
+                                if (!occupied[ny * atlasSize + nx]) continue;
+                                const int ni = (ny * atlasSize + nx) * 3;
+                                sumR += pixels_copy[ni + 0];
+                                sumG += pixels_copy[ni + 1];
+                                sumB += pixels_copy[ni + 2];
+                                count++;
+                            }
+                        }
+                        if (count > 0)
+                        {
+                            const int idx = (y * atlasSize + x) * 3;
+                            newPixels[idx + 0] = static_cast<uint8_t>(sumR / count);
+                            newPixels[idx + 1] = static_cast<uint8_t>(sumG / count);
+                            newPixels[idx + 2] = static_cast<uint8_t>(sumB / count);
+                            newOccupied[y * atlasSize + x] = 1;
                         }
                     }
-                    if (count > 0)
-                    {
-                        const int idx = (y * atlasSize + x) * 3;
-                        newPixels[idx + 0] = static_cast<uint8_t>(sumR / count);
-                        newPixels[idx + 1] = static_cast<uint8_t>(sumG / count);
-                        newPixels[idx + 2] = static_cast<uint8_t>(sumB / count);
-                        newOccupied[y * atlasSize + x] = 1;
-                    }
                 }
+                occupied = std::move(newOccupied);
+                pixels_copy = std::move(newPixels);
             }
-            occupied = newOccupied;
-            pixels_copy = newPixels;
+            result.atlases[atlasIndex].pixels = std::move(pixels_copy);
         }
-        result.pixels = pixels_copy;
     }
 
     // Diagnostic: find max pixel value and count lit/shadowed texels
@@ -724,16 +766,18 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         uint8_t maxVal = 0;
         int litTexels = 0;
         int totalTexels = 0;
-        const uint8_t ambByte = static_cast<uint8_t>(std::min(255.0f, settings.ambient * 255.0f));
-        for (int i = 0; i < static_cast<int>(result.pixels.size()); i += 3)
+        for (const auto& atlas : result.atlases)
         {
-            const uint8_t mx = std::max({result.pixels[i], result.pixels[i+1], result.pixels[i+2]});
-            if (mx > maxVal) maxVal = mx;
-            if (mx > ambByte) litTexels++;
-            totalTexels++;
+            for (int i = 0; i < static_cast<int>(atlas.pixels.size()); i += 3)
+            {
+                const uint8_t mx = std::max({atlas.pixels[i], atlas.pixels[i+1], atlas.pixels[i+2]});
+                if (mx > maxVal) maxVal = mx;
+                if (mx > amb) litTexels++;
+                totalTexels++;
+            }
         }
-        printf("[Lightmap] Atlas %dx%d, %d lights, %d faces, %d tris\n",
-               atlasSize, atlasSize, static_cast<int>(lights.size()),
+        printf("[Lightmap] Atlases=%d page=%dx%d, %d lights, %d faces, %d tris\n",
+               static_cast<int>(result.atlases.size()), atlasSize, atlasSize, static_cast<int>(lights.size()),
                totalFaces, static_cast<int>(allTris.size()));
         printf("[Lightmap] Lit faces: %d / %d, not packed: %d\n",
                dbgLitFaces, totalFaces, dbgNotPacked);
@@ -749,8 +793,11 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         }
     }
 
-    // Save to file
+    // Keep legacy page 0 fields for editor preview and existing code paths.
     result.savedPath = settings.outputPath;
+    result.width = result.atlases.front().width;
+    result.height = result.atlases.front().height;
+    result.pixels = result.atlases.front().pixels;
 
     return result;
 }

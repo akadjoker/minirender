@@ -1283,9 +1283,13 @@ void LevelEditorApp::FinishBakeAsync()
     bakeRunning_ = false;
 
     lightmapResult_ = std::move(bakeResult_);
+    scene_.lightmapAtlasCount() = static_cast<int>(std::max<std::size_t>(lightmapResult_.atlases.size(), lightmapResult_.pixels.empty() ? 0u : 1u));
     scene_.lightmapUVs().resize(lightmapResult_.meshUVs.size());
     for (std::size_t i = 0; i < lightmapResult_.meshUVs.size(); ++i)
+    {
         scene_.lightmapUVs()[i].faceVertexUVs = lightmapResult_.meshUVs[i].faceVertexUVs;
+        scene_.lightmapUVs()[i].faceAtlasIndices = lightmapResult_.meshUVs[i].faceAtlasIndices;
+    }
 
     // Upload to GPU
     if (lightmapTexture_)
@@ -1341,9 +1345,13 @@ void LevelEditorApp::BakeAndUploadLightmap()
     if (!scenePath_.empty())
         settings.outputPath = SceneLightmapPathForSceneFile(std::filesystem::path(scenePath_)).generic_string();
     lightmapResult_ = BakeLightmaps(scene_, settings);
+    scene_.lightmapAtlasCount() = static_cast<int>(std::max<std::size_t>(lightmapResult_.atlases.size(), lightmapResult_.pixels.empty() ? 0u : 1u));
     scene_.lightmapUVs().resize(lightmapResult_.meshUVs.size());
     for (std::size_t i = 0; i < lightmapResult_.meshUVs.size(); ++i)
+    {
         scene_.lightmapUVs()[i].faceVertexUVs = lightmapResult_.meshUVs[i].faceVertexUVs;
+        scene_.lightmapUVs()[i].faceAtlasIndices = lightmapResult_.meshUVs[i].faceAtlasIndices;
+    }
 
     printf("[Lightmap] Result: %dx%d, %d bytes, meshUVs=%d\n",
            lightmapResult_.width, lightmapResult_.height,
@@ -2427,9 +2435,12 @@ bool LevelEditorApp::SaveSceneToPath(const std::string& path, bool setAsCurrentP
 {
     std::filesystem::path savePath = ensureSceneExtension(std::filesystem::path(path));
     scene_.lightmapPath().clear();
+    scene_.lightmapAtlasCount() = static_cast<int>(std::max<std::size_t>(lightmapResult_.atlases.size(), lightmapResult_.pixels.empty() ? 0u : 1u));
     if (lightmapTexture_ != 0 || !lightmapResult_.pixels.empty())
     {
-        const std::filesystem::path lightmapPath = SceneLightmapPathForSceneFile(savePath);
+        std::filesystem::path lightmapPath = SceneLightmapPathForSceneFile(savePath);
+        if (scene_.lightmapAtlasCount() > 1)
+            lightmapPath = lightmapPath.parent_path() / (lightmapPath.stem().generic_string() + "_0" + lightmapPath.extension().generic_string());
         std::error_code relativeError;
         const std::filesystem::path relativeLightmap = std::filesystem::relative(lightmapPath, savePath.parent_path(), relativeError);
         scene_.lightmapPath() = relativeError ? lightmapPath.generic_string() : relativeLightmap.generic_string();
@@ -2460,21 +2471,85 @@ std::filesystem::path LevelEditorApp::SceneLightmapPathForSceneFile(const std::f
     return parent / (scenePath.stem().generic_string() + "_lightmap.png");
 }
 
+namespace
+{
+std::vector<std::filesystem::path> buildSceneLightmapPaths(const std::filesystem::path& firstPath, int atlasCount)
+{
+    std::vector<std::filesystem::path> paths;
+    if (firstPath.empty())
+        return paths;
+
+    atlasCount = std::max(1, atlasCount);
+    paths.reserve(static_cast<std::size_t>(atlasCount));
+    const std::string stem = firstPath.stem().generic_string();
+    const std::string suffix = "_0";
+    const std::string baseStem = (atlasCount > 1 && stem.size() > suffix.size() &&
+        stem.compare(stem.size() - suffix.size(), suffix.size(), suffix) == 0)
+        ? stem.substr(0, stem.size() - suffix.size())
+        : stem;
+    for (int atlasIndex = 0; atlasIndex < atlasCount; ++atlasIndex)
+    {
+        if (atlasCount == 1)
+        {
+            paths.push_back(firstPath);
+        }
+        else
+        {
+            paths.push_back(firstPath.parent_path() /
+                (baseStem + "_" + std::to_string(atlasIndex) + firstPath.extension().generic_string()));
+        }
+    }
+    return paths;
+}
+}
+
 bool LevelEditorApp::SaveCurrentLightmapForScene(const std::filesystem::path& scenePath)
 {
-    if (lightmapResult_.pixels.empty())
+    if (lightmapResult_.pixels.empty() && lightmapResult_.atlases.empty())
         return true;
 
-    const std::filesystem::path lightmapPath = SceneLightmapPathForSceneFile(scenePath);
+    std::vector<LightmapResult::Atlas> atlases = lightmapResult_.atlases;
+    if (atlases.empty() && !lightmapResult_.pixels.empty())
+    {
+        LightmapResult::Atlas atlas;
+        atlas.width = lightmapResult_.width;
+        atlas.height = lightmapResult_.height;
+        atlas.pixels = lightmapResult_.pixels;
+        atlas.savedPath = lightmapResult_.savedPath;
+        atlases.push_back(std::move(atlas));
+    }
+
+    std::filesystem::path firstLightmapPath = SceneLightmapPathForSceneFile(scenePath);
+    if (atlases.size() > 1)
+        firstLightmapPath = firstLightmapPath.parent_path() / (firstLightmapPath.stem().generic_string() + "_0" + firstLightmapPath.extension().generic_string());
+
     std::error_code createError;
-    std::filesystem::create_directories(lightmapPath.parent_path(), createError);
-    lightmapResult_.savedPath = lightmapPath.generic_string();
-    return stbi_write_png(lightmapResult_.savedPath.c_str(),
-                          lightmapResult_.width,
-                          lightmapResult_.height,
-                          3,
-                          lightmapResult_.pixels.data(),
-                          lightmapResult_.width * 3) != 0;
+    std::filesystem::create_directories(firstLightmapPath.parent_path(), createError);
+
+    const auto paths = buildSceneLightmapPaths(firstLightmapPath, static_cast<int>(atlases.size()));
+    bool savedAll = true;
+    for (std::size_t atlasIndex = 0; atlasIndex < atlases.size(); ++atlasIndex)
+    {
+        atlases[atlasIndex].savedPath = paths[atlasIndex].generic_string();
+        const bool saved = stbi_write_png(atlases[atlasIndex].savedPath.c_str(),
+                                          atlases[atlasIndex].width,
+                                          atlases[atlasIndex].height,
+                                          3,
+                                          atlases[atlasIndex].pixels.data(),
+                                          atlases[atlasIndex].width * 3) != 0;
+        savedAll = savedAll && saved;
+    }
+
+    lightmapResult_.atlases = std::move(atlases);
+    if (!lightmapResult_.atlases.empty())
+    {
+        lightmapResult_.savedPath = lightmapResult_.atlases.front().savedPath;
+        lightmapResult_.width = lightmapResult_.atlases.front().width;
+        lightmapResult_.height = lightmapResult_.atlases.front().height;
+        lightmapResult_.pixels = lightmapResult_.atlases.front().pixels;
+    }
+
+    return savedAll;
 }
 
 void LevelEditorApp::ClearLoadedLightmap()
@@ -2506,9 +2581,21 @@ bool LevelEditorApp::LoadLightmapTextureFromFile(const std::filesystem::path& pa
     lightmapResult_.height = height;
     lightmapResult_.savedPath = path.generic_string();
     lightmapResult_.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u);
+    lightmapResult_.atlases.clear();
+    {
+        LightmapResult::Atlas atlas;
+        atlas.width = width;
+        atlas.height = height;
+        atlas.savedPath = path.generic_string();
+        atlas.pixels = lightmapResult_.pixels;
+        lightmapResult_.atlases.push_back(std::move(atlas));
+    }
     lightmapResult_.meshUVs.resize(scene_.lightmapUVs().size());
     for (std::size_t i = 0; i < scene_.lightmapUVs().size(); ++i)
+    {
         lightmapResult_.meshUVs[i].faceVertexUVs = scene_.lightmapUVs()[i].faceVertexUVs;
+        lightmapResult_.meshUVs[i].faceAtlasIndices = scene_.lightmapUVs()[i].faceAtlasIndices;
+    }
     stbi_image_free(pixels);
 
     glGenTextures(1, &lightmapTexture_);
@@ -3369,6 +3456,16 @@ bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
     if (!lightmapPath.empty() && std::filesystem::exists(lightmapPath))
     {
         if (LoadLightmapTextureFromFile(lightmapPath))
+            sceneStatusMessage_ += " + lightmap";
+    }
+    else if (scene_.lightmapAtlasCount() > 1)
+    {
+        const std::filesystem::path firstPage = resolveSceneRelativePath(
+            (SceneLightmapPathForSceneFile(sceneFilePath).parent_path() /
+             (SceneLightmapPathForSceneFile(sceneFilePath).stem().generic_string() + "_0" +
+              SceneLightmapPathForSceneFile(sceneFilePath).extension().generic_string())).generic_string(),
+            sceneFilePath);
+        if (std::filesystem::exists(firstPage) && LoadLightmapTextureFromFile(firstPage))
             sceneStatusMessage_ += " + lightmap";
     }
 

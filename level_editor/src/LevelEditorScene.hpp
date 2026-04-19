@@ -84,6 +84,7 @@ struct LevelMeshObject
 struct LevelMeshLightmapUVs
 {
     std::vector<std::vector<glm::vec2>> faceVertexUVs;
+    std::vector<int> faceAtlasIndices;
 };
 
 // LightType is defined in Node.hpp: enum class LightType { Point, Directional, Spot };
@@ -133,6 +134,7 @@ public:
     const std::vector<LevelEntityObject>& entities() const { return entities_; }
     const std::string& assetRoot() const { return assetRoot_; }
     const std::string& lightmapPath() const { return lightmapPath_; }
+    int lightmapAtlasCount() const { return lightmapAtlasCount_; }
     const std::vector<LevelMeshLightmapUVs>& lightmapUVs() const { return lightmapUVs_; }
     const glm::vec3& creationPivotPosition() const { return creationPivotPosition_; }
     const glm::vec3& creationPivotRotation() const { return creationPivotRotation_; }
@@ -141,6 +143,7 @@ public:
     std::vector<LevelEntityObject>& entities() { return entities_; }
     std::string& assetRoot() { return assetRoot_; }
     std::string& lightmapPath() { return lightmapPath_; }
+    int& lightmapAtlasCount() { return lightmapAtlasCount_; }
     std::vector<LevelMeshLightmapUVs>& lightmapUVs() { return lightmapUVs_; }
     glm::vec3& creationPivotPosition() { return creationPivotPosition_; }
     glm::vec3& creationPivotRotation() { return creationPivotRotation_; }
@@ -150,6 +153,7 @@ private:
     std::vector<LevelEntityObject> entities_;
     std::string assetRoot_ = "assets";
     std::string lightmapPath_;
+    int lightmapAtlasCount_ = 0;
     std::vector<LevelMeshLightmapUVs> lightmapUVs_;
     glm::vec3 creationPivotPosition_ = glm::vec3(0.0f);
     glm::vec3 creationPivotRotation_ = glm::vec3(0.0f);

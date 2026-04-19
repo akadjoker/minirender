@@ -24,6 +24,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -2313,6 +2315,7 @@ void LevelEditorApp::RenderFrame(float deltaTime)
     ShowUvMappingWindow();
     ShowStatusBar(deltaTime);
     HandleFileDialogs();
+    ShowTerrainRawHeightmapDialog();
 }
 
 void LevelEditorApp::UpdatePanelLayout()
@@ -2797,6 +2800,133 @@ bool LoadHeightmapImage(const std::string& path,
     return true;
 }
 
+bool LoadRawHeightmap(const std::string& path,
+                      int width,
+                      int height,
+                      int bitDepth,
+                      LevelEditorApp::RawHeightmapValueType valueType,
+                      LevelEditorApp::RawHeightmapEndian endian,
+                      bool flipVertical,
+                      std::vector<float>& outHeights,
+                      float& outMinValue,
+                      float& outMaxValue,
+                      std::string& outError)
+{
+    outHeights.clear();
+    outError.clear();
+    outMinValue = 0.0f;
+    outMaxValue = 1.0f;
+
+    if (width < 2 || height < 2)
+    {
+        outError = "raw heightmap must be at least 2x2";
+        return false;
+    }
+
+    if (valueType == LevelEditorApp::RawHeightmapValueType::Float && bitDepth != 32)
+    {
+        outError = "float RAW currently supports only 32-bit";
+        return false;
+    }
+
+    if (bitDepth != 8 && bitDepth != 16 && bitDepth != 24 && bitDepth != 32)
+    {
+        outError = "supported RAW bit depths are 8, 16, 24 and 32";
+        return false;
+    }
+
+    const int bytesPerSample = bitDepth / 8;
+    const std::uint64_t expectedSize = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * static_cast<std::uint64_t>(bytesPerSample);
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        outError = "failed to open RAW file";
+        return false;
+    }
+
+    in.seekg(0, std::ios::end);
+    const std::uint64_t fileSize = static_cast<std::uint64_t>(in.tellg());
+    in.seekg(0, std::ios::beg);
+    if (fileSize != expectedSize)
+    {
+        outError = "file size does not match width/height/bit depth";
+        return false;
+    }
+
+    std::vector<unsigned char> bytes(static_cast<std::size_t>(expectedSize));
+    if (!bytes.empty())
+        in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!in && !bytes.empty())
+    {
+        outError = "failed to read RAW file";
+        return false;
+    }
+
+    auto readUnsigned = [&](const unsigned char* ptr) -> float
+    {
+        switch (bitDepth)
+        {
+        case 8:
+            return static_cast<float>(ptr[0]) / 255.0f;
+        case 16:
+        {
+            const std::uint16_t value = (endian == LevelEditorApp::RawHeightmapEndian::Little)
+                ? static_cast<std::uint16_t>(ptr[0] | (ptr[1] << 8))
+                : static_cast<std::uint16_t>((ptr[0] << 8) | ptr[1]);
+            return static_cast<float>(value) / 65535.0f;
+        }
+        case 24:
+        {
+            const std::uint32_t value = (endian == LevelEditorApp::RawHeightmapEndian::Little)
+                ? static_cast<std::uint32_t>(ptr[0] | (ptr[1] << 8) | (ptr[2] << 16))
+                : static_cast<std::uint32_t>((ptr[0] << 16) | (ptr[1] << 8) | ptr[2]);
+            return static_cast<float>(static_cast<double>(value) / 16777215.0);
+        }
+        case 32:
+        default:
+        {
+            const std::uint32_t value = (endian == LevelEditorApp::RawHeightmapEndian::Little)
+                ? static_cast<std::uint32_t>(ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24))
+                : static_cast<std::uint32_t>((ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3]);
+            return static_cast<float>(static_cast<double>(value) / 4294967295.0);
+        }
+        }
+    };
+
+    auto readFloat32 = [&](const unsigned char* ptr) -> float
+    {
+        std::uint32_t raw = (endian == LevelEditorApp::RawHeightmapEndian::Little)
+            ? static_cast<std::uint32_t>(ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) | (ptr[3] << 24))
+            : static_cast<std::uint32_t>((ptr[0] << 24) | (ptr[1] << 16) | (ptr[2] << 8) | ptr[3]);
+        float value = 0.0f;
+        std::memcpy(&value, &raw, sizeof(float));
+        return value;
+    };
+
+    outHeights.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+    outMinValue = std::numeric_limits<float>::max();
+    outMaxValue = std::numeric_limits<float>::lowest();
+
+    for (int y = 0; y < height; ++y)
+    {
+        const int srcY = flipVertical ? (height - 1 - y) : y;
+        for (int x = 0; x < width; ++x)
+        {
+            const std::size_t srcIndex = (static_cast<std::size_t>(srcY) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x))
+                * static_cast<std::size_t>(bytesPerSample);
+            const float value = (valueType == LevelEditorApp::RawHeightmapValueType::Float)
+                ? readFloat32(bytes.data() + srcIndex)
+                : readUnsigned(bytes.data() + srcIndex);
+            outHeights[static_cast<std::size_t>(y) * static_cast<std::size_t>(width) + static_cast<std::size_t>(x)] = value;
+            outMinValue = std::min(outMinValue, value);
+            outMaxValue = std::max(outMaxValue, value);
+        }
+    }
+
+    return true;
+}
+
 bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows)
 {
     outCols = 0;
@@ -3177,6 +3307,24 @@ void LevelEditorApp::HandleFileDialogs()
     terrainHeightmapDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
     ImGui::PopID();
 
+    if (terrainRawHeightmapDialog_.HasResult())
+    {
+        const auto result = terrainRawHeightmapDialog_.ConsumeResult();
+        if (result.accepted)
+        {
+            pendingTerrainRawHeightmapPath_ = result.path.generic_string();
+            lastTerrainHeightmapDir_ = result.path.parent_path().generic_string();
+            terrainRawPreviewDirty_ = true;
+            terrainRawPreviewValid_ = false;
+            terrainRawPreviewHeights_.clear();
+            terrainRawPreviewError_.clear();
+            terrainRawDialogRequestOpen_ = true;
+        }
+    }
+    ImGui::PushID("TerrainRawHeightmapDialog");
+    terrainRawHeightmapDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
+    ImGui::PopID();
+
     if (refPlaneImageDialog_.HasResult())
     {
         const auto result = refPlaneImageDialog_.ConsumeResult();
@@ -3251,6 +3399,229 @@ void LevelEditorApp::HandleFileDialogs()
     ImGui::PushID("TerrainHeightmapExportDialog");
     terrainHeightmapExportDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
     ImGui::PopID();
+}
+
+void LevelEditorApp::ShowTerrainRawHeightmapDialog()
+{
+    if (terrainRawDialogRequestOpen_)
+    {
+        ImGui::OpenPopup("Import RAW Heightmap");
+        terrainRawDialogOpen_ = true;
+        terrainRawDialogRequestOpen_ = false;
+    }
+
+    if (!terrainRawDialogOpen_)
+        return;
+
+    auto refreshPreview = [&]()
+    {
+        terrainRawPreviewDirty_ = false;
+        terrainRawPreviewValid_ = false;
+        terrainRawPreviewHeights_.clear();
+        terrainRawPreviewError_.clear();
+
+        if (pendingTerrainRawHeightmapPath_.empty())
+        {
+            terrainRawPreviewError_ = "No RAW file selected.";
+            return;
+        }
+
+        if (!LoadRawHeightmap(
+                pendingTerrainRawHeightmapPath_,
+                terrainRawWidth_,
+                terrainRawHeight_,
+                terrainRawBitDepth_,
+                terrainRawValueType_,
+                terrainRawEndian_,
+                terrainRawFlipVertical_,
+                terrainRawPreviewHeights_,
+                terrainRawPreviewMin_,
+                terrainRawPreviewMax_,
+                terrainRawPreviewError_))
+        {
+            return;
+        }
+
+        Pixmap previewPixmap(terrainRawWidth_, terrainRawHeight_, 4);
+        if (!previewPixmap.IsValid())
+        {
+            terrainRawPreviewError_ = "Failed to allocate preview image.";
+            terrainRawPreviewHeights_.clear();
+            return;
+        }
+
+        const float minValue = terrainRawPreviewMin_;
+        const float maxValue = terrainRawPreviewMax_;
+        const float invRange = (maxValue > minValue) ? (1.0f / (maxValue - minValue)) : 0.0f;
+        for (int y = 0; y < terrainRawHeight_; ++y)
+        {
+            for (int x = 0; x < terrainRawWidth_; ++x)
+            {
+                const std::size_t idx = static_cast<std::size_t>(y) * static_cast<std::size_t>(terrainRawWidth_) + static_cast<std::size_t>(x);
+                float normalized = invRange > 0.0f ? ((terrainRawPreviewHeights_[idx] - minValue) * invRange)
+                                                   : terrainRawPreviewHeights_[idx];
+                normalized = glm::clamp(normalized, 0.0f, 1.0f);
+                const u8 gray = static_cast<u8>(std::lround(normalized * 255.0f));
+                previewPixmap.SetPixel(static_cast<u32>(x), static_cast<u32>(y), gray, gray, gray, 255);
+            }
+        }
+
+        std::unique_ptr<Pixmap> uploadPixmap;
+        if (previewPixmap.width > 512 || previewPixmap.height > 512)
+        {
+            const float scale = std::min(512.0f / static_cast<float>(previewPixmap.width),
+                                         512.0f / static_cast<float>(previewPixmap.height));
+            const int scaledWidth = std::max(1, static_cast<int>(std::lround(previewPixmap.width * scale)));
+            const int scaledHeight = std::max(1, static_cast<int>(std::lround(previewPixmap.height * scale)));
+            uploadPixmap.reset(previewPixmap.Resize(scaledWidth, scaledHeight));
+        }
+
+        TextureManager& texMgr = TextureManager::instance();
+        Pixmap& sourcePixmap = uploadPixmap ? *uploadPixmap : previewPixmap;
+        Texture* previewTexture = texMgr.get(terrainRawPreviewTextureName_);
+        if (previewTexture)
+            texMgr.updateFromPixmap(*previewTexture, sourcePixmap, false);
+        else
+            texMgr.createFromPixmap(terrainRawPreviewTextureName_, sourcePixmap);
+        terrainRawPreviewValid_ = true;
+    };
+
+    if (terrainRawPreviewDirty_)
+        refreshPreview();
+
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(760.0f, 620.0f), ImGuiCond_Appearing);
+
+    bool keepOpen = true;
+    if (ImGui::BeginPopupModal("Import RAW Heightmap", &keepOpen, ImGuiWindowFlags_NoCollapse))
+    {
+        ImGui::TextWrapped("RAW files do not carry metadata, so we need the format settings before previewing and creating the terrain.");
+        ImGui::Separator();
+
+        ImGui::TextUnformatted("File");
+        ImGui::BeginDisabled();
+        ImGui::InputText("##TerrainRawPath", &pendingTerrainRawHeightmapPath_, ImGuiInputTextFlags_ReadOnly);
+        ImGui::EndDisabled();
+
+        bool changed = false;
+        changed |= ImGui::InputInt("Width##TerrainRaw", &terrainRawWidth_);
+        changed |= ImGui::InputInt("Height##TerrainRaw", &terrainRawHeight_);
+        terrainRawWidth_ = std::max(2, terrainRawWidth_);
+        terrainRawHeight_ = std::max(2, terrainRawHeight_);
+
+        static const int rawBitDepthValues[] = {8, 16, 24, 32};
+        static const char* rawBitDepthLabels[] = {"8-bit", "16-bit", "24-bit", "32-bit"};
+        int rawBitDepthIndex = 1;
+        for (int i = 0; i < IM_ARRAYSIZE(rawBitDepthValues); ++i)
+        {
+            if (terrainRawBitDepth_ == rawBitDepthValues[i])
+            {
+                rawBitDepthIndex = i;
+                break;
+            }
+        }
+        if (ImGui::Combo("Bit Depth##TerrainRaw", &rawBitDepthIndex, rawBitDepthLabels, IM_ARRAYSIZE(rawBitDepthLabels)))
+        {
+            terrainRawBitDepth_ = rawBitDepthValues[rawBitDepthIndex];
+            changed = true;
+        }
+
+        static const char* rawTypeLabels[] = {"Unsigned", "Float"};
+        int rawTypeIndex = static_cast<int>(terrainRawValueType_);
+        if (ImGui::Combo("Value Type##TerrainRaw", &rawTypeIndex, rawTypeLabels, IM_ARRAYSIZE(rawTypeLabels)))
+        {
+            terrainRawValueType_ = static_cast<RawHeightmapValueType>(rawTypeIndex);
+            changed = true;
+        }
+
+        static const char* rawEndianLabels[] = {"Little Endian", "Big Endian"};
+        int rawEndianIndex = static_cast<int>(terrainRawEndian_);
+        if (ImGui::Combo("Endian##TerrainRaw", &rawEndianIndex, rawEndianLabels, IM_ARRAYSIZE(rawEndianLabels)))
+        {
+            terrainRawEndian_ = static_cast<RawHeightmapEndian>(rawEndianIndex);
+            changed = true;
+        }
+
+        if (ImGui::Checkbox("Flip Vertical##TerrainRaw", &terrainRawFlipVertical_))
+            changed = true;
+
+        if (changed)
+            terrainRawPreviewDirty_ = true;
+
+        if (terrainRawPreviewDirty_)
+            refreshPreview();
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Preview");
+        if (!terrainRawPreviewError_.empty())
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%s", terrainRawPreviewError_.c_str());
+        if (terrainRawPreviewValid_)
+        {
+            ImGui::TextDisabled("Resolution: %d x %d", terrainRawWidth_, terrainRawHeight_);
+            ImGui::TextDisabled("Value Range: %.4f .. %.4f", terrainRawPreviewMin_, terrainRawPreviewMax_);
+            Texture* previewTexture = TextureManager::instance().get(terrainRawPreviewTextureName_);
+            if (previewTexture && previewTexture->id != 0)
+            {
+                const float maxPreviewSize = 360.0f;
+                const float scale = std::min(maxPreviewSize / static_cast<float>(previewTexture->width),
+                                             maxPreviewSize / static_cast<float>(previewTexture->height));
+                const ImVec2 previewSize(
+                    std::max(64.0f, static_cast<float>(previewTexture->width) * scale),
+                    std::max(64.0f, static_cast<float>(previewTexture->height) * scale));
+                ImGui::Image((ImTextureID)(intptr_t)previewTexture->id, previewSize);
+            }
+        }
+        else
+        {
+            ImGui::TextDisabled("Adjust the RAW settings to generate the preview.");
+        }
+
+        ImGui::Separator();
+        if (ImGui::Button("Cancel##TerrainRaw"))
+        {
+            terrainRawDialogOpen_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!terrainRawPreviewValid_);
+        if (ImGui::Button("Create Terrain##TerrainRaw"))
+        {
+            PushUndoState();
+
+            primSubdivX_ = std::max(1, terrainRawWidth_ - 1);
+            primSubdivZ_ = std::max(1, terrainRawHeight_ - 1);
+            primHeightmapPath_.clear();
+
+            LevelMeshObject object;
+            object.primitive = LevelMeshPrimitive::Terrain;
+            object.name = "Terrain " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+            object.mesh = EditableMesh::MakeTerrain(
+                glm::vec3(0.0f),
+                primPlaneW_,
+                primPlaneD_,
+                primSubdivX_,
+                primSubdivZ_,
+                terrainRawPreviewHeights_,
+                primHeightScale_);
+
+            scene_.meshObjects().push_back(std::move(object));
+            SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
+            meshCacheValid_ = false;
+            sceneDirty_ = true;
+            sceneStatusMessage_ = "Terrain created from RAW heightmap: " + PathFilename(pendingTerrainRawHeightmapPath_);
+
+            terrainRawDialogOpen_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+
+        ImGui::EndPopup();
+    }
+    else if (!keepOpen)
+    {
+        terrainRawDialogOpen_ = false;
+    }
 }
 
 void LevelEditorApp::PushUndoState()
@@ -7709,9 +8080,9 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::DragInt("Subdiv X##PrimTerrainSubdivX", &primSubdivX_, 1, 1, 2048);
                 ImGui::DragInt("Subdiv Z##PrimTerrainSubdivZ", &primSubdivZ_, 1, 1, 2048);
                 ImGui::DragFloat("Height Scale##PrimTerrainScale", &primHeightScale_, 1.0f, 0.0f, 4096.0f);
-                ImGui::TextWrapped("Heightmap");
+                ImGui::TextWrapped("Image Heightmap");
                 ImGui::InputText("##PrimTerrainHeightmapPath", &primHeightmapPath_, ImGuiInputTextFlags_ReadOnly);
-                if (ImGui::Button("Choose Heightmap##PrimTerrain"))
+                if (ImGui::Button("Choose Image##PrimTerrain"))
                 {
                     std::filesystem::path startDir;
                     if (!lastTerrainHeightmapDir_.empty())
@@ -7723,6 +8094,18 @@ void LevelEditorApp::ShowLeftPanel()
                     else
                         startDir = std::filesystem::current_path();
                     terrainHeightmapDialog_.Open(ImGuiFileDialog::Mode::OpenFile, startDir, "image");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Import RAW##PrimTerrain"))
+                {
+                    std::filesystem::path startDir;
+                    if (!lastTerrainHeightmapDir_.empty())
+                        startDir = std::filesystem::path(lastTerrainHeightmapDir_);
+                    else if (!assetRoot_.empty())
+                        startDir = std::filesystem::path(assetRoot_);
+                    else
+                        startDir = std::filesystem::current_path();
+                    terrainRawHeightmapDialog_.Open(ImGuiFileDialog::Mode::OpenFile, startDir, "image");
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Clear Heightmap##PrimTerrain"))

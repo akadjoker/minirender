@@ -104,6 +104,18 @@ public:
         Paint
     };
 
+    enum class RawHeightmapValueType
+    {
+        UnsignedInt = 0,
+        Float
+    };
+
+    enum class RawHeightmapEndian
+    {
+        Little = 0,
+        Big
+    };
+
     struct MeshTransformState
     {
         int index = -1;
@@ -218,6 +230,7 @@ private:
     void HandleFileDialogs();
     void SaveEditorSettings();
     void LoadEditorSettings();
+    void ShowTerrainRawHeightmapDialog();
     bool ExportSceneOBJ(const std::string& path);
     bool ExportSceneH3D(const std::string& path);
     void InvalidateTerrainCompositeCache();
@@ -353,6 +366,22 @@ private:
     int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
     std::string primHeightmapPath_;
     std::string lastTerrainHeightmapDir_;
+    std::string pendingTerrainRawHeightmapPath_;
+    std::string terrainRawPreviewTextureName_ = "level_terrain_raw_preview";
+    std::string terrainRawPreviewError_;
+    int terrainRawWidth_ = 513;
+    int terrainRawHeight_ = 513;
+    int terrainRawBitDepth_ = 16;
+    RawHeightmapValueType terrainRawValueType_ = RawHeightmapValueType::UnsignedInt;
+    RawHeightmapEndian terrainRawEndian_ = RawHeightmapEndian::Little;
+    bool terrainRawFlipVertical_ = false;
+    bool terrainRawDialogOpen_ = false;
+    bool terrainRawDialogRequestOpen_ = false;
+    bool terrainRawPreviewDirty_ = false;
+    bool terrainRawPreviewValid_ = false;
+    float terrainRawPreviewMin_ = 0.0f;
+    float terrainRawPreviewMax_ = 1.0f;
+    std::vector<float> terrainRawPreviewHeights_;
     int primStairSteps_ = 8;
     float primInnerRadius_ = 32.0f;
     float primOuterRadius_ = 96.0f;
@@ -374,6 +403,7 @@ private:
     ImGuiFileDialog sceneDialog_;
     ImGuiFileDialog importMeshDialog_;
     ImGuiFileDialog terrainHeightmapDialog_;
+    ImGuiFileDialog terrainRawHeightmapDialog_;
     ImGuiFileDialog refPlaneImageDialog_;
     ImGuiFileDialog exportDialog_;
     ImGuiFileDialog terrainTextureExportDialog_;

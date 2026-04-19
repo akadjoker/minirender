@@ -1,8 +1,8 @@
 {
-    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures",
+    "assetRoot": "/media/projectos/projects/cpp/minirender/assets/terrain",
     "assetViewMode": 2,
     "cullMode": 2,
-    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures/hill_mound_b.png",
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/terrain/Detail_Texture.jpg",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
@@ -10,16 +10,16 @@
     "faceHighlightFillEnabled": true,
     "gridSize": 16.0,
     "lastImportDir": "/media/projectos/projects/cpp/minirender/assets/powerplant",
-    "lastTerrainHeightmapDir": "/media/projectos/projects/cpp/minirender/assets",
+    "lastTerrainHeightmapDir": "/media/projectos/projects/cpp/minirender/assets/terrain",
     "lmAmbient": 0.27000001072883606,
     "lmBias": 0.8109999895095825,
     "lmResolution": 2048,
-    "lmSamples": 8,
+    "lmSamples": 16,
     "perspGridSize": 19.100000381469727,
     "perspectiveFarPlane": 8242.0,
     "perspectiveMinDistance": 0.009999999776482582,
     "perspectiveNearPlane": 1.3609999418258667,
-    "scenePath": "",
+    "scenePath": "/media/projectos/projects/cpp/minirender/bin/scenes/terra.mred",
     "sections": {
         "CSG": true,
         "Debug": false,
@@ -35,7 +35,9 @@
         "Reference Planes": false,
         "Roadmap": true,
         "Selected Entity": true,
-        "Selected Mesh": true,
+        "Selected Mesh": false,
+        "Terrain Export": true,
+        "Terrain Layers": false,
         "Texture": true,
         "Tools": true,
         "View Settings": false
@@ -48,7 +50,7 @@
     "transparency": 0.3199999928474426,
     "useLightmap": true,
     "useTransparency": true,
-    "viewLayout": 4,
+    "viewLayout": 2,
     "views": [
         {
             "clearColor": [
@@ -58,15 +60,15 @@
             ],
             "focus": [
                 0.0,
-                64.0,
+                0.0,
                 0.0
             ],
-            "orthoSize": 132.29754638671875,
-            "perspectiveDistance": 332.5537414550781,
-            "perspectivePitch": -4.0,
-            "perspectiveYaw": 68.10002136230469,
-            "renderMode": 1,
-            "type": 0
+            "orthoSize": 549.1357421875,
+            "perspectiveDistance": 288.010009765625,
+            "perspectivePitch": 37.75,
+            "perspectiveYaw": -909.8002319335938,
+            "renderMode": 2,
+            "type": 4
         },
         {
             "clearColor": [
@@ -75,16 +77,16 @@
                 0.14000000059604645
             ],
             "focus": [
-                0.0,
-                64.0,
-                0.0
+                -41.095314025878906,
+                125.64708709716797,
+                10.626734733581543
             ],
-            "orthoSize": 57.915191650390625,
-            "perspectiveDistance": 396.5537414550781,
-            "perspectivePitch": 53.5,
-            "perspectiveYaw": -195.449951171875,
-            "renderMode": 1,
-            "type": 2
+            "orthoSize": 176.67333984375,
+            "perspectiveDistance": 574.115966796875,
+            "perspectivePitch": 55.75,
+            "perspectiveYaw": -1288.1536865234375,
+            "renderMode": 2,
+            "type": 6
         },
         {
             "clearColor": [
@@ -111,14 +113,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                -21.62567710876465,
-                -11.46448040008545,
-                46.517330169677734
+                3.707810163497925,
+                -29.248493194580078,
+                40.1939582824707
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 288.010009765625,
-            "perspectivePitch": 26.0,
-            "perspectiveYaw": -7347.70361328125,
+            "perspectiveDistance": 480.010009765625,
+            "perspectivePitch": 53.0,
+            "perspectiveYaw": -7430.65380859375,
             "renderMode": 2,
             "type": 6
         }

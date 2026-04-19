@@ -716,6 +716,7 @@ EditableMesh EditableMesh::MakeTerrain(const glm::vec3& center,
 
             EditableFace face;
             face.materialName = "terrain";
+            face.uvProjection = UvProjection::Mesh;
             face.indices = {bl, tl, tr, br};
             mesh.faces_.push_back(face);
         }

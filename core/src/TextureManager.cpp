@@ -53,6 +53,31 @@ PixelType pixelTypeFromChannelCount(int channelCount)
     }
 }
 
+int pixelComponentCount(PixelType type)
+{
+    switch (type)
+    {
+    case PixelType::R:
+        return 1;
+    case PixelType::RG:
+        return 2;
+    case PixelType::RGB:
+    case PixelType::RGB24:
+    case PixelType::BGR24:
+        return 3;
+    case PixelType::RGBA:
+    case PixelType::RGBA32:
+    case PixelType::BGRA32:
+    case PixelType::RGBA4444:
+    case PixelType::RGBA5551:
+        return 4;
+    case PixelType::RGB565:
+        return 3;
+    default:
+        return 4;
+    }
+}
+
 unsigned char *stbiLoadWithFlip(const std::string &path,
                                 bool flipVertical,
                                 int *width,
@@ -344,6 +369,7 @@ Texture *TextureManager::uploadSurface(const std::string &name,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, opts.wrapT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, opts.filterMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, opts.filterMag);
+    applyPixmapComponentSwizzle(t->id, pixelComponentCount(t->type));
 
     glBindTexture(GL_TEXTURE_2D, 0);
     SDL_FreeSurface(surf);
@@ -472,6 +498,7 @@ Texture *TextureManager::uploadMemory(const std::string &name,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, opts.wrapT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, opts.filterMin);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, opts.filterMag);
+    applyPixmapComponentSwizzle(t->id, pixelComponentCount(t->type));
 
     glBindTexture(GL_TEXTURE_2D, 0);
     t->name = name;
@@ -687,6 +714,83 @@ Texture *TextureManager::createFromPixmap(const std::string &name, const Pixmap 
         applyPixmapComponentSwizzle(texture->id, pixmap.components);
 
     return texture;
+}
+
+bool TextureManager::updateFromPixmap(Texture &texture, const Pixmap &pixmap, bool generateMipmaps)
+{
+    if (texture.id == 0 || texture.target != GL_TEXTURE_2D)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[TextureManager] updateFromPixmap invalid texture '%s'",
+                     texture.name.c_str());
+        return false;
+    }
+
+    if (pixmap.components <= 0 || pixmap.components > 4 || pixmap.width <= 0 || pixmap.height <= 0 || !pixmap.pixels)
+    {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "[TextureManager] updateFromPixmap invalid Pixmap for '%s'",
+                     texture.name.c_str());
+        return false;
+    }
+
+    PixelType pixelType = PixelType::RGBA;
+    switch (pixmap.components)
+    {
+    case 1:
+        pixelType = PixelType::R;
+        break;
+    case 2:
+        pixelType = PixelType::RG;
+        break;
+    case 3:
+        pixelType = PixelType::RGB;
+        break;
+    case 4:
+        pixelType = PixelType::RGBA;
+        break;
+    default:
+        return false;
+    }
+
+    GLenum format = GL_RGBA;
+    GLenum type = GL_UNSIGNED_BYTE;
+    int bytesPerPixel = 0;
+    if (!mapMemoryUploadFormat(pixelType, format, type, bytesPerPixel))
+        return false;
+
+    glBindTexture(GL_TEXTURE_2D, texture.id);
+    GLint prevAlignment = 0;
+    GLint prevRowLength = 0;
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &prevAlignment);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &prevRowLength);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+
+    if (texture.width != pixmap.width || texture.height != pixmap.height || texture.type != pixelType)
+    {
+        const GLenum internalFmt = defaultInternalFormat(pixelType, false);
+        glTexImage2D(GL_TEXTURE_2D, 0, internalFmt,
+                     pixmap.width, pixmap.height, 0,
+                     format, type, pixmap.pixels);
+        texture.width = pixmap.width;
+        texture.height = pixmap.height;
+        texture.type = pixelType;
+    }
+    else
+    {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, pixmap.width, pixmap.height, format, type, pixmap.pixels);
+    }
+
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, prevRowLength);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, prevAlignment);
+
+    if (generateMipmaps)
+        glGenerateMipmap(GL_TEXTURE_2D);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    applyPixmapComponentSwizzle(texture.id, pixmap.components);
+    return true;
 }
 
 Texture *TextureManager::getWhite() { return get("__white") ? get("__white") : makeSolid("__white", 255, 255, 255, 255); }

@@ -6,6 +6,48 @@
 
 namespace
 {
+u8 clampToByte(int value)
+{
+    return static_cast<u8>(value < 0 ? 0 : (value > 255 ? 255 : value));
+}
+
+u8 mixByte(u8 dst, u8 src, float alpha)
+{
+    const float clampedAlpha = std::clamp(alpha, 0.0f, 1.0f);
+    const float invAlpha = 1.0f - clampedAlpha;
+    return clampToByte(static_cast<int>(std::lround(static_cast<float>(src) * clampedAlpha + static_cast<float>(dst) * invAlpha)));
+}
+
+Color blendSrcOver(const Color &srcColor, const Color &dstColor, float opacity)
+{
+    const float clampedOpacity = std::clamp(opacity, 0.0f, 1.0f);
+    if (clampedOpacity <= 0.0f)
+        return dstColor;
+
+    const u32 srcA = clampToByte(static_cast<int>(std::lround((static_cast<float>(srcColor.a) / 255.0f) * clampedOpacity * 255.0f)));
+    if (srcA == 0)
+        return dstColor;
+
+    const u32 srcR = srcColor.r;
+    const u32 srcG = srcColor.g;
+    const u32 srcB = srcColor.b;
+
+    u32 dstA = dstColor.a;
+    const u32 dstR = dstColor.r;
+    const u32 dstG = dstColor.g;
+    const u32 dstB = dstColor.b;
+
+    dstA -= (dstA * srcA) / 255;
+    const u32 outA = dstA + srcA;
+    if (outA == 0)
+        return Color(0, 0, 0, 0);
+
+    const u32 outR = (dstR * dstA + srcR * srcA) / outA;
+    const u32 outG = (dstG * dstA + srcG * srcA) / outA;
+    const u32 outB = (dstB * dstA + srcB * srcA) / outA;
+    return Color(static_cast<u8>(outR), static_cast<u8>(outG), static_cast<u8>(outB), static_cast<u8>(outA));
+}
+
 int SelectPixmapComponents(int sourceComponents)
 {
     switch (sourceComponents)
@@ -576,6 +618,50 @@ void Pixmap::DrawLine(int x1, int y1, int x2, int y2, const Color &color)
     }
 }
 
+void Pixmap::BlendPixel(u32 x, u32 y, const Color &color, float opacity, BlendMode mode)
+{
+    if (x >= static_cast<u32>(width) || y >= static_cast<u32>(height) || !pixels)
+        return;
+
+    const float clampedOpacity = std::clamp(opacity, 0.0f, 1.0f);
+    if (clampedOpacity <= 0.0f)
+        return;
+
+    const Color dst = GetPixelColor(x, y);
+    Color out = dst;
+
+    switch (mode)
+    {
+    case BlendMode::Copy:
+        out = color;
+        out.a = mixByte(dst.a, color.a, clampedOpacity);
+        break;
+    case BlendMode::Add:
+        out.r = clampToByte(dst.r + static_cast<int>(std::lround(static_cast<float>(color.r) * clampedOpacity)));
+        out.g = clampToByte(dst.g + static_cast<int>(std::lround(static_cast<float>(color.g) * clampedOpacity)));
+        out.b = clampToByte(dst.b + static_cast<int>(std::lround(static_cast<float>(color.b) * clampedOpacity)));
+        out.a = clampToByte(dst.a + static_cast<int>(std::lround(static_cast<float>(color.a) * clampedOpacity)));
+        break;
+    case BlendMode::Multiply:
+    {
+        const u8 mulR = clampToByte(static_cast<int>((static_cast<float>(dst.r) * static_cast<float>(color.r)) / 255.0f));
+        const u8 mulG = clampToByte(static_cast<int>((static_cast<float>(dst.g) * static_cast<float>(color.g)) / 255.0f));
+        const u8 mulB = clampToByte(static_cast<int>((static_cast<float>(dst.b) * static_cast<float>(color.b)) / 255.0f));
+        out.r = mixByte(dst.r, mulR, clampedOpacity);
+        out.g = mixByte(dst.g, mulG, clampedOpacity);
+        out.b = mixByte(dst.b, mulB, clampedOpacity);
+        out.a = mixByte(dst.a, color.a, clampedOpacity);
+        break;
+    }
+    case BlendMode::Alpha:
+    default:
+        out = blendSrcOver(color, dst, clampedOpacity);
+        break;
+    }
+
+    SetPixel(x, y, out.r, out.g, out.b, out.a);
+}
+
 void Pixmap::Tint(u8 r, u8 g, u8 b)
 {
     for (int y = 0; y < height; y++)
@@ -659,6 +745,41 @@ void Pixmap::CopyRegion(const Pixmap &source, const IntRect &srcRect, int dstX, 
                 Color c = source.GetPixelColor(sx, sy);
                 SetPixel(dx, dy, c.r, c.g, c.b, c.a);
             }
+        }
+    }
+}
+
+void Pixmap::DrawPixmapBlended(const Pixmap &source, int x, int y, float opacity, BlendMode mode)
+{
+    DrawPixmapBlended(source, x, y, IntRect(0, 0, source.width, source.height), opacity, mode);
+}
+
+void Pixmap::DrawPixmapBlended(const Pixmap &source, int x, int y, const IntRect &srcRect, float opacity, BlendMode mode)
+{
+    if (!source.pixels || !pixels)
+        return;
+
+    int srcX = srcRect.x;
+    int srcY = srcRect.y;
+    int srcW = srcRect.width;
+    int srcH = srcRect.height;
+
+    if (srcX < 0) { srcW += srcX; x -= srcX; srcX = 0; }
+    if (srcY < 0) { srcH += srcY; y -= srcY; srcY = 0; }
+    if (srcX + srcW > source.width) srcW = source.width - srcX;
+    if (srcY + srcH > source.height) srcH = source.height - srcY;
+
+    for (int iy = 0; iy < srcH; ++iy)
+    {
+        for (int ix = 0; ix < srcW; ++ix)
+        {
+            const int dstX = x + ix;
+            const int dstY = y + iy;
+            if (dstX < 0 || dstX >= width || dstY < 0 || dstY >= height)
+                continue;
+
+            const Color srcColor = source.GetPixelColor(static_cast<u32>(srcX + ix), static_cast<u32>(srcY + iy));
+            BlendPixel(static_cast<u32>(dstX), static_cast<u32>(dstY), srcColor, opacity, mode);
         }
     }
 }

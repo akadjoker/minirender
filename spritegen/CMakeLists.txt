@@ -25,6 +25,7 @@ add_compile_options(
     -funsigned-char
 )
 
+
 add_executable(spritegen
     src/SpriteGeneratorApp.cpp
     src/SpritePreviewRenderer.cpp

@@ -8,6 +8,14 @@
 class Pixmap
 {
 public:
+    enum class BlendMode
+    {
+        Copy,
+        Alpha,
+        Add,
+        Multiply
+    };
+
     Pixmap();
     ~Pixmap();
     Pixmap(int w, int h, int components);
@@ -51,6 +59,9 @@ public:
     void DrawCircle(int cx, int cy, int radius, const Color &color, bool fill = false);
     void DrawPixmap(const Pixmap &source, int x, int y);
     void DrawPixmap(const Pixmap &source, int x, int y, const IntRect &srcRect);
+    void BlendPixel(u32 x, u32 y, const Color &color, float opacity = 1.0f, BlendMode mode = BlendMode::Alpha);
+    void DrawPixmapBlended(const Pixmap &source, int x, int y, float opacity = 1.0f, BlendMode mode = BlendMode::Alpha);
+    void DrawPixmapBlended(const Pixmap &source, int x, int y, const IntRect &srcRect, float opacity = 1.0f, BlendMode mode = BlendMode::Alpha);
 
  
     void CopyRegion(const Pixmap &source, const IntRect &srcRect, int dstX, int dstY);

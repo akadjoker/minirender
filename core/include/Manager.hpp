@@ -129,6 +129,7 @@ public:
                               std::size_t sizeBytes);
 
     Texture *createFromPixmap(const std::string &name, const Pixmap &pixmap);
+    bool updateFromPixmap(Texture &texture, const Pixmap &pixmap, bool generateMipmaps = true);
 
     Texture *createSolidColor(const std::string &name,
                                 uint8_t r, uint8_t g, uint8_t b, uint8_t a);

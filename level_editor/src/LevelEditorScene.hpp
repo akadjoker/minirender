@@ -59,6 +59,17 @@ struct LevelMeshObject
     bool visible = true;
     bool locked = false;
     EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-64.0f, 0.0f, -64.0f), glm::vec3(64.0f, 128.0f, 64.0f));
+    struct TerrainTextureLayer
+    {
+        std::string name = "Layer";
+        std::string texturePath;
+        float opacity = 1.0f;
+        bool visible = true;
+        int maskWidth = 0;
+        int maskHeight = 0;
+        std::vector<unsigned char> maskData;
+    };
+    std::vector<TerrainTextureLayer> terrainLayers;
 };
 
 // LightType is defined in Node.hpp: enum class LightType { Point, Directional, Spot };

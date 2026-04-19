@@ -14,6 +14,7 @@
 #include "Utils.hpp"
 #include "MeshLoader.hpp"
 #include "BinaryStream.hpp"
+#include "Pixmap.hpp"
 #include <stb_image.h>
 #include "stb_image_write.h"
 
@@ -25,9 +26,11 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <limits>
 #include <set>
+#include <sstream>
 
 #include <glm/gtx/norm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -53,6 +56,12 @@ glm::mat4 meshLocalPivotTransform(const LevelMeshObject& object,
                                   const glm::vec3& rotationEuler,
                                   const glm::vec3& scale);
 bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows);
+void ensureTerrainLayerMask(LevelMeshObject::TerrainTextureLayer& layer, int width, int height);
+void applyTerrainLayerBrushStroke(LevelMeshObject::TerrainTextureLayer& layer,
+                                  const LevelMeshObject& object,
+                                  const glm::vec3& centerLocal,
+                                  float radiusWorld,
+                                  float strength);
 void recomputeEditableMeshNormals(EditableMesh& mesh);
 void applyTerrainBrushStroke(EditableMesh& mesh,
                              int cols,
@@ -151,6 +160,33 @@ const char* meshPrimitiveName(LevelMeshPrimitive primitive)
     case LevelMeshPrimitive::Empty: return "Empty";
     }
     return "Unknown";
+}
+
+std::string terrainLayerDisplayName(const LevelMeshObject::TerrainTextureLayer& layer, int index)
+{
+    if (!layer.name.empty())
+        return layer.name;
+    return "Layer " + std::to_string(index + 1);
+}
+
+std::string terrainCompositeSignature(const LevelMeshObject& object)
+{
+    std::ostringstream stream;
+    stream << "primitive=" << static_cast<int>(object.primitive) << ";";
+    for (const EditableFace& face : object.mesh.faces())
+    {
+        if (!face.materialName.empty() && face.materialName != "default")
+        {
+            stream << "base=" << face.materialName << ";";
+            break;
+        }
+    }
+    stream << std::fixed << std::setprecision(3);
+    for (const LevelMeshObject::TerrainTextureLayer& layer : object.terrainLayers)
+    {
+        stream << "layer[" << layer.name << "|" << layer.texturePath << "|" << layer.opacity << "|" << (layer.visible ? 1 : 0) << "];";
+    }
+    return stream.str();
 }
 
 const char* viewTypeName(LevelEditorApp::ViewType type)
@@ -1083,9 +1119,13 @@ void LevelEditorApp::RebuildMeshCache()
                 }
                 vert.tangent = glm::vec4(lmUv.x, lmUv.y, 0.0f, 1.0f);
 
+                const UvProjection effectiveUvProjection =
+                    (object.primitive == LevelMeshPrimitive::Terrain && face.uvProjection == UvProjection::Box)
+                    ? UvProjection::Mesh
+                    : face.uvProjection;
                 const glm::vec3 absN = glm::abs(faceN);
                 glm::vec2 uv;
-                switch (face.uvProjection)
+                switch (effectiveUvProjection)
                 {
                 case UvProjection::Planar:
                 {
@@ -1133,7 +1173,7 @@ void LevelEditorApp::RebuildMeshCache()
                 }
                 }
 
-                const glm::vec2 uvScale = (face.uvProjection == UvProjection::Mesh)
+                const glm::vec2 uvScale = (effectiveUvProjection == UvProjection::Mesh)
                     ? face.uvScale
                     : (face.uvScale * 0.01f);
                 uv *= uvScale;
@@ -1963,6 +2003,7 @@ LevelEditorApp::~LevelEditorApp()
     if (!scenePath_.empty())
         SaveSceneToPath(scenePath_, false);
     SaveEditorSettings();
+    InvalidateTerrainCompositeCache();
     InvalidateMeshCache();
     if (viewBatch_)
         viewBatch_->Release();
@@ -1971,6 +2012,233 @@ LevelEditorApp::~LevelEditorApp()
         delete view.rt;
         view.rt = nullptr;
     }
+}
+
+void LevelEditorApp::InvalidateTerrainCompositeCache()
+{
+    TextureManager& texMgr = TextureManager::instance();
+    for (const auto& [_, preview] : terrainCompositePreviewCache_)
+    {
+        if (!preview.textureName.empty())
+            texMgr.unload(preview.textureName);
+    }
+    terrainCompositePreviewCache_.clear();
+}
+
+std::unique_ptr<Pixmap> LevelEditorApp::BuildTerrainCompositePixmap(const LevelMeshObject& object)
+{
+    if (object.primitive != LevelMeshPrimitive::Terrain || object.terrainLayers.empty())
+        return nullptr;
+
+    std::string baseMaterialRef;
+    for (const EditableFace& face : object.mesh.faces())
+    {
+        if (!face.materialName.empty() && face.materialName != "default")
+        {
+            baseMaterialRef = face.materialName;
+            break;
+        }
+    }
+
+    TextureManager& texMgr = TextureManager::instance();
+
+    auto loadPixmapFromRef = [&](const std::string& textureRef, const std::string& cachePrefix) -> std::unique_ptr<Pixmap>
+    {
+        if (textureRef.empty() || textureRef == "default")
+            return nullptr;
+
+        Texture* texture = resolveTextureForMaterialRef(texMgr, textureRef, cachePrefix, &failedTextureLoads_, assetRoot_, lastImportDir_);
+        std::string sourcePath;
+        if (texture && !texture->sourcePath.empty())
+            sourcePath = texture->sourcePath;
+
+        if (sourcePath.empty())
+        {
+            const std::string baseDir = assetRoot_.empty() ? "assets" : assetRoot_;
+            sourcePath = ResolveTexturePath(baseDir, textureRef);
+            if (sourcePath.empty())
+                sourcePath = ResolveTexturePath(baseDir, PathFilename(textureRef));
+        }
+
+        if (sourcePath.empty())
+            return nullptr;
+
+        std::unique_ptr<Pixmap> loaded = std::make_unique<Pixmap>();
+        if (!loaded->Load(sourcePath.c_str()))
+            return nullptr;
+
+        if (loaded->components == 4)
+            return loaded;
+        return std::unique_ptr<Pixmap>(loaded->ConvertToRGBA());
+    };
+
+    std::unique_ptr<Pixmap> composed = loadPixmapFromRef(baseMaterialRef, "level_face_tex::");
+    std::size_t startLayerIndex = 0;
+    if (!composed)
+    {
+        for (std::size_t i = 0; i < object.terrainLayers.size(); ++i)
+        {
+            const LevelMeshObject::TerrainTextureLayer& layer = object.terrainLayers[i];
+            if (!layer.visible || layer.opacity <= 0.0f || layer.texturePath.empty())
+                continue;
+
+            composed = loadPixmapFromRef(layer.texturePath, "level_terrain_layer_tex::");
+            if (composed)
+            {
+                startLayerIndex = i + 1;
+                break;
+            }
+        }
+    }
+
+    if (!composed)
+        return nullptr;
+
+    for (std::size_t i = startLayerIndex; i < object.terrainLayers.size(); ++i)
+    {
+        const LevelMeshObject::TerrainTextureLayer& layer = object.terrainLayers[i];
+        if (!layer.visible || layer.opacity <= 0.0f || layer.texturePath.empty())
+            continue;
+
+        std::unique_ptr<Pixmap> layerPixmap = loadPixmapFromRef(layer.texturePath, "level_terrain_layer_tex::");
+        if (!layerPixmap)
+            continue;
+
+        if (layerPixmap->width != composed->width || layerPixmap->height != composed->height)
+            layerPixmap.reset(layerPixmap->Resize(composed->width, composed->height));
+        if (layer.maskWidth > 0 &&
+            layer.maskHeight > 0 &&
+            layer.maskWidth * layer.maskHeight == static_cast<int>(layer.maskData.size()) &&
+            !layer.maskData.empty())
+        {
+            for (int y = 0; y < composed->height; ++y)
+            {
+                const int maskY = (composed->height > 1)
+                    ? std::clamp((y * (layer.maskHeight - 1)) / std::max(1, composed->height - 1), 0, layer.maskHeight - 1)
+                    : 0;
+                for (int x = 0; x < composed->width; ++x)
+                {
+                    const int maskX = (composed->width > 1)
+                        ? std::clamp((x * (layer.maskWidth - 1)) / std::max(1, composed->width - 1), 0, layer.maskWidth - 1)
+                        : 0;
+                    const std::size_t maskIndex = static_cast<std::size_t>(maskY) * static_cast<std::size_t>(layer.maskWidth) + static_cast<std::size_t>(maskX);
+                    const float maskAlpha = (static_cast<float>(layer.maskData[maskIndex]) / 255.0f) * layer.opacity;
+                    if (maskAlpha <= 0.0f)
+                        continue;
+                    composed->BlendPixel(static_cast<u32>(x), static_cast<u32>(y), layerPixmap->GetPixelColor(static_cast<u32>(x), static_cast<u32>(y)), maskAlpha, Pixmap::BlendMode::Alpha);
+                }
+            }
+        }
+        else
+        {
+            composed->DrawPixmapBlended(*layerPixmap, 0, 0, layer.opacity, Pixmap::BlendMode::Alpha);
+        }
+    }
+
+    return composed;
+}
+
+bool LevelEditorApp::ExportTerrainCompositeTexture(int objectIndex, const std::string& path)
+{
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(scene_.meshObjects().size()))
+        return false;
+
+    const LevelMeshObject& object = scene_.meshObjects()[static_cast<std::size_t>(objectIndex)];
+    std::unique_ptr<Pixmap> composed = BuildTerrainCompositePixmap(object);
+    if (!composed)
+        return false;
+
+    std::error_code ec;
+    const std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path(), ec);
+    return composed->Save(path.c_str());
+}
+
+bool LevelEditorApp::ExportTerrainHeightmap(int objectIndex, const std::string& path)
+{
+    if (objectIndex < 0 || objectIndex >= static_cast<int>(scene_.meshObjects().size()))
+        return false;
+
+    const LevelMeshObject& object = scene_.meshObjects()[static_cast<std::size_t>(objectIndex)];
+    if (object.primitive != LevelMeshPrimitive::Terrain)
+        return false;
+
+    int cols = 0;
+    int rows = 0;
+    if (!detectTerrainGridDimensions(object.mesh, cols, rows) || cols <= 1 || rows <= 1)
+        return false;
+
+    Pixmap heightmap(cols, rows, 1);
+    if (!heightmap.IsValid())
+        return false;
+
+    const std::vector<EditableVertex>& vertices = object.mesh.vertices();
+    const std::size_t expectedVertexCount = static_cast<std::size_t>(cols) * static_cast<std::size_t>(rows);
+    if (vertices.size() < expectedVertexCount)
+        return false;
+
+    float minHeight = std::numeric_limits<float>::max();
+    float maxHeight = std::numeric_limits<float>::lowest();
+    for (std::size_t i = 0; i < expectedVertexCount; ++i)
+    {
+        minHeight = std::min(minHeight, vertices[i].position.y);
+        maxHeight = std::max(maxHeight, vertices[i].position.y);
+    }
+
+    const float invRange = (maxHeight > minHeight) ? (1.0f / (maxHeight - minHeight)) : 0.0f;
+    for (int z = 0; z < rows; ++z)
+    {
+        for (int x = 0; x < cols; ++x)
+        {
+            const std::size_t vertexIndex = static_cast<std::size_t>(z) * static_cast<std::size_t>(cols) + static_cast<std::size_t>(x);
+            float normalized = 0.0f;
+            if (invRange > 0.0f)
+                normalized = (vertices[vertexIndex].position.y - minHeight) * invRange;
+            const u8 value = static_cast<u8>(std::lround(glm::clamp(normalized, 0.0f, 1.0f) * 255.0f));
+            heightmap.SetPixel(static_cast<u32>(x), static_cast<u32>(z), value, value, value, 255);
+        }
+    }
+
+    std::error_code ec;
+    const std::filesystem::path outPath(path);
+    if (outPath.has_parent_path())
+        std::filesystem::create_directories(outPath.parent_path(), ec);
+    return heightmap.Save(path.c_str());
+}
+
+Texture* LevelEditorApp::ResolveTerrainCompositeTexture(int objectIndex, const LevelMeshObject& object)
+{
+    if (object.primitive != LevelMeshPrimitive::Terrain || object.terrainLayers.empty())
+        return nullptr;
+
+    TextureManager& texMgr = TextureManager::instance();
+    TerrainCompositePreviewState& previewState = terrainCompositePreviewCache_[objectIndex];
+    if (previewState.textureName.empty())
+        previewState.textureName = "level_terrain_composite::" + std::to_string(objectIndex);
+
+    const std::string signature = terrainCompositeSignature(object);
+    if (previewState.signature == signature)
+        return texMgr.get(previewState.textureName);
+
+    std::unique_ptr<Pixmap> composed = BuildTerrainCompositePixmap(object);
+    if (!composed)
+        return nullptr;
+
+    Texture* previewTexture = texMgr.get(previewState.textureName);
+    if (previewTexture)
+    {
+        if (!texMgr.updateFromPixmap(*previewTexture, *composed))
+            previewTexture = nullptr;
+    }
+    else
+    {
+        previewTexture = texMgr.createFromPixmap(previewState.textureName, *composed);
+    }
+
+    if (previewTexture)
+        previewState.signature = signature;
+    return previewTexture;
 }
 
 void LevelEditorApp::RenderFrame(float deltaTime)
@@ -2196,12 +2464,18 @@ void LevelEditorApp::SetSingleSelectedMesh(int index)
     if (meshCount <= 0)
     {
         selectedMeshIndex_ = -1;
+        selectedTerrainLayerIndex_ = -1;
         selectedMeshIndices_.clear();
         SyncCurrentTextureFromSelection();
         return;
     }
 
     selectedMeshIndex_ = std::clamp(index, 0, meshCount - 1);
+    const LevelMeshObject& selectedObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
+    if (selectedObject.primitive == LevelMeshPrimitive::Terrain && !selectedObject.terrainLayers.empty())
+        selectedTerrainLayerIndex_ = std::clamp(selectedTerrainLayerIndex_, 0, static_cast<int>(selectedObject.terrainLayers.size()) - 1);
+    else
+        selectedTerrainLayerIndex_ = -1;
     selectedMeshIndices_.assign(1, selectedMeshIndex_);
     selectedVertexIndices_.clear();
     selectedFaceIndex_ = -1;
@@ -2216,6 +2490,7 @@ void LevelEditorApp::SyncSelectedMeshes()
     if (meshCount <= 0)
     {
         selectedMeshIndex_ = -1;
+        selectedTerrainLayerIndex_ = -1;
         selectedMeshIndices_.clear();
         SyncCurrentTextureFromSelection();
         return;
@@ -2231,6 +2506,15 @@ void LevelEditorApp::SyncSelectedMeshes()
 
     if (!IsMeshSelected(selectedMeshIndex_))
         selectedMeshIndices_.insert(selectedMeshIndices_.begin(), selectedMeshIndex_);
+
+    if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < meshCount)
+    {
+        const LevelMeshObject& selectedObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
+        if (selectedObject.primitive == LevelMeshPrimitive::Terrain && !selectedObject.terrainLayers.empty())
+            selectedTerrainLayerIndex_ = std::clamp(selectedTerrainLayerIndex_, 0, static_cast<int>(selectedObject.terrainLayers.size()) - 1);
+        else
+            selectedTerrainLayerIndex_ = -1;
+    }
 
     if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < meshCount)
     {
@@ -2552,6 +2836,69 @@ bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& ou
     return true;
 }
 
+void ensureTerrainLayerMask(LevelMeshObject::TerrainTextureLayer& layer, int width, int height)
+{
+    width = std::max(1, width);
+    height = std::max(1, height);
+    const std::size_t expectedSize = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    if (layer.maskWidth == width &&
+        layer.maskHeight == height &&
+        layer.maskData.size() == expectedSize)
+    {
+        return;
+    }
+
+    layer.maskWidth = width;
+    layer.maskHeight = height;
+    layer.maskData.assign(expectedSize, 0);
+}
+
+void applyTerrainLayerBrushStroke(LevelMeshObject::TerrainTextureLayer& layer,
+                                  const LevelMeshObject& object,
+                                  const glm::vec3& centerLocal,
+                                  float radiusWorld,
+                                  float strength)
+{
+    if (layer.maskWidth <= 0 || layer.maskHeight <= 0 || layer.maskData.empty())
+        return;
+
+    const BoundingBox bounds = editableMeshLocalBounds(object.mesh);
+    const glm::vec3 size = bounds.max - bounds.min;
+    if (size.x <= 1e-4f || size.z <= 1e-4f || radiusWorld <= 0.0f || strength <= 0.0f)
+        return;
+
+    const float maskScaleX = static_cast<float>(layer.maskWidth - 1) / size.x;
+    const float maskScaleY = static_cast<float>(layer.maskHeight - 1) / size.z;
+    const int centerX = std::clamp(static_cast<int>(std::lround((centerLocal.x - bounds.min.x) * maskScaleX)), 0, layer.maskWidth - 1);
+    const int centerY = std::clamp(static_cast<int>(std::lround((centerLocal.z - bounds.min.z) * maskScaleY)), 0, layer.maskHeight - 1);
+    const int radiusPixelsX = std::max(1, static_cast<int>(std::ceil(radiusWorld * maskScaleX)));
+    const int radiusPixelsY = std::max(1, static_cast<int>(std::ceil(radiusWorld * maskScaleY)));
+
+    const int minX = std::max(0, centerX - radiusPixelsX);
+    const int maxX = std::min(layer.maskWidth - 1, centerX + radiusPixelsX);
+    const int minY = std::max(0, centerY - radiusPixelsY);
+    const int maxY = std::min(layer.maskHeight - 1, centerY + radiusPixelsY);
+
+    for (int y = minY; y <= maxY; ++y)
+    {
+        for (int x = minX; x <= maxX; ++x)
+        {
+            const float worldX = bounds.min.x + (static_cast<float>(x) / static_cast<float>(layer.maskWidth - 1)) * size.x;
+            const float worldZ = bounds.min.z + (static_cast<float>(y) / static_cast<float>(layer.maskHeight - 1)) * size.z;
+            const float dist = glm::distance(glm::vec2(worldX, worldZ), glm::vec2(centerLocal.x, centerLocal.z));
+            if (dist > radiusWorld)
+                continue;
+
+            const float normalized = 1.0f - glm::clamp(dist / radiusWorld, 0.0f, 1.0f);
+            const float falloff = normalized * normalized;
+            const std::size_t index = static_cast<std::size_t>(y) * static_cast<std::size_t>(layer.maskWidth) + static_cast<std::size_t>(x);
+            const float current = static_cast<float>(layer.maskData[index]) / 255.0f;
+            const float next = glm::clamp(current + falloff * strength, 0.0f, 1.0f);
+            layer.maskData[index] = static_cast<unsigned char>(std::lround(next * 255.0f));
+        }
+    }
+}
+
 float sampleTerrainHeightLocal(const EditableMesh& mesh, int cols, int rows, float x, float z)
 {
     const auto& vertices = mesh.vertices();
@@ -2702,6 +3049,7 @@ bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
     }
 
     scene_ = loaded;
+    InvalidateTerrainCompositeCache();
     assetRoot_ = resolveSceneRelativePath(scene_.assetRoot().empty() ? std::string("assets") : scene_.assetRoot(),
                                           sceneFilePath);
     scene_.assetRoot() = assetRoot_;
@@ -2871,6 +3219,38 @@ void LevelEditorApp::HandleFileDialogs()
     ImGui::PushID("ExportDialog");
     exportDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
     ImGui::PopID();
+
+    if (terrainTextureExportDialog_.HasResult())
+    {
+        const auto result = terrainTextureExportDialog_.ConsumeResult();
+        if (result.accepted && pendingTerrainTextureExportIndex_ >= 0)
+        {
+            if (ExportTerrainCompositeTexture(pendingTerrainTextureExportIndex_, result.path.generic_string()))
+                sceneStatusMessage_ = "Terrain texture saved: " + result.path.filename().generic_string();
+            else
+                sceneStatusMessage_ = "Terrain texture export failed.";
+        }
+        pendingTerrainTextureExportIndex_ = -1;
+    }
+    ImGui::PushID("TerrainTextureExportDialog");
+    terrainTextureExportDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
+    ImGui::PopID();
+
+    if (terrainHeightmapExportDialog_.HasResult())
+    {
+        const auto result = terrainHeightmapExportDialog_.ConsumeResult();
+        if (result.accepted && pendingTerrainHeightmapExportIndex_ >= 0)
+        {
+            if (ExportTerrainHeightmap(pendingTerrainHeightmapExportIndex_, result.path.generic_string()))
+                sceneStatusMessage_ = "Terrain heightmap saved: " + result.path.filename().generic_string();
+            else
+                sceneStatusMessage_ = "Terrain heightmap export failed.";
+        }
+        pendingTerrainHeightmapExportIndex_ = -1;
+    }
+    ImGui::PushID("TerrainHeightmapExportDialog");
+    terrainHeightmapExportDialog_.Render(std::filesystem::current_path(), std::filesystem::current_path(), std::filesystem::current_path());
+    ImGui::PopID();
 }
 
 void LevelEditorApp::PushUndoState()
@@ -2890,6 +3270,7 @@ bool LevelEditorApp::PerformUndo()
     redoStack_.push_back(scene_);
     scene_ = undoStack_.back();
     undoStack_.pop_back();
+    InvalidateTerrainCompositeCache();
     sceneDirty_ = true;
 
     selectedMeshIndex_ = std::clamp(selectedMeshIndex_, 0, std::max(0, static_cast<int>(scene_.meshObjects().size()) - 1));
@@ -2908,6 +3289,7 @@ bool LevelEditorApp::PerformRedo()
     undoStack_.push_back(scene_);
     scene_ = redoStack_.back();
     redoStack_.pop_back();
+    InvalidateTerrainCompositeCache();
     sceneDirty_ = true;
 
     selectedMeshIndex_ = std::clamp(selectedMeshIndex_, 0, std::max(0, static_cast<int>(scene_.meshObjects().size()) - 1));
@@ -4218,8 +4600,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         hoveredVertexIndex_ = -1;
     }
 
-    const bool canSculptTerrain =
-        terrainSculptEnabled_ &&
+    const bool canEditTerrain =
         currentTool_ == Tool::Select &&
         !ctrlDown &&
         !ImGuizmo::IsOver() &&
@@ -4229,7 +4610,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
 
     int terrainCols = 0;
     int terrainRows = 0;
-    const bool selectedMeshIsTerrain = canSculptTerrain && SelectedMeshIsTerrain(&terrainCols, &terrainRows);
+    const bool selectedMeshIsTerrain = canEditTerrain && SelectedMeshIsTerrain(&terrainCols, &terrainRows);
     if (selectedMeshIsTerrain)
     {
         LevelMeshObject& terrainObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
@@ -4253,9 +4634,74 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
             terrainBrushPreviewLocalCenter_ = sculptCenterLocal;
             terrainBrushPreviewValid_ = true;
         }
-        else if (!terrainSculpting_)
+        else if (!terrainSculpting_ && !terrainPainting_)
         {
             terrainBrushPreviewValid_ = false;
+        }
+
+        const bool canPaintTerrain =
+            terrainEditEnabled_ &&
+            terrainToolMode_ == TerrainToolMode::Paint &&
+            selectedTerrainLayerIndex_ >= 0 &&
+            selectedTerrainLayerIndex_ < static_cast<int>(terrainObject.terrainLayers.size()) &&
+            !terrainObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)].texturePath.empty();
+
+        if (terrainPainting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            terrainPainting_ = false;
+            terrainPaintHasLastSample_ = false;
+            dragUndoPushed_ = false;
+        }
+
+        if (canPaintTerrain && hasSculptCenter && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            LevelMeshObject::TerrainTextureLayer& activeLayer = terrainObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)];
+            if (!terrainPainting_)
+            {
+                PushUndoState();
+                dragUndoPushed_ = true;
+                terrainPainting_ = true;
+                terrainPaintHasLastSample_ = false;
+            }
+
+            Texture* previewTexture = ResolveTerrainCompositeTexture(selectedMeshIndex_, terrainObject);
+            const int defaultMaskWidth = (previewTexture && previewTexture->width > 0) ? previewTexture->width : 512;
+            const int defaultMaskHeight = (previewTexture && previewTexture->height > 0) ? previewTexture->height : 512;
+            ensureTerrainLayerMask(activeLayer, defaultMaskWidth, defaultMaskHeight);
+
+            const float spacing = std::max(1.0f, terrainBrushRadius_ * 0.15f);
+            const bool shouldApplySample =
+                !terrainPaintHasLastSample_ ||
+                glm::distance(glm::vec2(sculptCenterLocal.x, sculptCenterLocal.z),
+                              glm::vec2(terrainPaintLastLocalCenter_.x, terrainPaintLastLocalCenter_.z)) >= spacing;
+            if (shouldApplySample)
+            {
+                applyTerrainLayerBrushStroke(
+                    activeLayer,
+                    terrainObject,
+                    sculptCenterLocal,
+                    terrainBrushRadius_,
+                    terrainPaintStrength_);
+                terrainPaintLastLocalCenter_ = sculptCenterLocal;
+                terrainPaintHasLastSample_ = true;
+                auto cacheIt = terrainCompositePreviewCache_.find(selectedMeshIndex_);
+                if (cacheIt != terrainCompositePreviewCache_.end())
+                    cacheIt->second.signature.clear();
+                sceneDirty_ = true;
+            }
+
+            return;
+        }
+
+        const bool canSculptTerrain =
+            terrainEditEnabled_ &&
+            terrainToolMode_ == TerrainToolMode::Sculpt;
+
+        if (!canSculptTerrain && terrainSculpting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        {
+            terrainSculpting_ = false;
+            terrainSculptHasLastSample_ = false;
+            dragUndoPushed_ = false;
         }
 
         if (terrainSculpting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -4265,7 +4711,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
             dragUndoPushed_ = false;
         }
 
-        if (hasSculptCenter && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        if (canSculptTerrain && hasSculptCenter && ImGui::IsMouseDown(ImGuiMouseButton_Left))
         {
             if (!terrainSculpting_)
             {
@@ -4304,6 +4750,12 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
     {
         terrainSculpting_ = false;
         terrainSculptHasLastSample_ = false;
+        dragUndoPushed_ = false;
+    }
+    else if (terrainPainting_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+    {
+        terrainPainting_ = false;
+        terrainPaintHasLastSample_ = false;
         dragUndoPushed_ = false;
     }
     else if (!selectedMeshIsTerrain)
@@ -5777,13 +6229,14 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 if (texturedMode)
                 {
                     TextureManager& texMgr = TextureManager::instance();
+                    Texture* terrainCompositeTex = ResolveTerrainCompositeTexture(static_cast<int>(objectIndex), object);
 
                     for (const auto& range : cached.materialRanges)
                     {
                         if (range.indexCount == 0) continue;
 
-                        Texture* faceTex = nullptr;
-                        if (!range.materialName.empty() && range.materialName != "default")
+                        Texture* faceTex = terrainCompositeTex;
+                        if (!faceTex && !range.materialName.empty() && range.materialName != "default")
                         {
                             faceTex = texMgr.get(range.materialName);
                             if (!faceTex)
@@ -6574,7 +7027,8 @@ void LevelEditorApp::DrawViewTile(const LevelEditorView& view, ImDrawList* drawL
 
     int terrainCols = 0;
     int terrainRows = 0;
-    if (terrainSculptEnabled_ &&
+    const bool showTerrainBrushPreview = terrainEditEnabled_;
+    if (showTerrainBrushPreview &&
         SelectedMeshIsTerrain(&terrainCols, &terrainRows) &&
         selectedMeshIndex_ >= 0 &&
         selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
@@ -8888,29 +9342,227 @@ void LevelEditorApp::ShowRightPanel()
         if (isTerrainMesh)
         {
             ImGui::Separator();
-            ImGui::TextUnformatted("Terrain Sculpt");
-            ImGui::Checkbox("Enable Sculpt##Terrain", &terrainSculptEnabled_);
-            static const char* sculptModeLabels[] = {"Raise", "Lower", "Smooth", "Flatten"};
-            int sculptModeIndex = static_cast<int>(terrainSculptMode_);
+            ImGui::TextUnformatted("Terrain Edit");
+            ImGui::Checkbox("Enable Terrain Edit##Terrain", &terrainEditEnabled_);
+
+            static const char* terrainToolLabels[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint"};
+            int terrainToolIndex = terrainToolMode_ == TerrainToolMode::Paint
+                ? 4
+                : static_cast<int>(terrainSculptMode_);
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-            if (ImGui::Combo("##TerrainSculptMode", &sculptModeIndex, sculptModeLabels, IM_ARRAYSIZE(sculptModeLabels)))
-                terrainSculptMode_ = static_cast<TerrainSculptMode>(sculptModeIndex);
+            if (ImGui::Combo("Tool##TerrainToolMode", &terrainToolIndex, terrainToolLabels, IM_ARRAYSIZE(terrainToolLabels)))
+            {
+                if (terrainToolIndex == 4)
+                {
+                    terrainToolMode_ = TerrainToolMode::Paint;
+                }
+                else
+                {
+                    terrainToolMode_ = TerrainToolMode::Sculpt;
+                    terrainSculptMode_ = static_cast<TerrainSculptMode>(terrainToolIndex);
+                }
+            }
+
             ImGui::TextUnformatted("Brush Radius");
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
             ImGui::DragFloat("##TerrainBrushRadius", &terrainBrushRadius_, 1.0f, 1.0f, 1024.0f, "%.1f");
             terrainBrushRadius_ = std::max(1.0f, terrainBrushRadius_);
-            ImGui::TextUnformatted("Brush Strength");
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-            ImGui::DragFloat("##TerrainBrushStrength", &terrainBrushStrength_, 0.25f, 0.1f, 128.0f, "%.2f");
-            terrainBrushStrength_ = std::max(0.1f, terrainBrushStrength_);
-            if (terrainSculptMode_ == TerrainSculptMode::Flatten)
+
+            if (terrainToolMode_ == TerrainToolMode::Sculpt)
             {
-                ImGui::TextUnformatted("Target Height");
+                ImGui::TextUnformatted("Brush Strength");
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-                ImGui::DragFloat("##TerrainFlattenHeight", &terrainFlattenHeight_, 0.5f, -4096.0f, 4096.0f, "%.2f");
+                ImGui::DragFloat("##TerrainBrushStrength", &terrainBrushStrength_, 0.25f, 0.1f, 128.0f, "%.2f");
+                terrainBrushStrength_ = std::max(0.1f, terrainBrushStrength_);
+                if (terrainSculptMode_ == TerrainSculptMode::Flatten)
+                {
+                    ImGui::TextUnformatted("Target Height");
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                    ImGui::DragFloat("##TerrainFlattenHeight", &terrainFlattenHeight_, 0.5f, -4096.0f, 4096.0f, "%.2f");
+                }
             }
+            else
+            {
+                ImGui::TextUnformatted("Paint Strength");
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                ImGui::SliderFloat("##TerrainPaintStrength", &terrainPaintStrength_, 0.01f, 1.0f, "%.2f");
+                terrainPaintStrength_ = glm::clamp(terrainPaintStrength_, 0.01f, 1.0f);
+                if (selectedTerrainLayerIndex_ >= 0 &&
+                    selectedTerrainLayerIndex_ < static_cast<int>(meshObject.terrainLayers.size()))
+                {
+                    const auto& activeLayer = meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)];
+                    ImGui::TextDisabled("Active paint layer: %s", terrainLayerDisplayName(activeLayer, selectedTerrainLayerIndex_).c_str());
+                    if (activeLayer.texturePath.empty())
+                        ImGui::TextDisabled("This layer has no texture yet.");
+                }
+                else
+                {
+                    ImGui::TextDisabled("Select a terrain layer before painting.");
+                }
+            }
+
             ImGui::TextDisabled("Use in Perspective or Top view.");
             ImGui::TextDisabled("Grid: %d x %d", terrainCols, terrainRows);
+
+            ImGui::Separator();
+            if (Section("Terrain Layers", true))
+            {
+                if (meshObject.terrainLayers.empty())
+                    selectedTerrainLayerIndex_ = -1;
+                else
+                    selectedTerrainLayerIndex_ = std::clamp(selectedTerrainLayerIndex_, 0, static_cast<int>(meshObject.terrainLayers.size()) - 1);
+
+                if (ImGui::Button("Add Layer##TerrainLayer"))
+                {
+                    PushUndoState();
+                    LevelMeshObject::TerrainTextureLayer layer;
+                    if (!currentTexturePath_.empty())
+                    {
+                        layer.texturePath = currentTexturePath_;
+                        layer.name = PathFilename(currentTexturePath_);
+                    }
+                    else
+                    {
+                        layer.name = "Layer " + std::to_string(static_cast<int>(meshObject.terrainLayers.size()) + 1);
+                    }
+                    ensureTerrainLayerMask(layer, 512, 512);
+                    meshObject.terrainLayers.push_back(std::move(layer));
+                    selectedTerrainLayerIndex_ = static_cast<int>(meshObject.terrainLayers.size()) - 1;
+                    sceneDirty_ = true;
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(selectedTerrainLayerIndex_ < 0 || selectedTerrainLayerIndex_ >= static_cast<int>(meshObject.terrainLayers.size()));
+                if (ImGui::Button("Remove##TerrainLayer"))
+                {
+                    PushUndoState();
+                    meshObject.terrainLayers.erase(meshObject.terrainLayers.begin() + selectedTerrainLayerIndex_);
+                    if (meshObject.terrainLayers.empty())
+                        selectedTerrainLayerIndex_ = -1;
+                    else
+                        selectedTerrainLayerIndex_ = std::clamp(selectedTerrainLayerIndex_, 0, static_cast<int>(meshObject.terrainLayers.size()) - 1);
+                    sceneDirty_ = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Up##TerrainLayer"))
+                {
+                    if (selectedTerrainLayerIndex_ > 0)
+                    {
+                        PushUndoState();
+                        std::swap(meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)],
+                                  meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_ - 1)]);
+                        --selectedTerrainLayerIndex_;
+                        sceneDirty_ = true;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Down##TerrainLayer"))
+                {
+                    if (selectedTerrainLayerIndex_ >= 0 &&
+                        selectedTerrainLayerIndex_ + 1 < static_cast<int>(meshObject.terrainLayers.size()))
+                    {
+                        PushUndoState();
+                        std::swap(meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)],
+                                  meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_ + 1)]);
+                        ++selectedTerrainLayerIndex_;
+                        sceneDirty_ = true;
+                    }
+                }
+                ImGui::EndDisabled();
+
+                const float layerListHeight = std::clamp(ImGui::GetContentRegionAvail().y * 0.22f, 110.0f, 200.0f);
+                if (ImGui::BeginChild("TerrainLayerList##SelectedMesh", ImVec2(0.0f, layerListHeight), true, ImGuiWindowFlags_None))
+                {
+                    for (int layerIndex = 0; layerIndex < static_cast<int>(meshObject.terrainLayers.size()); ++layerIndex)
+                    {
+                        const LevelMeshObject::TerrainTextureLayer& layer = meshObject.terrainLayers[static_cast<std::size_t>(layerIndex)];
+                        const std::string label = terrainLayerDisplayName(layer, layerIndex);
+                        if (ImGui::Selectable((label + "##TerrainLayerItem").c_str(), selectedTerrainLayerIndex_ == layerIndex))
+                            selectedTerrainLayerIndex_ = layerIndex;
+                    }
+                }
+                ImGui::EndChild();
+
+                if (selectedTerrainLayerIndex_ >= 0 &&
+                    selectedTerrainLayerIndex_ < static_cast<int>(meshObject.terrainLayers.size()))
+                {
+                    LevelMeshObject::TerrainTextureLayer& activeLayer = meshObject.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)];
+                    std::string editedLayerName = activeLayer.name;
+                    if (ImGui::InputText("Layer Name##TerrainLayerName", &editedLayerName) && editedLayerName != activeLayer.name)
+                    {
+                        PushUndoState();
+                        activeLayer.name = editedLayerName;
+                        sceneDirty_ = true;
+                    }
+
+                    std::string textureLabel = activeLayer.texturePath.empty() ? "(none)" : PathFilename(activeLayer.texturePath);
+                    ImGui::TextUnformatted("Layer Texture");
+                    ImGui::BeginDisabled();
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                    ImGui::InputText("##TerrainLayerTexture", &textureLabel, ImGuiInputTextFlags_ReadOnly);
+                    ImGui::EndDisabled();
+
+                    bool visible = activeLayer.visible;
+                    if (ImGui::Checkbox("Visible##TerrainLayerVisible", &visible) && visible != activeLayer.visible)
+                    {
+                        PushUndoState();
+                        activeLayer.visible = visible;
+                        sceneDirty_ = true;
+                    }
+
+                    float opacity = activeLayer.opacity;
+                    if (ImGui::SliderFloat("Opacity##TerrainLayerOpacity", &opacity, 0.0f, 1.0f, "%.2f") && opacity != activeLayer.opacity)
+                    {
+                        PushUndoState();
+                        activeLayer.opacity = opacity;
+                        sceneDirty_ = true;
+                    }
+                    ImGui::TextDisabled("Mask: %d x %d", activeLayer.maskWidth, activeLayer.maskHeight);
+                    ImGui::BeginDisabled(activeLayer.maskData.empty());
+                    if (ImGui::Button("Clear Mask##TerrainLayer"))
+                    {
+                        PushUndoState();
+                        std::fill(activeLayer.maskData.begin(), activeLayer.maskData.end(), 0);
+                        auto cacheIt = terrainCompositePreviewCache_.find(selectedMeshIndex_);
+                        if (cacheIt != terrainCompositePreviewCache_.end())
+                            cacheIt->second.signature.clear();
+                        sceneDirty_ = true;
+                    }
+                    ImGui::EndDisabled();
+                }
+                else
+                {
+                    ImGui::TextDisabled("Select a terrain layer to edit its properties.");
+                }
+            }
+
+            ImGui::Separator();
+            if (Section("Terrain Export", false))
+            {
+                const std::string terrainBaseName = meshObject.name.empty() ? "terrain" : meshObject.name;
+                const std::filesystem::path startDir = assetRoot_.empty()
+                    ? std::filesystem::current_path()
+                    : std::filesystem::path(assetRoot_);
+
+                if (ImGui::Button("Save Texture PNG##Terrain"))
+                {
+                    pendingTerrainTextureExportIndex_ = selectedMeshIndex_;
+                    terrainTextureExportDialog_.Open(
+                        ImGuiFileDialog::Mode::SaveFile,
+                        startDir,
+                        terrainBaseName + "_paint.png");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Export Heightmap PNG##Terrain"))
+                {
+                    pendingTerrainHeightmapExportIndex_ = selectedMeshIndex_;
+                    terrainHeightmapExportDialog_.Open(
+                        ImGuiFileDialog::Mode::SaveFile,
+                        startDir,
+                        terrainBaseName + "_heightmap.png");
+                }
+                ImGui::TextDisabled("Texture exports the painted terrain result.");
+                ImGui::TextDisabled("Heightmap exports the current sculpt as grayscale PNG.");
+            }
         }
 
         std::string meshPrimitiveLabel = meshPrimitiveName(meshObject.primitive);
@@ -9361,6 +10013,7 @@ void LevelEditorApp::ShowRightPanel()
         if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
         {
             LevelMeshObject& obj = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+            const bool isTerrainObject = obj.primitive == LevelMeshPrimitive::Terrain;
             const bool hasFace = selectionMode_ == SelectionMode::Face &&
                                  selectedFaceIndex_ >= 0 &&
                                  selectedFaceIndex_ < static_cast<int>(obj.mesh.faceCount());
@@ -9392,6 +10045,42 @@ void LevelEditorApp::ShowRightPanel()
                 sceneDirty_ = true;
             }
             ImGui::EndDisabled();
+
+            if (isTerrainObject)
+            {
+                const bool hasActiveLayer =
+                    selectedTerrainLayerIndex_ >= 0 &&
+                    selectedTerrainLayerIndex_ < static_cast<int>(obj.terrainLayers.size());
+
+                ImGui::BeginDisabled(currentTexturePath_.empty());
+                if (ImGui::Button("Add to Layer"))
+                {
+                    PushUndoState();
+                    if (hasActiveLayer)
+                    {
+                        LevelMeshObject::TerrainTextureLayer& layer = obj.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)];
+                        layer.texturePath = currentTexturePath_;
+                        if (layer.name.empty())
+                            layer.name = "Layer " + std::to_string(selectedTerrainLayerIndex_ + 1);
+                    }
+                    else
+                    {
+                        LevelMeshObject::TerrainTextureLayer layer;
+                        layer.name = PathFilename(currentTexturePath_);
+                        layer.texturePath = currentTexturePath_;
+                        ensureTerrainLayerMask(layer, 512, 512);
+                        obj.terrainLayers.push_back(std::move(layer));
+                        selectedTerrainLayerIndex_ = static_cast<int>(obj.terrainLayers.size()) - 1;
+                    }
+                    sceneDirty_ = true;
+                }
+                ImGui::EndDisabled();
+
+                if (hasActiveLayer)
+                    ImGui::TextDisabled("Target layer: %s", terrainLayerDisplayName(obj.terrainLayers[static_cast<std::size_t>(selectedTerrainLayerIndex_)], selectedTerrainLayerIndex_).c_str());
+                else
+                    ImGui::TextDisabled("No terrain layer selected. A new one will be created.");
+            }
 
             // Live UV editing — directly modify the selected face's UV params
             ImGui::Separator();
@@ -10227,8 +10916,12 @@ void LevelEditorApp::ShowAssetsPanel()
             ImGui::PushID(itemIndex);
             const std::string texName = "level_asset_thumb::" + asset->path;
             Texture* tex = textureManager.get(texName);
-            if (!tex)
+            if (!tex && failedTextureLoads_.find(texName) == failedTextureLoads_.end())
+            {
                 tex = textureManager.load(texName, asset->path);
+                if (!tex)
+                    failedTextureLoads_.insert(texName);
+            }
 
             const bool selected = asset->path == selectedAssetPath_;
             if (selected)

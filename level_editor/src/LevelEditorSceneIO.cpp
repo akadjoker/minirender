@@ -150,7 +150,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
                           std::string& error)
 {
     nlohmann::json root;
-    root["version"] = 3;
+    root["version"] = 4;
     root["asset_root"] = scene.assetRoot();
     root["mesh_objects"] = nlohmann::json::array();
     root["entities"] = nlohmann::json::array();
@@ -168,6 +168,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
         meshJson["locked"] = object.locked;
         meshJson["vertices"] = nlohmann::json::array();
         meshJson["faces"] = nlohmann::json::array();
+        meshJson["terrain_layers"] = nlohmann::json::array();
 
         for (const EditableVertex& vertex : object.mesh.vertices())
         {
@@ -191,6 +192,22 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
             if (face.uvProjection != UvProjection::Box)
                 faceJson["uv_projection"] = static_cast<int>(face.uvProjection);
             meshJson["faces"].push_back(faceJson);
+        }
+
+        for (const LevelMeshObject::TerrainTextureLayer& layer : object.terrainLayers)
+        {
+            nlohmann::json layerJson;
+            layerJson["name"] = layer.name;
+            layerJson["texture"] = layer.texturePath;
+            layerJson["opacity"] = layer.opacity;
+            layerJson["visible"] = layer.visible;
+            if (layer.maskWidth > 0 && layer.maskHeight > 0 && !layer.maskData.empty())
+            {
+                layerJson["mask_width"] = layer.maskWidth;
+                layerJson["mask_height"] = layer.maskHeight;
+                layerJson["mask_data"] = layer.maskData;
+            }
+            meshJson["terrain_layers"].push_back(layerJson);
         }
 
         root["mesh_objects"].push_back(meshJson);
@@ -340,6 +357,18 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
             }
 
             object.mesh.setData(vertices, faces);
+            for (const auto& layerJson : meshJson.value("terrain_layers", nlohmann::json::array()))
+            {
+                LevelMeshObject::TerrainTextureLayer layer;
+                layer.name = layerJson.value("name", std::string("Layer"));
+                layer.texturePath = layerJson.value("texture", std::string());
+                layer.opacity = layerJson.value("opacity", 1.0f);
+                layer.visible = layerJson.value("visible", true);
+                layer.maskWidth = layerJson.value("mask_width", 0);
+                layer.maskHeight = layerJson.value("mask_height", 0);
+                layer.maskData = layerJson.value("mask_data", std::vector<unsigned char>{});
+                object.terrainLayers.push_back(std::move(layer));
+            }
             if (object.primitive == LevelMeshPrimitive::Unknown)
             {
                 int cols = 0;

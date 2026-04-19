@@ -68,3 +68,4 @@ endif()
 if (UNIX)
     target_link_libraries(level_editor core imgui poly2tri m SDL2 GL)
 endif()
+

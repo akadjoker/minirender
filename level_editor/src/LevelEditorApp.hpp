@@ -21,6 +21,7 @@
 class RenderBatch;
 class RenderTarget;
 class Shader;
+class Pixmap;
 
 class LevelEditorApp
 {
@@ -95,6 +96,12 @@ public:
         Lower,
         Smooth,
         Flatten
+    };
+
+    enum class TerrainToolMode
+    {
+        Sculpt = 0,
+        Paint
     };
 
     struct MeshTransformState
@@ -213,6 +220,11 @@ private:
     void LoadEditorSettings();
     bool ExportSceneOBJ(const std::string& path);
     bool ExportSceneH3D(const std::string& path);
+    void InvalidateTerrainCompositeCache();
+    std::unique_ptr<Pixmap> BuildTerrainCompositePixmap(const LevelMeshObject& object);
+    bool ExportTerrainCompositeTexture(int objectIndex, const std::string& path);
+    bool ExportTerrainHeightmap(int objectIndex, const std::string& path);
+    Texture* ResolveTerrainCompositeTexture(int objectIndex, const LevelMeshObject& object);
     bool PickTerrainLocalPointPerspective(const LevelEditorView& view,
                                           const glm::vec2& mouseScreen,
                                           const LevelMeshObject& object,
@@ -294,12 +306,17 @@ private:
     AssetViewMode assetViewMode_ = AssetViewMode::Details;
     std::string currentTexturePath_;
     FaceUvClipboard faceUvClipboard_;
+    int selectedTerrainLayerIndex_ = -1;
+    int pendingTerrainTextureExportIndex_ = -1;
+    int pendingTerrainHeightmapExportIndex_ = -1;
     bool showUvMappingWindow_ = false;
-    bool terrainSculptEnabled_ = false;
+    bool terrainEditEnabled_ = false;
+    TerrainToolMode terrainToolMode_ = TerrainToolMode::Sculpt;
     TerrainSculptMode terrainSculptMode_ = TerrainSculptMode::Raise;
     float terrainBrushRadius_ = 48.0f;
     float terrainBrushStrength_ = 8.0f;
     float terrainFlattenHeight_ = 0.0f;
+    float terrainPaintStrength_ = 0.35f;
     float faceExtrudeDistance_ = 16.0f;
     float faceInsetAmount_ = 8.0f;
     float hollowWallThickness_ = 16.0f;
@@ -359,6 +376,8 @@ private:
     ImGuiFileDialog terrainHeightmapDialog_;
     ImGuiFileDialog refPlaneImageDialog_;
     ImGuiFileDialog exportDialog_;
+    ImGuiFileDialog terrainTextureExportDialog_;
+    ImGuiFileDialog terrainHeightmapExportDialog_;
     int refPlaneDialogTarget_ = -1;
     std::vector<ReferencePlane> referencePlanes_;
     int contextViewIndex_ = -1;
@@ -378,6 +397,9 @@ private:
     bool terrainSculpting_ = false;
     bool terrainSculptHasLastSample_ = false;
     glm::vec3 terrainSculptLastLocalCenter_ = glm::vec3(0.0f);
+    bool terrainPainting_ = false;
+    bool terrainPaintHasLastSample_ = false;
+    glm::vec3 terrainPaintLastLocalCenter_ = glm::vec3(0.0f);
     bool terrainBrushPreviewValid_ = false;
     glm::vec3 terrainBrushPreviewLocalCenter_ = glm::vec3(0.0f);
     bool draggingFaceInView_ = false;
@@ -417,6 +439,12 @@ private:
     };
     CachedMeshGPU* meshGPUCache_ = nullptr;
     std::unordered_set<std::string> failedTextureLoads_;
+    struct TerrainCompositePreviewState
+    {
+        std::string signature;
+        std::string textureName;
+    };
+    std::unordered_map<int, TerrainCompositePreviewState> terrainCompositePreviewCache_;
     std::size_t    meshGPUCacheCount_ = 0;
     bool meshCacheValid_ = false;
     void InvalidateMeshCache();

@@ -30,7 +30,7 @@ struct adl_serializer<glm::vec3>
 namespace
 {
 constexpr std::uint32_t kBinarySceneMagic = 0x4D524C45u; // "ELRM"
-constexpr std::uint32_t kBinarySceneVersion = 3;
+constexpr std::uint32_t kBinarySceneVersion = 5;
  
 void writeVec2(BinaryStream& stream, const glm::vec2& value)
 {
@@ -224,6 +224,8 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
     stream.writeU32(kBinarySceneVersion);
     stream.writeStr(scene.assetRoot());
     stream.writeStr(scene.lightmapPath());
+    writeVec3(stream, scene.creationPivotPosition());
+    writeVec3(stream, scene.creationPivotRotation());
 
     stream.writeU32(static_cast<std::uint32_t>(scene.meshObjects().size()));
     for (const LevelMeshObject& object : scene.meshObjects())
@@ -237,6 +239,7 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
         stream.writeU8(object.visible ? 1u : 0u);
         stream.writeU8(object.locked ? 1u : 0u);
         stream.writeU8(object.blendEnabled ? 1u : 0u);
+        stream.writeU8(object.twoSided ? 1u : 0u);
         stream.writeU32(static_cast<std::uint32_t>(object.blendMode));
 
         const auto& vertices = object.mesh.vertices();
@@ -333,6 +336,8 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
     scene.entities().clear();
     scene.assetRoot() = stream.readStr();
     scene.lightmapPath() = (version >= 2) ? stream.readStr() : std::string();
+    scene.creationPivotPosition() = (version >= 4) ? readVec3(stream) : glm::vec3(0.0f);
+    scene.creationPivotRotation() = (version >= 4) ? readVec3(stream) : glm::vec3(0.0f);
 
     const std::uint32_t meshCount = stream.readU32();
     scene.meshObjects().reserve(meshCount);
@@ -350,6 +355,7 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
         if (version >= 3)
         {
             object.blendEnabled = stream.readU8() != 0;
+            object.twoSided = (version >= 5) ? (stream.readU8() != 0) : false;
             const std::uint32_t blendMode = stream.readU32();
             object.blendMode = (blendMode <= static_cast<std::uint32_t>(LevelMeshBlendMode::Additive))
                 ? static_cast<LevelMeshBlendMode>(blendMode)
@@ -457,6 +463,8 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
     root["version"] = 4;
     root["asset_root"] = scene.assetRoot();
     root["lightmap_path"] = scene.lightmapPath();
+    root["creation_pivot_position"] = scene.creationPivotPosition();
+    root["creation_pivot_rotation"] = scene.creationPivotRotation();
     root["mesh_objects"] = nlohmann::json::array();
     root["entities"] = nlohmann::json::array();
 
@@ -472,6 +480,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
         meshJson["visible"] = object.visible;
         meshJson["locked"] = object.locked;
         meshJson["blend_enabled"] = object.blendEnabled;
+        meshJson["two_sided"] = object.twoSided;
         meshJson["blend_mode"] = blendModeToString(object.blendMode);
         meshJson["vertices"] = nlohmann::json::array();
         meshJson["faces"] = nlohmann::json::array();
@@ -608,6 +617,8 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
         scene.entities().clear();
         scene.assetRoot() = root.value("asset_root", std::string("assets"));
         scene.lightmapPath() = root.value("lightmap_path", std::string());
+        scene.creationPivotPosition() = root.value("creation_pivot_position", glm::vec3(0.0f));
+        scene.creationPivotRotation() = root.value("creation_pivot_rotation", glm::vec3(0.0f));
 
         const auto& meshObjects = root.value("mesh_objects", nlohmann::json::array());
         for (const auto& meshJson : meshObjects)
@@ -622,6 +633,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
             object.visible = meshJson.value("visible", true);
             object.locked = meshJson.value("locked", false);
             object.blendEnabled = meshJson.value("blend_enabled", false);
+            object.twoSided = meshJson.value("two_sided", false);
             object.blendMode = blendModeFromString(meshJson.value("blend_mode", std::string("alpha")));
 
             std::vector<EditableVertex> vertices;

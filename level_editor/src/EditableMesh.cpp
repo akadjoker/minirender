@@ -821,6 +821,7 @@ EditableMesh EditableMesh::MakePlane(const glm::vec3& center, float width, float
             const int tr = tl + 1;
             EditableFace f;
             f.materialName = "default";
+            f.uvProjection = UvProjection::Mesh;
             f.indices = {bl, br, tr, tl};
             mesh.faces_.push_back(f);
         }

@@ -422,6 +422,7 @@ private:
     std::vector<ReferencePlane> referencePlanes_;
     int contextViewIndex_ = -1;
     bool gizmoWasUsing_ = false;
+    bool editCreationPivotWithGizmo_ = false;
     bool draggingObjectInView_ = false;
     DragTool dragTool_ = DragTool::None;
     ViewType dragViewType_ = ViewType::Top;

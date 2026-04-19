@@ -65,6 +65,7 @@ struct LevelMeshObject
     bool visible = true;
     bool locked = false;
     bool blendEnabled = false;
+    bool twoSided = false;
     LevelMeshBlendMode blendMode = LevelMeshBlendMode::Alpha;
     EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-64.0f, 0.0f, -64.0f), glm::vec3(64.0f, 128.0f, 64.0f));
     struct TerrainTextureLayer
@@ -127,15 +128,21 @@ public:
     const std::vector<LevelEntityObject>& entities() const { return entities_; }
     const std::string& assetRoot() const { return assetRoot_; }
     const std::string& lightmapPath() const { return lightmapPath_; }
+    const glm::vec3& creationPivotPosition() const { return creationPivotPosition_; }
+    const glm::vec3& creationPivotRotation() const { return creationPivotRotation_; }
 
     std::vector<LevelMeshObject>& meshObjects() { return meshObjects_; }
     std::vector<LevelEntityObject>& entities() { return entities_; }
     std::string& assetRoot() { return assetRoot_; }
     std::string& lightmapPath() { return lightmapPath_; }
+    glm::vec3& creationPivotPosition() { return creationPivotPosition_; }
+    glm::vec3& creationPivotRotation() { return creationPivotRotation_; }
 
 private:
     std::vector<LevelMeshObject> meshObjects_;
     std::vector<LevelEntityObject> entities_;
     std::string assetRoot_ = "assets";
     std::string lightmapPath_;
+    glm::vec3 creationPivotPosition_ = glm::vec3(0.0f);
+    glm::vec3 creationPivotRotation_ = glm::vec3(0.0f);
 };

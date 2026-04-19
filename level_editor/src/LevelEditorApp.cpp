@@ -6304,9 +6304,16 @@ void LevelEditorApp::DrawTransformGizmo()
 {
     constexpr float kViewHeaderHeight = 26.0f;
 
+    const bool editingCreationPivot = editCreationPivotWithGizmo_;
     if (currentTool_ != Tool::Move &&
         currentTool_ != Tool::Rotate &&
         currentTool_ != Tool::Scale)
+    {
+        gizmoWasUsing_ = false;
+        return;
+    }
+
+    if (editingCreationPivot && currentTool_ == Tool::Scale)
     {
         gizmoWasUsing_ = false;
         return;
@@ -6319,12 +6326,12 @@ void LevelEditorApp::DrawTransformGizmo()
         selectionMode_ == SelectionMode::Vertex &&
         currentTool_ == Tool::Move &&
         !selectedVertexIndices_.empty();
-    if (hasMesh && selectionMode_ != SelectionMode::Object && !hasVertexSelection)
+    if (!editingCreationPivot && hasMesh && selectionMode_ != SelectionMode::Object && !hasVertexSelection)
     {
         gizmoWasUsing_ = false;
         return;
     }
-    if (!hasMesh && !hasEntity)
+    if (!editingCreationPivot && !hasMesh && !hasEntity)
     {
         gizmoWasUsing_ = false;
         return;
@@ -6358,9 +6365,9 @@ void LevelEditorApp::DrawTransformGizmo()
     }
 
     const std::vector<MeshTransformState> selectedMeshStates =
-        hasMesh ? collectSelectedMeshTransformStates(scene_, selectedMeshIndices_, selectedMeshIndex_)
+        (!editingCreationPivot && hasMesh) ? collectSelectedMeshTransformStates(scene_, selectedMeshIndices_, selectedMeshIndex_)
                 : std::vector<MeshTransformState>{};
-    const bool multiMeshSelection = hasMesh && !hasVertexSelection && selectedMeshStates.size() > 1;
+    const bool multiMeshSelection = !editingCreationPivot && hasMesh && !hasVertexSelection && selectedMeshStates.size() > 1;
     const glm::vec3 selectionCenter = multiMeshSelection
         ? selectionBoundsCenter(scene_, selectedMeshStates)
         : glm::vec3(0.0f);
@@ -6368,7 +6375,12 @@ void LevelEditorApp::DrawTransformGizmo()
     // Build gizmo matrix from the selected object or group pivot
     glm::mat4 gizmoMatrix(1.0f);
     bool entityHasDirection = false;
-    if (hasMesh)
+    if (editingCreationPivot)
+    {
+        const glm::quat pivotRotation = glm::quat(glm::radians(scene_.creationPivotRotation()));
+        gizmoMatrix = glm::translate(glm::mat4(1.0f), scene_.creationPivotPosition()) * glm::mat4_cast(pivotRotation);
+    }
+    else if (hasMesh)
     {
         LevelMeshObject& meshObject = scene_.meshObjects()[selectedMeshIndex_];
         if (hasVertexSelection)
@@ -6427,7 +6439,12 @@ void LevelEditorApp::DrawTransformGizmo()
 
     // Entities: Move always, Rotate for Dir/Spot only, no Scale
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
-    if (hasMesh)
+    if (editingCreationPivot)
+    {
+        if (currentTool_ == Tool::Rotate)
+            operation = ImGuizmo::ROTATE;
+    }
+    else if (hasMesh)
     {
         if (currentTool_ == Tool::Rotate)
             operation = ImGuizmo::ROTATE;
@@ -6499,7 +6516,20 @@ void LevelEditorApp::DrawTransformGizmo()
         float s[3] = {1.0f, 1.0f, 1.0f};
         ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(gizmoMatrix), t, r, s);
 
-        if (hasEntity)
+        if (editingCreationPivot)
+        {
+            const glm::vec3 newPosition(t[0], t[1], t[2]);
+            const glm::vec3 newRotation = normalizeEulerDegrees(glm::vec3(r[0], r[1], r[2]));
+            if (newPosition != scene_.creationPivotPosition() ||
+                (operation == ImGuizmo::ROTATE && newRotation != scene_.creationPivotRotation()))
+            {
+                scene_.creationPivotPosition() = newPosition;
+                if (operation == ImGuizmo::ROTATE)
+                    scene_.creationPivotRotation() = newRotation;
+                sceneDirty_ = true;
+            }
+        }
+        else if (hasEntity)
         {
             LevelEntityObject& ent = scene_.entities()[selectedEntityIndex_];
             const glm::vec3 newPos(t[0], t[1], t[2]);
@@ -6711,6 +6741,30 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
         break;
     }
 
+    auto applyObjectCull = [&](const LevelMeshObject& object) {
+        if (object.twoSided)
+        {
+            rs.setCull(false);
+            return;
+        }
+
+        switch (cullMode_)
+        {
+        case CullMode::Off:
+            rs.setCull(false);
+            break;
+        case CullMode::Front:
+            rs.setCull(true);
+            rs.setCullFace(GL_FRONT);
+            break;
+        case CullMode::Back:
+        default:
+            rs.setCull(true);
+            rs.setCullFace(GL_BACK);
+            break;
+        }
+    };
+
     const glm::mat4 vp = view.camera.viewProjection;
 
     // 1) Draw grid first (behind everything) using Batch
@@ -6849,6 +6903,8 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 if (!object.visible)
                     continue;
 
+                applyObjectCull(object);
+
                 const bool objectBlendEnabled = !wireMode && object.blendEnabled;
                 if (!wireMode && objectBlendEnabled != drawBlendedPass)
                     continue;
@@ -6950,6 +7006,21 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
 
         rs.setBlend(false);
         rs.setDepthWrite(true);
+        switch (cullMode_)
+        {
+        case CullMode::Off:
+            rs.setCull(false);
+            break;
+        case CullMode::Front:
+            rs.setCull(true);
+            rs.setCullFace(GL_FRONT);
+            break;
+        case CullMode::Back:
+        default:
+            rs.setCull(true);
+            rs.setCullFace(GL_BACK);
+            break;
+        }
 
         rs.useProgram(0);
     }
@@ -7613,6 +7684,32 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 viewBatch_->Line3D(p + glm::vec3(0, 0, -s), p + glm::vec3(0, 0, s));
             }
         }
+
+        const glm::vec3 pivotPos = scene_.creationPivotPosition();
+        const glm::vec3 pivotRot = glm::radians(scene_.creationPivotRotation());
+        const glm::mat3 pivotBasis = glm::mat3_cast(glm::quat(pivotRot));
+        const float pivotAxisLen = 20.0f;
+        const float pivotCrossLen = 6.0f;
+        const float pivotSquare = 4.0f;
+        const glm::vec3 axisX = pivotBasis * glm::vec3(1.0f, 0.0f, 0.0f);
+        const glm::vec3 axisY = pivotBasis * glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 axisZ = pivotBasis * glm::vec3(0.0f, 0.0f, 1.0f);
+
+        viewBatch_->SetColor(255, 90, 90, 235);
+        viewBatch_->Line3D(pivotPos - axisX * pivotCrossLen, pivotPos + axisX * pivotAxisLen);
+        viewBatch_->SetColor(90, 255, 120, 235);
+        viewBatch_->Line3D(pivotPos - axisY * pivotCrossLen, pivotPos + axisY * pivotAxisLen);
+        viewBatch_->SetColor(90, 170, 255, 235);
+        viewBatch_->Line3D(pivotPos - axisZ * pivotCrossLen, pivotPos + axisZ * pivotAxisLen);
+
+        viewBatch_->SetColor(255, 235, 120, 220);
+        const glm::vec3 right = axisX * pivotSquare;
+        const glm::vec3 forward = axisZ * pivotSquare;
+        viewBatch_->Line3D(pivotPos - right - forward, pivotPos + right - forward);
+        viewBatch_->Line3D(pivotPos + right - forward, pivotPos + right + forward);
+        viewBatch_->Line3D(pivotPos + right + forward, pivotPos - right + forward);
+        viewBatch_->Line3D(pivotPos - right + forward, pivotPos - right - forward);
+        viewBatch_->Line3D(pivotPos, pivotPos + axisY * (pivotAxisLen * 0.55f));
 
         viewBatch_->Render();
         rs.setBlend(false);
@@ -8439,6 +8536,8 @@ void LevelEditorApp::ShowLeftPanel()
                 PushUndoState();
                 LevelMeshObject object;
                 const glm::vec3 half = primSize_ * 0.5f;
+                const glm::vec3 creationPivotPosition = scene_.creationPivotPosition();
+                const glm::vec3 creationPivotRotation = scene_.creationPivotRotation();
                 const PrimitiveType primitiveTypeAtCreate = primitiveType_;
                 bool createdMultipleObjects = false;
                 bool cancelCreation = false;
@@ -8500,6 +8599,8 @@ void LevelEditorApp::ShowLeftPanel()
                         LevelMeshObject part;
                         part.name = std::string(boxDefs[i].name) + " " + std::to_string(baseIndex);
                         part.primitive = LevelMeshPrimitive::RoomBoxesPart;
+                        part.position = creationPivotPosition;
+                        part.rotationEuler = creationPivotRotation;
                         part.mesh = EditableMesh::MakeBox(boxDefs[i].min, boxDefs[i].max);
                         scene_.meshObjects().push_back(std::move(part));
                     }
@@ -8653,6 +8754,8 @@ void LevelEditorApp::ShowLeftPanel()
 
                 if (!cancelCreation && !createdMultipleObjects)
                 {
+                    object.position = creationPivotPosition;
+                    object.rotationEuler = creationPivotRotation;
                     scene_.meshObjects().push_back(object);
                     SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
                     meshCacheValid_ = false;
@@ -8669,6 +8772,8 @@ void LevelEditorApp::ShowLeftPanel()
         LevelMeshObject object;
         object.name = "Empty " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
         object.primitive = LevelMeshPrimitive::Empty;
+        object.position = scene_.creationPivotPosition();
+        object.rotationEuler = scene_.creationPivotRotation();
         object.mesh = EditableMesh::FromData({}, {});
         scene_.meshObjects().push_back(object);
         SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
@@ -9807,6 +9912,45 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::Text("Total Faces: %d", static_cast<int>(totalFaces));
     }
 
+    if (Section("Creation Pivot"))
+    {
+        glm::vec3 pivotPosition = scene_.creationPivotPosition();
+        if (ImGui::DragFloat3("Position##CreationPivot", &pivotPosition.x, 1.0f))
+        {
+            if (ImGui::IsItemActivated())
+                PushUndoState();
+            scene_.creationPivotPosition() = pivotPosition;
+            sceneDirty_ = true;
+        }
+
+        glm::vec3 pivotRotation = scene_.creationPivotRotation();
+        if (ImGui::DragFloat3("Rotation##CreationPivot", &pivotRotation.x, 0.5f, -360.0f, 360.0f))
+        {
+            if (ImGui::IsItemActivated())
+                PushUndoState();
+            scene_.creationPivotRotation() = normalizeEulerDegrees(pivotRotation);
+            sceneDirty_ = true;
+        }
+
+        if (ImGui::Button(editCreationPivotWithGizmo_ ? "Stop Gizmo##CreationPivot" : "Edit With Gizmo##CreationPivot"))
+            editCreationPivotWithGizmo_ = !editCreationPivotWithGizmo_;
+        if (editCreationPivotWithGizmo_)
+            ImGui::TextDisabled("Move/Rotate tools now affect the creation pivot.");
+
+        if (ImGui::Button("Reset Pivot##CreationPivot"))
+        {
+            if (scene_.creationPivotPosition() != glm::vec3(0.0f) ||
+                scene_.creationPivotRotation() != glm::vec3(0.0f))
+            {
+                PushUndoState();
+                scene_.creationPivotPosition() = glm::vec3(0.0f);
+                scene_.creationPivotRotation() = glm::vec3(0.0f);
+                sceneDirty_ = true;
+            }
+        }
+        ImGui::TextDisabled("New meshes are created at this point.");
+    }
+
     if (Section("Lightmap"))
     {
         const bool isBaking = bakeRunning_;
@@ -9963,6 +10107,13 @@ void LevelEditorApp::ShowRightPanel()
         {
             PushUndoState();
             meshObject.blendEnabled = blendEnabled;
+            sceneDirty_ = true;
+        }
+        bool twoSided = meshObject.twoSided;
+        if (ImGui::Checkbox("Two-Sided##MeshTwoSided", &twoSided) && twoSided != meshObject.twoSided)
+        {
+            PushUndoState();
+            meshObject.twoSided = twoSided;
             sceneDirty_ = true;
         }
         int blendModeIndex = static_cast<int>(meshObject.blendMode);

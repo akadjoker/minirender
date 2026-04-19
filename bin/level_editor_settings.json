@@ -24,13 +24,14 @@
     "scenePath": "/media/projectos/projects/cpp/minirender/bin/scenes/war.mredb",
     "sections": {
         "CSG": true,
+        "Creation Pivot": true,
         "Debug": false,
         "Entities": true,
         "Experimental Mesh CSG": true,
-        "Faces": false,
+        "Faces": true,
         "History": false,
         "Level Stats": true,
-        "Lightmap": true,
+        "Lightmap": false,
         "Mesh Edit": true,
         "Mesh Objects": true,
         "Plane Clip": false,
@@ -44,7 +45,7 @@
         "Tools": true,
         "View Settings": false
     },
-    "selectionMode": 0,
+    "selectionMode": 1,
     "showGrid": false,
     "snapEnabled": true,
     "snapToGeometry": false,
@@ -62,11 +63,11 @@
                 0.14000000059604645
             ],
             "focus": [
-                0.0,
-                48.0,
-                128.0
+                9.430488586425781,
+                61.0,
+                141.4304962158203
             ],
-            "orthoSize": 210.0236053466797,
+            "orthoSize": 197.5400848388672,
             "perspectiveDistance": 288.010009765625,
             "perspectivePitch": 37.75,
             "perspectiveYaw": -909.8002319335938,
@@ -80,14 +81,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                -2.9081060886383057,
-                142.38253784179688,
-                78.45841979980469
+                -4.458573341369629,
+                64.33441925048828,
+                128.11404418945313
             ],
             "orthoSize": 203.4275360107422,
-            "perspectiveDistance": 96.010009765625,
-            "perspectivePitch": 4.25,
-            "perspectiveYaw": -1859.3499755859375,
+            "perspectiveDistance": 32.0099983215332,
+            "perspectivePitch": 20.25,
+            "perspectiveYaw": -2575.80419921875,
             "renderMode": 2,
             "type": 6
         },

@@ -792,34 +792,24 @@ EditableMesh makeEditableFromRenderMesh(const Mesh& mesh, const glm::mat4& trans
     std::vector<EditableVertex> vertices;
     std::vector<EditableFace> faces;
 
-    // Weld vertices by position to reduce duplicates
-    std::map<std::tuple<int,int,int>, int> positionMap;
-    auto getOrAddVertex = [&](const glm::vec3& pos) -> int
+    // Preserve source vertex splits (UV seams/hard edges) by mapping source vertex index 1:1.
+    std::vector<int> sourceToEditable(mesh.buffer.vertices.size(), -1);
+    auto getOrAddVertex = [&](uint32_t srcIndex) -> int
     {
-        const float scale = 1000.0f;
-        auto key = std::make_tuple(
-            static_cast<int>(std::round(pos.x * scale)),
-            static_cast<int>(std::round(pos.y * scale)),
-            static_cast<int>(std::round(pos.z * scale)));
-        auto it = positionMap.find(key);
-        if (it != positionMap.end())
-            return it->second;
-        int idx = static_cast<int>(vertices.size());
-        EditableVertex v;
-        v.position = pos;
-        // normal and uv set by caller after getOrAddVertex
-        vertices.push_back(v);
-        positionMap[key] = idx;
-        return idx;
-    };
+        if (srcIndex >= sourceToEditable.size())
+            return -1;
+        int& mapped = sourceToEditable[srcIndex];
+        if (mapped >= 0)
+            return mapped;
 
-    auto setVertexAttribs = [&](int idx, const glm::vec3& normal, const glm::vec2& uv)
-    {
-        if (idx >= 0 && idx < static_cast<int>(vertices.size()))
-        {
-            vertices[(size_t)idx].normal = normal;
-            vertices[(size_t)idx].uv = uv;
-        }
+        const Vertex& sv = mesh.buffer.vertices[srcIndex];
+        EditableVertex v;
+        v.position = glm::vec3(transform * glm::vec4(sv.position, 1.0f));
+        v.normal = glm::normalize(glm::mat3(transform) * sv.normal);
+        v.uv = sv.uv;
+        mapped = static_cast<int>(vertices.size());
+        vertices.push_back(v);
+        return mapped;
     };
 
     if (!mesh.surfaces.empty())
@@ -848,16 +838,14 @@ EditableMesh makeEditableFromRenderMesh(const Mesh& mesh, const glm::mat4& trans
 
                 EditableFace face;
                 face.materialName = matName;
+                face.uvProjection = UvProjection::Mesh;
                 bool valid = true;
                 for (int k = 0; k < 3; ++k)
                 {
                     const uint32_t index = mesh.buffer.indices[i + k];
-                    if (index >= mesh.buffer.vertices.size())
+                    const int vi = getOrAddVertex(index);
+                    if (vi < 0)
                     { valid = false; break; }
-                    const Vertex& sv = mesh.buffer.vertices[index];
-                    const glm::vec3 pos = glm::vec3(transform * glm::vec4(sv.position, 1.0f));
-                    const int vi = getOrAddVertex(pos);
-                    setVertexAttribs(vi, glm::normalize(glm::mat3(transform) * sv.normal), sv.uv);
                     face.indices.push_back(vi);
                 }
                 if (valid && face.indices.size() == 3)
@@ -871,16 +859,14 @@ EditableMesh makeEditableFromRenderMesh(const Mesh& mesh, const glm::mat4& trans
         {
             EditableFace face;
             face.materialName = "default";
+            face.uvProjection = UvProjection::Mesh;
             bool valid = true;
             for (int k = 0; k < 3; ++k)
             {
                 const uint32_t index = mesh.buffer.indices[i + k];
-                if (index >= mesh.buffer.vertices.size())
+                const int vi = getOrAddVertex(index);
+                if (vi < 0)
                 { valid = false; break; }
-                const Vertex& sv = mesh.buffer.vertices[index];
-                const glm::vec3 pos = glm::vec3(transform * glm::vec4(sv.position, 1.0f));
-                const int vi = getOrAddVertex(pos);
-                setVertexAttribs(vi, glm::normalize(glm::mat3(transform) * sv.normal), sv.uv);
                 face.indices.push_back(vi);
             }
             if (valid && face.indices.size() == 3)
@@ -1090,6 +1076,9 @@ void LevelEditorApp::RebuildMeshCache()
                     uv.y = std::asin(glm::clamp(d.y, -1.0f, 1.0f)) / 3.1415926f + 0.5f;
                     break;
                 }
+                case UvProjection::Mesh:
+                    uv = ev.uv;
+                    break;
                 case UvProjection::Box:
                 default:
                 {
@@ -1103,7 +1092,10 @@ void LevelEditorApp::RebuildMeshCache()
                 }
                 }
 
-                uv *= face.uvScale * 0.01f;
+                const glm::vec2 uvScale = (face.uvProjection == UvProjection::Mesh)
+                    ? face.uvScale
+                    : (face.uvScale * 0.01f);
+                uv *= uvScale;
                 const float ru = uv.x * cosR - uv.y * sinR;
                 const float rv = uv.x * sinR + uv.y * cosR;
                 uv = glm::vec2(ru, rv) + face.uvOffset;
@@ -1338,6 +1330,9 @@ void LevelEditorApp::SaveEditorSettings()
     j["perspGridSize"] = perspGridSize_;
     j["useTransparency"] = useTransparency_;
     j["transparency"] = transparency_;
+    j["cullMode"] = static_cast<int>(cullMode_);
+    j["perspectiveNearPlane"] = perspectiveNearPlane_;
+    j["perspectiveFarPlane"] = perspectiveFarPlane_;
     j["faceHighlightFillEnabled"] = faceHighlightFillEnabled_;
     j["faceHighlightFillAlpha"] = faceHighlightFillAlpha_;
     j["selectionMode"] = static_cast<int>(selectionMode_);
@@ -1416,8 +1411,23 @@ void LevelEditorApp::LoadEditorSettings()
     if (j.contains("perspGridSize")) perspGridSize_ = j["perspGridSize"].get<float>();
     if (j.contains("useTransparency")) useTransparency_ = j["useTransparency"].get<bool>();
     if (j.contains("transparency")) transparency_ = j["transparency"].get<float>();
+    if (j.contains("cullMode"))
+    {
+        const int cm = j["cullMode"].get<int>();
+        if (cm >= static_cast<int>(CullMode::Off) && cm <= static_cast<int>(CullMode::Back))
+            cullMode_ = static_cast<CullMode>(cm);
+    }
+    else if (j.contains("disableBackfaceCulling"))
+    {
+        // Backward compatibility with previous boolean setting.
+        cullMode_ = j["disableBackfaceCulling"].get<bool>() ? CullMode::Off : CullMode::Back;
+    }
+    if (j.contains("perspectiveNearPlane")) perspectiveNearPlane_ = j["perspectiveNearPlane"].get<float>();
+    if (j.contains("perspectiveFarPlane")) perspectiveFarPlane_ = j["perspectiveFarPlane"].get<float>();
     if (j.contains("faceHighlightFillEnabled")) faceHighlightFillEnabled_ = j["faceHighlightFillEnabled"].get<bool>();
     if (j.contains("faceHighlightFillAlpha")) faceHighlightFillAlpha_ = j["faceHighlightFillAlpha"].get<float>();
+    perspectiveNearPlane_ = std::max(0.001f, perspectiveNearPlane_);
+    perspectiveFarPlane_ = std::max(perspectiveNearPlane_ + 1.0f, perspectiveFarPlane_);
     if (j.contains("selectionMode"))
     {
         const int sm = j["selectionMode"].get<int>();
@@ -2990,6 +3000,8 @@ void LevelEditorApp::LayoutViews(const ImVec2& canvasPos, const ImVec2& canvasSi
 void LevelEditorApp::UpdateViewCameras()
 {
     constexpr float orthoDistance = 1024.0f;
+    const float nearPlane = std::max(0.001f, perspectiveNearPlane_);
+    const float farPlane = std::max(nearPlane + 1.0f, perspectiveFarPlane_);
 
     for (int i = 0; i < static_cast<int>(views_.size()); ++i)
     {
@@ -2998,10 +3010,10 @@ void LevelEditorApp::UpdateViewCameras()
             continue;
 
         view.camera.setViewport(0, 0, view.rect.w, view.rect.h);
-        view.camera.setViewPlanes(0.1f, 8192.0f);
 
         if (view.type == ViewType::Perspective)
         {
+            view.camera.setViewPlanes(nearPlane, farPlane);
             view.camera.setProjectionType(ProjectionType::Perspective);
             view.camera.setFov(60.0f);
 
@@ -3017,6 +3029,7 @@ void LevelEditorApp::UpdateViewCameras()
         }
         else
         {
+            view.camera.setViewPlanes(0.1f, 8192.0f);
             view.camera.setProjectionType(ProjectionType::Orthographic);
             view.camera.orthoSize = view.orthoSize;
 
@@ -5124,6 +5137,21 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
     rs.setDepthTest(true);
     rs.setDepthWrite(true);
     rs.setBlend(false);
+    switch (cullMode_)
+    {
+    case CullMode::Off:
+        rs.setCull(false);
+        break;
+    case CullMode::Front:
+        rs.setCull(true);
+        rs.setCullFace(GL_FRONT);
+        break;
+    case CullMode::Back:
+    default:
+        rs.setCull(true);
+        rs.setCullFace(GL_BACK);
+        break;
+    }
 
     const glm::mat4 vp = view.camera.viewProjection;
 
@@ -5276,7 +5304,21 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                                 faceTex = texMgr.get(texName);
                                 if (!faceTex && failedTextureLoads_.find(texName) == failedTextureLoads_.end())
                                 {
-                                    faceTex = texMgr.load(texName, range.materialName);
+                                    std::string resolvedPath = range.materialName;
+                                    const std::string baseDir = assetRoot_.empty() ? "assets" : assetRoot_;
+                                    std::string candidate = ResolveTexturePath(baseDir, range.materialName);
+                                    if (candidate.empty())
+                                        candidate = ResolveTexturePath(baseDir, PathFilename(range.materialName));
+                                    if (candidate.empty())
+                                    {
+                                        const std::string stem = PathStem(range.materialName);
+                                        if (!stem.empty() && stem != range.materialName)
+                                            candidate = ResolveTexturePath(baseDir, stem);
+                                    }
+                                    if (!candidate.empty())
+                                        resolvedPath = candidate;
+
+                                    faceTex = texMgr.load(texName, resolvedPath);
                                     if (!faceTex)
                                         failedTextureLoads_.insert(texName);
                                 }
@@ -7385,7 +7427,7 @@ void LevelEditorApp::ShowLeftPanel()
             else
                 ImGui::TextDisabled("(applying to all faces)");
 
-            static const char* uvProjNames[] = {"Box", "Planar", "Cylindrical", "Spherical"};
+            static const char* uvProjNames[] = {"Box", "Planar", "Cylindrical", "Spherical", "Mesh"};
             auto applyProjection = [&](UvProjection proj) {
                 PushUndoState();
                 auto apply = [&](EditableFace& f) {
@@ -7407,7 +7449,7 @@ void LevelEditorApp::ShowLeftPanel()
                 sceneDirty_ = true;
             };
 
-            for (int pi = 0; pi < 4; ++pi)
+            for (int pi = 0; pi < static_cast<int>(IM_ARRAYSIZE(uvProjNames)); ++pi)
             {
                 if (pi > 0) ImGui::SameLine();
                 if (ImGui::Button(uvProjNames[pi]))
@@ -7925,21 +7967,38 @@ void LevelEditorApp::ShowRightPanel()
                 gridSize_ = gridPresets[i];
             if (selected) ImGui::PopStyleColor();
         }
+        ImGui::TextUnformatted("3D Grid Size");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-        ImGui::SliderFloat("##PerspGridSlider", &perspGridSize_, 1.0f, 128.0f, "3D Grid: %.1f");
+        ImGui::SliderFloat("##PerspGridSlider", &perspGridSize_, 1.0f, 128.0f, "%.1f");
 
         ImGui::Checkbox("Transparency", &useTransparency_);
         if (useTransparency_)
         {
-            ImGui::SameLine();
+            ImGui::TextUnformatted("Transparency Alpha");
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
             ImGui::SliderFloat("##TransAlpha", &transparency_, 0.0f, 1.0f, "%.2f");
         }
+        static const char* cullModeLabels[] = {"Off", "Front", "Back"};
+        int cullModeIndex = static_cast<int>(cullMode_);
+        ImGui::TextUnformatted("Cull Mode");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (ImGui::Combo("##CullMode", &cullModeIndex, cullModeLabels, IM_ARRAYSIZE(cullModeLabels)))
+            cullMode_ = static_cast<CullMode>(cullModeIndex);
+        ImGui::TextUnformatted("Perspective Near");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (ImGui::DragFloat("##PerspectiveNear", &perspectiveNearPlane_, 0.01f, 0.001f, 100.0f, "%.3f"))
+            perspectiveNearPlane_ = std::max(0.001f, perspectiveNearPlane_);
+        perspectiveFarPlane_ = std::max(perspectiveNearPlane_ + 1.0f, perspectiveFarPlane_);
+        ImGui::TextUnformatted("Perspective Far");
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::DragFloat("##PerspectiveFar", &perspectiveFarPlane_, 10.0f, perspectiveNearPlane_ + 1.0f, 200000.0f, "%.1f");
+        perspectiveFarPlane_ = std::max(perspectiveNearPlane_ + 1.0f, perspectiveFarPlane_);
 
         ImGui::Checkbox("Face Fill Overlay", &faceHighlightFillEnabled_);
         ImGui::BeginDisabled(!faceHighlightFillEnabled_);
+        ImGui::TextUnformatted("Face Fill Alpha");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-        ImGui::SliderFloat("Face Fill Alpha", &faceHighlightFillAlpha_, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("##FaceFillAlpha", &faceHighlightFillAlpha_, 0.0f, 1.0f, "%.2f");
         ImGui::EndDisabled();
 
         ImGui::Separator();
@@ -7949,10 +8008,12 @@ void LevelEditorApp::ShowRightPanel()
             ImGui::PushID(i);
             ImGui::ColorEdit3(views_[i].label, &views_[i].clearColor.r, ImGuiColorEditFlags_NoInputs);
             ImGui::PopID();
-            if (i % 2 == 0) ImGui::SameLine();
+          //  if (i % 2 == 0) 
+          ImGui::SameLine();
         }
     }
-
+    
+    ImGui::Separator();
     if (Section("Debug", false))
     {
         ImGui::Checkbox("Draw Normals", &debugDrawNormals_);
@@ -8815,8 +8876,13 @@ void LevelEditorApp::ShowRightPanel()
 
 void LevelEditorApp::ShowUvMappingWindow()
 {
+    static bool uvWindowWasOpen = false;
+
     if (!showUvMappingWindow_)
+    {
+        uvWindowWasOpen = false;
         return;
+    }
 
     const bool hasFace = selectionMode_ == SelectionMode::Face &&
                          selectedMeshIndex_ >= 0 &&
@@ -8844,6 +8910,18 @@ void LevelEditorApp::ShowUvMappingWindow()
         }
         if (!texture)
             texture = white;
+    }
+
+    if (!uvWindowWasOpen)
+    {
+        if (ImGuiViewport* viewport = ImGui::GetMainViewport())
+        {
+            const ImVec2 pos(viewport->Pos.x + std::max(24.0f, viewport->Size.x * 0.5f - 260.0f),
+                             viewport->Pos.y + 40.0f);
+            ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+        }
+        ImGui::SetNextWindowFocus();
+        uvWindowWasOpen = true;
     }
 
     if (!ImGui::Begin("UV Mapping", &showUvMappingWindow_))
@@ -8922,6 +9000,9 @@ void LevelEditorApp::ShowUvMappingWindow()
             uv.y = std::asin(glm::clamp(d.y, -1.0f, 1.0f)) / 3.1415926f + 0.5f;
             break;
         }
+        case UvProjection::Mesh:
+            uv = ev.uv;
+            return uv;
         case UvProjection::Box:
         default:
             if (absN.y >= absN.x && absN.y >= absN.z)

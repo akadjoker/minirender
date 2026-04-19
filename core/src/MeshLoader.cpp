@@ -27,9 +27,25 @@ bool isAbsolutePath(const std::string &path)
 std::string resolveSerializedTexturePath(const std::string &textureRef,
                                         const std::string &textureDir)
 {
-    if (textureRef.empty() || textureDir.empty() || isAbsolutePath(textureRef))
+    if (textureRef.empty() || isAbsolutePath(textureRef))
         return textureRef;
-    return textureDir + "/" + textureRef;
+    if (textureDir.empty())
+        return textureRef;
+
+    std::string resolved = ResolveTexturePath(textureDir, textureRef);
+    if (!resolved.empty())
+        return resolved;
+
+    // Some exported assets reference legacy ".dds" names while files on disk are png/jpg.
+    const std::string stem = PathStem(textureRef);
+    if (!stem.empty() && stem != textureRef)
+    {
+        resolved = ResolveTexturePath(textureDir, stem);
+        if (!resolved.empty())
+            return resolved;
+    }
+
+    return textureRef;
 }
 }
 

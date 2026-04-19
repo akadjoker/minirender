@@ -74,6 +74,13 @@ public:
         Textured
     };
 
+    enum class CullMode
+    {
+        Off = 0,
+        Front = 1,
+        Back = 2
+    };
+
     enum class DragTool
     {
         None,
@@ -241,11 +248,14 @@ private:
     glm::vec3 entityPreviewOrigRot_ {0.0f}; // backup of linked mesh rotation
 
     bool useTransparency_ = true;
+    CullMode cullMode_ = CullMode::Back;
     bool vertexFrontOnly_ = true;
     bool placeVertexMode_ = false;
     float transparency_ = 0.45f;
     float gridSize_ = 16.0f;
     float perspGridSize_ = 16.0f;
+    float perspectiveNearPlane_ = 0.1f;
+    float perspectiveFarPlane_ = 8192.0f;
     std::array<LevelEditorView, 4> views_ = {};
     int activeViewIndex_ = 3;
     int activeViewCount_ = 4;

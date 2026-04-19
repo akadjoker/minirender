@@ -10,7 +10,8 @@ enum class UvProjection : int
     Box = 0,
     Planar,
     Cylindrical,
-    Spherical
+    Spherical,
+    Mesh
 };
 
 struct EditableVertex

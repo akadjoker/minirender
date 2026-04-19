@@ -23,9 +23,35 @@ enum class DoorType
     Shutter   // double sliding — two halves slide apart
 };
 
+enum class LevelMeshPrimitive
+{
+    Unknown,
+    Box,
+    Room,
+    Sector,
+    RoomBoxesPart,
+    Cylinder,
+    Cone,
+    Sphere,
+    Torus,
+    Tube,
+    Pyramid,
+    DoorFrame,
+    Terrain,
+    Pillar,
+    Plane,
+    Wedge,
+    Stairs,
+    SpiralStairs,
+    Text,
+    Imported,
+    Empty
+};
+
 struct LevelMeshObject
 {
     std::string name = "Brush 01";
+    LevelMeshPrimitive primitive = LevelMeshPrimitive::Box;
     glm::vec3 position {0.0f, 0.0f, 0.0f};
     glm::vec3 rotationEuler {0.0f, 0.0f, 0.0f};
     glm::vec3 scale {1.0f, 1.0f, 1.0f};

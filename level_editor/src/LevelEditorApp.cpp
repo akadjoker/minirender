@@ -124,6 +124,35 @@ const char* entityTypeName(LevelEntityType type)
     return "Entity";
 }
 
+const char* meshPrimitiveName(LevelMeshPrimitive primitive)
+{
+    switch (primitive)
+    {
+    case LevelMeshPrimitive::Unknown: return "Unknown";
+    case LevelMeshPrimitive::Box: return "Box";
+    case LevelMeshPrimitive::Room: return "Room";
+    case LevelMeshPrimitive::Sector: return "Sector";
+    case LevelMeshPrimitive::RoomBoxesPart: return "Room Boxes Part";
+    case LevelMeshPrimitive::Cylinder: return "Cylinder";
+    case LevelMeshPrimitive::Cone: return "Cone";
+    case LevelMeshPrimitive::Sphere: return "Sphere";
+    case LevelMeshPrimitive::Torus: return "Torus";
+    case LevelMeshPrimitive::Tube: return "Tube";
+    case LevelMeshPrimitive::Pyramid: return "Pyramid";
+    case LevelMeshPrimitive::DoorFrame: return "Door Frame";
+    case LevelMeshPrimitive::Terrain: return "Terrain";
+    case LevelMeshPrimitive::Pillar: return "Pillar";
+    case LevelMeshPrimitive::Plane: return "Plane";
+    case LevelMeshPrimitive::Wedge: return "Wedge";
+    case LevelMeshPrimitive::Stairs: return "Stairs";
+    case LevelMeshPrimitive::SpiralStairs: return "Spiral Stairs";
+    case LevelMeshPrimitive::Text: return "Text";
+    case LevelMeshPrimitive::Imported: return "Imported";
+    case LevelMeshPrimitive::Empty: return "Empty";
+    }
+    return "Unknown";
+}
+
 const char* viewTypeName(LevelEditorApp::ViewType type)
 {
     switch (type)
@@ -1328,9 +1357,12 @@ bool LevelEditorApp::SelectedMeshIsTerrain(int* outCols, int* outRows) const
     if (selectedMeshIndex_ < 0 || selectedMeshIndex_ >= static_cast<int>(scene_.meshObjects().size()))
         return false;
 
+    const LevelMeshObject& selectedObject = scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)];
     int cols = 0;
     int rows = 0;
-    if (!detectTerrainGridDimensions(scene_.meshObjects()[static_cast<std::size_t>(selectedMeshIndex_)].mesh, cols, rows))
+    if (!detectTerrainGridDimensions(selectedObject.mesh, cols, rows))
+        return false;
+    if (selectedObject.primitive != LevelMeshPrimitive::Terrain)
         return false;
 
     if (outCols)
@@ -2492,7 +2524,7 @@ bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& ou
 
     for (const EditableFace& face : faces)
     {
-        if (face.indices.size() != 4 || face.materialName != "terrain")
+        if (face.indices.size() != 4)
             return false;
     }
 
@@ -2744,6 +2776,7 @@ void LevelEditorApp::HandleFileDialogs()
 
                 LevelMeshObject object;
                 object.name = result.path.stem().generic_string();
+                object.primitive = LevelMeshPrimitive::Imported;
                 object.mesh = editable;
                 scene_.meshObjects().push_back(object);
                 SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
@@ -7293,14 +7326,17 @@ void LevelEditorApp::ShowLeftPanel()
                 switch (primitiveTypeAtCreate)
                 {
                 case PrimitiveType::Box:
+                    object.primitive = LevelMeshPrimitive::Box;
                     object.name = "Box " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeBox(-half, half);
                     break;
                 case PrimitiveType::Room:
+                    object.primitive = LevelMeshPrimitive::Room;
                     object.name = "Room " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeRoom(-half, half, primWallThickness_);
                     break;
                 case PrimitiveType::Sector:
+                    object.primitive = LevelMeshPrimitive::Sector;
                     object.name = "Sector " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     if (!primSectorLeft_ && !primSectorRight_ && !primSectorTop_ && !primSectorBottom_ && !primSectorFront_ && !primSectorBack_)
                     {
@@ -7343,6 +7379,7 @@ void LevelEditorApp::ShowLeftPanel()
                     {
                         LevelMeshObject part;
                         part.name = std::string(boxDefs[i].name) + " " + std::to_string(baseIndex);
+                        part.primitive = LevelMeshPrimitive::RoomBoxesPart;
                         part.mesh = EditableMesh::MakeBox(boxDefs[i].min, boxDefs[i].max);
                         scene_.meshObjects().push_back(std::move(part));
                     }
@@ -7352,35 +7389,43 @@ void LevelEditorApp::ShowLeftPanel()
                     break;
                 }
                 case PrimitiveType::Cylinder:
+                    object.primitive = LevelMeshPrimitive::Cylinder;
                     object.name = "Cylinder " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeCylinder(glm::vec3(0.0f), primRadius_, primHeight_, primSegments_);
                     break;
                 case PrimitiveType::Cone:
+                    object.primitive = LevelMeshPrimitive::Cone;
                     object.name = "Cone " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeCone(glm::vec3(0.0f), primRadius_, primHeight_, primSegments_);
                     break;
                 case PrimitiveType::Sphere:
+                    object.primitive = LevelMeshPrimitive::Sphere;
                     object.name = "Sphere " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeSphere(glm::vec3(0.0f), primRadius_, primRings_, primSegments_);
                     break;
                 case PrimitiveType::Torus:
+                    object.primitive = LevelMeshPrimitive::Torus;
                     object.name = "Torus " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeTorus(glm::vec3(0.0f), primRadius_, primMinorRadius_, primSegments_, primRings_);
                     break;
                 case PrimitiveType::Tube:
+                    object.primitive = LevelMeshPrimitive::Tube;
                     object.name = "Tube " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeTube(glm::vec3(0.0f), primRadius_, primMinorRadius_, primHeight_, primSegments_);
                     break;
                 case PrimitiveType::Pyramid:
+                    object.primitive = LevelMeshPrimitive::Pyramid;
                     object.name = "Pyramid " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakePyramid(glm::vec3(0.0f), primSize_.x, primSize_.z, primSize_.y);
                     break;
                 case PrimitiveType::DoorFrame:
+                    object.primitive = LevelMeshPrimitive::DoorFrame;
                     object.name = "Door Frame " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeDoorFrame(-half, half, primDoorWidth_, primDoorHeight_, primWallThickness_);
                     break;
                 case PrimitiveType::Terrain:
                 {
+                    object.primitive = LevelMeshPrimitive::Terrain;
                     object.name = "Terrain " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     std::vector<float> heights;
                     if (!primHeightmapPath_.empty())
@@ -7405,11 +7450,13 @@ void LevelEditorApp::ShowLeftPanel()
                     break;
                 }
                 case PrimitiveType::Pillar:
+                    object.primitive = LevelMeshPrimitive::Pillar;
                     object.name = "Pillar " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakePillar(-half, half, primPillarBaseRatio_, primPillarCapitalRatio_, primPillarFlareRatio_);
                     break;
                 case PrimitiveType::Plane:
                 {
+                    object.primitive = LevelMeshPrimitive::Plane;
                     object.name = "Plane " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakePlane(glm::vec3(0.0f), primPlaneW_, primPlaneD_, primSubdivX_, primSubdivZ_);
                     // Rotate plane to match selected orientation
@@ -7434,18 +7481,22 @@ void LevelEditorApp::ShowLeftPanel()
                     break;
                 }
                 case PrimitiveType::Wedge:
+                    object.primitive = LevelMeshPrimitive::Wedge;
                     object.name = "Wedge " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeWedge(-half, half);
                     break;
                 case PrimitiveType::Stairs:
+                    object.primitive = LevelMeshPrimitive::Stairs;
                     object.name = "Stairs " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeStairs(-half, half, primStairSteps_);
                     break;
                 case PrimitiveType::SpiralStairs:
+                    object.primitive = LevelMeshPrimitive::SpiralStairs;
                     object.name = "Spiral " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeSpiralStairs(glm::vec3(0.0f), primInnerRadius_, primOuterRadius_, primHeight_, primStairSteps_, primSpiralAngle_);
                     break;
                 case PrimitiveType::Text:
+                    object.primitive = LevelMeshPrimitive::Text;
                     object.name = "Text " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
                     object.mesh = EditableMesh::MakeText(primText_, primFontPath_, primTextSize_, primTextExtrude_, primTextCurveQuality_);
                     break;
@@ -7468,6 +7519,7 @@ void LevelEditorApp::ShowLeftPanel()
         PushUndoState();
         LevelMeshObject object;
         object.name = "Empty " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+        object.primitive = LevelMeshPrimitive::Empty;
         object.mesh = EditableMesh::FromData({}, {});
         scene_.meshObjects().push_back(object);
         SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
@@ -8828,7 +8880,7 @@ void LevelEditorApp::ShowRightPanel()
             vertexBakeRotate_ = glm::vec3(0.0f);
             vertexBakeScale_ = glm::vec3(1.0f);
         }
-        ImGui::TextDisabled("Pivot agora desloca sem mexer no visual. Este painel transforma a mesh local nos vertices.");
+        //ImGui::TextDisabled("Pivot agora desloca sem mexer no visual. Este painel transforma a mesh local nos vertices.");
 
         int terrainCols = 0;
         int terrainRows = 0;
@@ -8861,46 +8913,61 @@ void LevelEditorApp::ShowRightPanel()
             ImGui::TextDisabled("Grid: %d x %d", terrainCols, terrainRows);
         }
 
+        std::string meshPrimitiveLabel = meshPrimitiveName(meshObject.primitive);
+        ImGui::TextUnformatted("Primitive Type");
+        ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        ImGui::InputText("##MeshPrimitiveType", &meshPrimitiveLabel, ImGuiInputTextFlags_ReadOnly);
+        ImGui::EndDisabled();
+
         ImGui::Text("Vertices: %d  Faces: %d",
             static_cast<int>(meshObject.mesh.vertexCount()),
             static_cast<int>(meshObject.mesh.faceCount()));
 
-        if (ImGui::BeginTable("FacesTable##Mesh", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+        if (Section("Faces", false))
         {
-            ImGui::TableSetupColumn("Face");
-            ImGui::TableSetupColumn("Material");
-            ImGui::TableHeadersRow();
-            const auto& faces = meshObject.mesh.faces();
-            ImGuiListClipper clipper;
-            clipper.Begin(static_cast<int>(faces.size()));
-            while (clipper.Step())
+            const float faceListHeight = std::clamp(ImGui::GetContentRegionAvail().y * 0.4f, 160.0f, 320.0f);
+            if (ImGui::BeginChild("FacesListPanel##Mesh", ImVec2(0.0f, faceListHeight), true, ImGuiWindowFlags_None))
             {
-                for (int rowFaceIndex = clipper.DisplayStart; rowFaceIndex < clipper.DisplayEnd; ++rowFaceIndex)
+                if (ImGui::BeginTable("FacesTable##Mesh", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY))
                 {
-                    const EditableFace& face = faces[(size_t)rowFaceIndex];
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-                    const bool rowSelected = IsFaceSelected(rowFaceIndex);
-                    if (ImGui::Selectable(("Face " + std::to_string(rowFaceIndex)).c_str(), rowSelected, ImGuiSelectableFlags_SpanAllColumns))
+                    ImGui::TableSetupColumn("Face");
+                    ImGui::TableSetupColumn("Material");
+                    ImGui::TableHeadersRow();
+                    const auto& faces = meshObject.mesh.faces();
+                    ImGuiListClipper clipper;
+                    clipper.Begin(static_cast<int>(faces.size()));
+                    while (clipper.Step())
                     {
-                        if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl)
+                        for (int rowFaceIndex = clipper.DisplayStart; rowFaceIndex < clipper.DisplayEnd; ++rowFaceIndex)
                         {
-                            toggleIndexSelection(selectedFaceIndices_, rowFaceIndex);
-                            selectedFaceIndex_ = selectedFaceIndices_.empty() ? -1 : rowFaceIndex;
-                            SyncSelectedFaces();
+                            const EditableFace& face = faces[(size_t)rowFaceIndex];
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            const bool rowSelected = IsFaceSelected(rowFaceIndex);
+                            if (ImGui::Selectable(("Face " + std::to_string(rowFaceIndex)).c_str(), rowSelected, ImGuiSelectableFlags_SpanAllColumns))
+                            {
+                                if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl)
+                                {
+                                    toggleIndexSelection(selectedFaceIndices_, rowFaceIndex);
+                                    selectedFaceIndex_ = selectedFaceIndices_.empty() ? -1 : rowFaceIndex;
+                                    SyncSelectedFaces();
+                                }
+                                else
+                                {
+                                    SetSingleSelectedFace(rowFaceIndex);
+                                }
+                                selectionMode_ = SelectionMode::Face;
+                            }
+                            ImGui::TableSetColumnIndex(1);
+                            const std::string faceMaterialLabel = face.materialName.empty() ? "(none)" : PathFilename(face.materialName);
+                            ImGui::TextUnformatted(faceMaterialLabel.c_str());
                         }
-                        else
-                        {
-                            SetSingleSelectedFace(rowFaceIndex);
-                        }
-                        selectionMode_ = SelectionMode::Face;
                     }
-                    ImGui::TableSetColumnIndex(1);
-                    const std::string faceMaterialLabel = face.materialName.empty() ? "(none)" : PathFilename(face.materialName);
-                    ImGui::TextUnformatted(faceMaterialLabel.c_str());
-                }   
+                    ImGui::EndTable();
+                }
+                ImGui::EndChild();
             }
-            ImGui::EndTable();
         }
         ImGui::PopID();
     }

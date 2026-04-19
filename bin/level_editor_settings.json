@@ -2,7 +2,7 @@
     "assetRoot": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures",
     "assetViewMode": 2,
     "cullMode": 2,
-    "currentTexturePath": "terrain",
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/assets/powerplant/textures/hill_mound_b.png",
     "debugDrawNormals": false,
     "debugDrawTangents": false,
     "debugNormalLength": 32.5,
@@ -14,17 +14,18 @@
     "lmAmbient": 0.27000001072883606,
     "lmBias": 0.8109999895095825,
     "lmResolution": 2048,
-    "lmSamples": 16,
+    "lmSamples": 8,
     "perspGridSize": 19.100000381469727,
     "perspectiveFarPlane": 8242.0,
     "perspectiveMinDistance": 0.009999999776482582,
     "perspectiveNearPlane": 1.3609999418258667,
-    "scenePath": "/media/projectos/projects/cpp/minirender/bin/scenes/terrein.mred",
+    "scenePath": "",
     "sections": {
         "CSG": true,
-        "Debug": true,
+        "Debug": false,
         "Entities": true,
         "Experimental Mesh CSG": true,
+        "Faces": false,
         "History": false,
         "Level Stats": true,
         "Lightmap": true,
@@ -96,7 +97,7 @@
                 64.0,
                 0.0
             ],
-            "orthoSize": 277.12811279296875,
+            "orthoSize": 335.32501220703125,
             "perspectiveDistance": 720.0,
             "perspectivePitch": 28.0,
             "perspectiveYaw": 45.0,
@@ -110,14 +111,14 @@
                 0.14000000059604645
             ],
             "focus": [
-                41.312705993652344,
-                56.15556716918945,
-                5.880399227142334
+                -21.62567710876465,
+                -11.46448040008545,
+                46.517330169677734
             ],
             "orthoSize": 256.0,
-            "perspectiveDistance": 160.010009765625,
-            "perspectivePitch": 11.25,
-            "perspectiveYaw": -6850.7109375,
+            "perspectiveDistance": 288.010009765625,
+            "perspectivePitch": 26.0,
+            "perspectiveYaw": -7347.70361328125,
             "renderMode": 2,
             "type": 6
         }

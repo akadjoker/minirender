@@ -1,5 +1,6 @@
 #include "LevelEditorSceneIO.hpp"
 
+#include <cmath>
 #include <fstream>
 
 #include <json.hpp>
@@ -25,6 +26,99 @@ struct adl_serializer<glm::vec3>
 
 namespace
 {
+bool detectLegacyTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows)
+{
+    outCols = 0;
+    outRows = 0;
+    const auto& vertices = mesh.vertices();
+    const auto& faces = mesh.faces();
+    if (vertices.size() < 4 || faces.empty())
+        return false;
+
+    for (const EditableFace& face : faces)
+    {
+        if (face.indices.size() != 4 || face.materialName != "terrain")
+            return false;
+    }
+
+    const float firstZ = vertices.front().position.z;
+    constexpr float eps = 1e-3f;
+    int cols = 0;
+    while (cols < static_cast<int>(vertices.size()) &&
+           std::fabs(vertices[static_cast<std::size_t>(cols)].position.z - firstZ) <= eps)
+    {
+        ++cols;
+    }
+    if (cols < 2)
+        return false;
+    if (vertices.size() % static_cast<std::size_t>(cols) != 0)
+        return false;
+
+    const int rows = static_cast<int>(vertices.size() / static_cast<std::size_t>(cols));
+    if (rows < 2)
+        return false;
+    if (static_cast<int>(faces.size()) != (cols - 1) * (rows - 1))
+        return false;
+
+    outCols = cols;
+    outRows = rows;
+    return true;
+}
+
+std::string primitiveTypeToString(LevelMeshPrimitive primitive)
+{
+    switch (primitive)
+    {
+    case LevelMeshPrimitive::Unknown: return "unknown";
+    case LevelMeshPrimitive::Box: return "box";
+    case LevelMeshPrimitive::Room: return "room";
+    case LevelMeshPrimitive::Sector: return "sector";
+    case LevelMeshPrimitive::RoomBoxesPart: return "room_boxes_part";
+    case LevelMeshPrimitive::Cylinder: return "cylinder";
+    case LevelMeshPrimitive::Cone: return "cone";
+    case LevelMeshPrimitive::Sphere: return "sphere";
+    case LevelMeshPrimitive::Torus: return "torus";
+    case LevelMeshPrimitive::Tube: return "tube";
+    case LevelMeshPrimitive::Pyramid: return "pyramid";
+    case LevelMeshPrimitive::DoorFrame: return "door_frame";
+    case LevelMeshPrimitive::Terrain: return "terrain";
+    case LevelMeshPrimitive::Pillar: return "pillar";
+    case LevelMeshPrimitive::Plane: return "plane";
+    case LevelMeshPrimitive::Wedge: return "wedge";
+    case LevelMeshPrimitive::Stairs: return "stairs";
+    case LevelMeshPrimitive::SpiralStairs: return "spiral_stairs";
+    case LevelMeshPrimitive::Text: return "text";
+    case LevelMeshPrimitive::Imported: return "imported";
+    case LevelMeshPrimitive::Empty: return "empty";
+    }
+    return "unknown";
+}
+
+LevelMeshPrimitive primitiveTypeFromString(const std::string& value)
+{
+    if (value == "box") return LevelMeshPrimitive::Box;
+    if (value == "room") return LevelMeshPrimitive::Room;
+    if (value == "sector") return LevelMeshPrimitive::Sector;
+    if (value == "room_boxes_part") return LevelMeshPrimitive::RoomBoxesPart;
+    if (value == "cylinder") return LevelMeshPrimitive::Cylinder;
+    if (value == "cone") return LevelMeshPrimitive::Cone;
+    if (value == "sphere") return LevelMeshPrimitive::Sphere;
+    if (value == "torus") return LevelMeshPrimitive::Torus;
+    if (value == "tube") return LevelMeshPrimitive::Tube;
+    if (value == "pyramid") return LevelMeshPrimitive::Pyramid;
+    if (value == "door_frame") return LevelMeshPrimitive::DoorFrame;
+    if (value == "terrain") return LevelMeshPrimitive::Terrain;
+    if (value == "pillar") return LevelMeshPrimitive::Pillar;
+    if (value == "plane") return LevelMeshPrimitive::Plane;
+    if (value == "wedge") return LevelMeshPrimitive::Wedge;
+    if (value == "stairs") return LevelMeshPrimitive::Stairs;
+    if (value == "spiral_stairs") return LevelMeshPrimitive::SpiralStairs;
+    if (value == "text") return LevelMeshPrimitive::Text;
+    if (value == "imported") return LevelMeshPrimitive::Imported;
+    if (value == "empty") return LevelMeshPrimitive::Empty;
+    return LevelMeshPrimitive::Unknown;
+}
+
 std::string entityTypeToString(LevelEntityType type)
 {
     switch (type)
@@ -56,7 +150,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
                           std::string& error)
 {
     nlohmann::json root;
-    root["version"] = 2;
+    root["version"] = 3;
     root["asset_root"] = scene.assetRoot();
     root["mesh_objects"] = nlohmann::json::array();
     root["entities"] = nlohmann::json::array();
@@ -65,6 +159,7 @@ bool saveLevelEditorScene(const std::filesystem::path& path,
     {
         nlohmann::json meshJson;
         meshJson["name"] = object.name;
+        meshJson["primitive"] = primitiveTypeToString(object.primitive);
         meshJson["position"] = object.position;
         meshJson["rotation"] = object.rotationEuler;
         meshJson["scale"] = object.scale;
@@ -189,6 +284,7 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
         {
             LevelMeshObject object;
             object.name = meshJson.value("name", std::string("Mesh"));
+            object.primitive = primitiveTypeFromString(meshJson.value("primitive", std::string("unknown")));
             object.position = meshJson.value("position", glm::vec3(0.0f));
             object.rotationEuler = meshJson.value("rotation", glm::vec3(0.0f));
             object.scale = meshJson.value("scale", glm::vec3(1.0f, 1.0f, 1.0f));
@@ -244,6 +340,13 @@ bool loadLevelEditorScene(const std::filesystem::path& path,
             }
 
             object.mesh.setData(vertices, faces);
+            if (object.primitive == LevelMeshPrimitive::Unknown)
+            {
+                int cols = 0;
+                int rows = 0;
+                if (detectLegacyTerrainGridDimensions(object.mesh, cols, rows))
+                    object.primitive = LevelMeshPrimitive::Terrain;
+            }
             scene.meshObjects().push_back(object);
         }
 

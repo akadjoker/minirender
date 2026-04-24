@@ -16,6 +16,7 @@ add_subdirectory(core)
 #add_subdirectory(gridmap_demo)
 #add_subdirectory(spritegen)
 add_subdirectory(level_editor)
+add_subdirectory(level_viewer)
 
  
  

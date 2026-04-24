@@ -39,6 +39,10 @@ struct LightmapSettings
     int samplesPerTexel = 1;    // for soft shadows (1 = hard)
     float bias = 2.0f;          // shadow ray bias
     float ambient = 0.05f;      // minimum ambient light
+    bool aoEnabled = true;      // ambient occlusion
+    int aoSamples = 16;         // hemisphere rays per texel
+    float aoRadius = 10.0f;     // max ray distance
+    float aoIntensity = 1.0f;   // 0 = no AO, 1 = full AO
     std::string outputPath = "lightmap.png";
 };
 

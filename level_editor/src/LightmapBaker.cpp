@@ -198,14 +198,13 @@ struct BVH {
             std::abs(dir.y) > 1e-8f ? 1.0f / dir.y : 1e8f * (dir.y >= 0 ? 1.0f : -1.0f),
             std::abs(dir.z) > 1e-8f ? 1.0f / dir.z : 1e8f * (dir.z >= 0 ? 1.0f : -1.0f)
         );
-        // Iterative traversal with explicit stack
-        std::vector<int> stack;
-        stack.reserve(std::max<std::size_t>(128, nodes.size()));
-        stack.push_back(0);
-        while (!stack.empty())
+        // Iterative traversal with fixed stack (BVH depth is O(log N), 64 levels = 2^64 tris)
+        int stack[64];
+        int stackSize = 0;
+        stack[stackSize++] = 0;
+        while (stackSize > 0)
         {
-            const auto& node = nodes[stack.back()];
-            stack.pop_back();
+            const auto& node = nodes[stack[--stackSize]];
             if (!rayAABB(orig, invDir, node.bounds, maxT)) continue;
             if (node.left == -1)  // leaf
             {
@@ -215,10 +214,10 @@ struct BVH {
                         return true;
                 }
             }
-            else
+            else if (stackSize + 2 <= 64)
             {
-                stack.push_back(node.left);
-                stack.push_back(node.right);
+                stack[stackSize++] = node.left;
+                stack[stackSize++] = node.right;
             }
         }
         return false;
@@ -240,6 +239,90 @@ static bool isOccluded(const glm::vec3& point, const glm::vec3& lightPos,
     const float searchDist = dist - bias * 2.0f;
     if (searchDist < 0.01f) return false;
     return bvh.anyHit(origin, dir, searchDist);
+}
+
+// Build an orthonormal basis (tangent, bitangent) from a normal vector
+static void buildOrthonormalBasis(const glm::vec3& n, glm::vec3& t, glm::vec3& b)
+{
+    const glm::vec3 ref = (std::abs(n.y) > 0.9f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+    t = glm::normalize(glm::cross(ref, n));
+    b = glm::cross(n, t);
+}
+
+// Cosine-weighted hemisphere sample direction in world space.
+// Uses Halton low-discrepancy sequence for better coverage.
+static glm::vec3 cosineHemisphereSample(const glm::vec3& normal, int sampleIndex, int totalSamples)
+{
+    const float u1 = halton(sampleIndex + 1, 2);
+    const float u2 = halton(sampleIndex + 1, 3);
+
+    // Cosine-weighted: elevation = acos(sqrt(u1)), azimuth = 2*pi*u2
+    const float r = std::sqrt(u1);
+    const float theta = 2.0f * static_cast<float>(M_PI) * u2;
+    const float x = r * std::cos(theta);
+    const float y = r * std::sin(theta);
+    const float z = std::sqrt(std::max(0.0f, 1.0f - u1));
+
+    glm::vec3 t, b;
+    buildOrthonormalBasis(normal, t, b);
+    return glm::normalize(t * x + b * y + normal * z);
+}
+
+// Compute ambient occlusion at a point: returns [0..1] where 0 = fully occluded, 1 = fully open
+static float computeAO(const glm::vec3& worldP, const glm::vec3& surfaceNormal,
+                       const BVH& bvh, int numSamples, float radius, float bias)
+{
+    if (numSamples <= 0) return 1.0f;
+    int occluded = 0;
+    for (int i = 0; i < numSamples; ++i)
+    {
+        const glm::vec3 dir = cosineHemisphereSample(surfaceNormal, i, numSamples);
+        const glm::vec3 origin = worldP + surfaceNormal * bias;
+        if (bvh.anyHit(origin, dir, radius))
+            ++occluded;
+    }
+    return 1.0f - static_cast<float>(occluded) / static_cast<float>(numSamples);
+}
+
+// Detect if a mesh is a regular terrain grid and return its dimensions.
+// Terrain vertices are stored row-major: vertex[row * cols + col], with X/Z as the horizontal plane.
+static bool detectTerrainGrid(const EditableMesh& mesh, int& outCols, int& outRows)
+{
+    outCols = 0;
+    outRows = 0;
+    const auto& vertices = mesh.vertices();
+    const auto& faces = mesh.faces();
+    if (vertices.size() < 4 || faces.empty())
+        return false;
+
+    for (const EditableFace& face : faces)
+    {
+        if (face.indices.size() != 4)
+            return false;
+    }
+
+    const float firstZ = vertices.front().position.z;
+    constexpr float eps = 1e-3f;
+    int cols = 0;
+    while (cols < static_cast<int>(vertices.size()) &&
+           std::fabs(vertices[static_cast<std::size_t>(cols)].position.z - firstZ) <= eps)
+    {
+        ++cols;
+    }
+    if (cols < 2)
+        return false;
+    if (vertices.size() % static_cast<std::size_t>(cols) != 0)
+        return false;
+
+    const int rows = static_cast<int>(vertices.size() / static_cast<std::size_t>(cols));
+    if (rows < 2)
+        return false;
+    if (static_cast<int>(faces.size()) != (cols - 1) * (rows - 1))
+        return false;
+
+    outCols = cols;
+    outRows = rows;
+    return true;
 }
 
 } // namespace
@@ -314,6 +397,17 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
     std::vector<PackedFaceRect> packRects_vec;
     std::vector<std::pair<int, int>> packRectSizes;
 
+    // Terrain entries — one per terrain mesh, baked as a single atlas rect
+    struct TerrainEntry {
+        int meshIdx;
+        int cols, rows;               // grid vertex dimensions
+        glm::mat4 model;
+        glm::mat3 normalMat;
+        glm::vec3 worldMin, worldMax;  // XZ world-space bounding box
+        int packRectIndex;             // index into packRects_vec
+    };
+    std::vector<TerrainEntry> terrainEntries;
+
     for (int mi = 0; mi < static_cast<int>(scene.meshObjects().size()); ++mi)
     {
         const auto& obj = scene.meshObjects()[mi];
@@ -322,6 +416,54 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
         const glm::mat4 model = buildLightmapModelMatrix(obj);
         const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(model)));
+
+        // Terrain special case: single atlas rect for the entire mesh
+        int terrainCols = 0, terrainRows = 0;
+        if (obj.primitive == LevelMeshPrimitive::Terrain &&
+            detectTerrainGrid(obj.mesh, terrainCols, terrainRows))
+        {
+            TerrainEntry te;
+            te.meshIdx = mi;
+            te.cols = terrainCols;
+            te.rows = terrainRows;
+            te.model = model;
+            te.normalMat = normalMat;
+
+            // Compute world-space XZ bounding box from grid corners
+            const auto& verts = obj.mesh.vertices();
+            te.worldMin = glm::vec3(1e18f);
+            te.worldMax = glm::vec3(-1e18f);
+            for (const auto& v : verts)
+            {
+                glm::vec3 wp = glm::vec3(model * glm::vec4(v.position, 1.0f));
+                te.worldMin = glm::min(te.worldMin, wp);
+                te.worldMax = glm::max(te.worldMax, wp);
+            }
+
+            // Allocate one rect for the whole terrain
+            const float terrainW = te.worldMax.x - te.worldMin.x;
+            const float terrainH = te.worldMax.z - te.worldMin.z;
+            const float texelsPerUnit = static_cast<float>(atlasSize) / 256.0f;
+            int rw = std::max(4, static_cast<int>(terrainW * texelsPerUnit));
+            int rh = std::max(4, static_cast<int>(terrainH * texelsPerUnit));
+            // Allow terrain to use up to 3/4 of the atlas (it's the biggest surface)
+            rw = std::min(rw, atlasSize * 3 / 4);
+            rh = std::min(rh, atlasSize * 3 / 4);
+
+            stbrp_rect pr;
+            memset(&pr, 0, sizeof(pr));
+            pr.w = rw;
+            pr.h = rh;
+            pr.id = -1; // not a face entry
+            te.packRectIndex = static_cast<int>(packRects_vec.size());
+            packRects_vec.push_back({pr, 0});
+            packRectSizes.push_back({rw, rh});
+            terrainEntries.push_back(std::move(te));
+
+            printf("[Lightmap] Terrain mesh %d: %dx%d grid, rect %dx%d texels\n",
+                   mi, terrainCols, terrainRows, rw, rh);
+            continue; // skip per-face entries for this mesh
+        }
 
         const auto& verts = obj.mesh.vertices();
         for (int fi = 0; fi < static_cast<int>(obj.mesh.faceCount()); ++fi)
@@ -393,7 +535,9 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
             float faceH = lMax.y - lMin.y;
 
             // Map to texel count proportional to face dimensions
-            const float texelsPerUnit = static_cast<float>(atlasSize) / 1024.0f;
+            // Scale so that a 1-unit face gets ~1 texel per unit at resolution 256,
+            // ~4 texels/unit at 1024, etc.
+            const float texelsPerUnit = static_cast<float>(atlasSize) / 256.0f;
             int rw = std::max(2, static_cast<int>(faceW * texelsPerUnit));
             int rh = std::max(2, static_cast<int>(faceH * texelsPerUnit));
             rw = std::min(rw, atlasSize / 2);
@@ -502,6 +646,78 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
         result.atlases.size(),
         std::vector<uint8_t>(static_cast<std::size_t>(atlasSize) * static_cast<std::size_t>(atlasSize), 0));
 
+    // Shared lighting function for both face-based and terrain-based baking.
+    // surfaceNormal: the interpolated normal at the sample point.
+    auto computeLightingAtPoint = [&](const glm::vec3& worldP, const glm::vec3& surfaceNormal, bool& outLit) -> glm::vec3
+    {
+        glm::vec3 lighting(settings.ambient);
+
+        for (const auto& light : lights)
+        {
+            glm::vec3 lightDir;   // direction FROM surface TO light
+            float NdotL;
+            float atten = 1.0f;
+            glm::vec3 shadowTarget;
+
+            if (light.type == LightType::Directional)
+            {
+                lightDir = -light.direction;
+                NdotL = std::max(0.0f, glm::dot(surfaceNormal, lightDir));
+                if (NdotL < 1e-4f) continue;
+
+                shadowTarget = worldP + lightDir * 10000.0f;
+                if (isOccluded(worldP, shadowTarget, surfaceNormal, shadowBVH, settings.bias))
+                    continue;
+
+                atten = 1.0f;
+            }
+            else
+            {
+                const glm::vec3 toLight = light.position - worldP;
+                const float dist = glm::length(toLight);
+                if (dist > light.radius || dist < 1e-4f) continue;
+
+                lightDir = toLight / dist;
+                NdotL = std::max(0.0f, glm::dot(surfaceNormal, lightDir));
+                if (NdotL < 1e-4f) continue;
+
+                if (light.type == LightType::Spot)
+                {
+                    const float cosAngle = glm::dot(-lightDir, light.direction);
+                    if (cosAngle < light.spotCosOuter) continue;
+                    if (cosAngle < light.spotCosInner)
+                    {
+                        const float t = (cosAngle - light.spotCosOuter) /
+                                        std::max(1e-6f, light.spotCosInner - light.spotCosOuter);
+                        atten *= t * t;
+                    }
+                }
+
+                if (isOccluded(worldP, light.position, surfaceNormal, shadowBVH, settings.bias))
+                    continue;
+
+                const float ratio = dist / light.radius;
+                atten *= std::max(0.0f, 1.0f - ratio * ratio);
+            }
+
+            const float contribution = NdotL * atten * light.intensity;
+            lighting += light.color * contribution;
+            if (contribution > 0.001f)
+                outLit = true;
+        }
+
+        // Apply ambient occlusion
+        if (settings.aoEnabled && settings.aoSamples > 0)
+        {
+            const float ao = computeAO(worldP, surfaceNormal, shadowBVH,
+                                       settings.aoSamples, settings.aoRadius, settings.bias);
+            const float aoFactor = glm::mix(1.0f, ao, settings.aoIntensity);
+            lighting *= aoFactor;
+        }
+
+        return lighting;
+    };
+
     // Bake each face
     const int totalFaces = static_cast<int>(packRects_vec.size());
     int bakedFaces = 0;
@@ -510,6 +726,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
     {
         const auto& pr = packedRect.rect;
         if (!pr.was_packed) { bakedFaces++; dbgNotPacked++; continue; }
+        if (pr.id < 0) { bakedFaces++; continue; } // terrain rects handled separately
         if (progress) progress->store(static_cast<float>(bakedFaces) / static_cast<float>(std::max(1, totalFaces)));
         const auto& entry = faceEntries[pr.id];
         const int atlasPage = std::clamp(packedRect.atlasIndex, 0, static_cast<int>(result.atlases.size()) - 1);
@@ -542,74 +759,6 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
         const int sampleCount = std::max(1, settings.samplesPerTexel);
 
-        auto computeLightingAtPoint = [&](const glm::vec3& worldP, bool& outLit) -> glm::vec3
-        {
-            glm::vec3 lighting(settings.ambient);
-
-            for (const auto& light : lights)
-            {
-                glm::vec3 lightDir;   // direction FROM surface TO light
-                float NdotL;
-                float atten = 1.0f;
-                glm::vec3 shadowTarget;
-
-                if (light.type == LightType::Directional)
-                {
-                    // Sun: parallel rays, no distance falloff
-                    lightDir = -light.direction; // direction points toward light
-                    NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
-                    if (NdotL < 1e-4f) continue;
-
-                    // Shadow: cast ray very far in light direction
-                    shadowTarget = worldP + lightDir * 10000.0f;
-                    if (isOccluded(worldP, shadowTarget, faceNormal, shadowBVH, settings.bias))
-                        continue;
-
-                    atten = 1.0f; // no distance falloff for sun
-                }
-                else // Point or Spot
-                {
-                    const glm::vec3 toLight = light.position - worldP;
-                    const float dist = glm::length(toLight);
-                    if (dist > light.radius || dist < 1e-4f) continue;
-
-                    lightDir = toLight / dist;
-                    NdotL = std::max(0.0f, glm::dot(faceNormal, lightDir));
-                    if (NdotL < 1e-4f) continue;
-
-                    // Spot cone check
-                    if (light.type == LightType::Spot)
-                    {
-                        // lightDir is surface→light, light.direction is light→target
-                        const float cosAngle = glm::dot(-lightDir, light.direction);
-                        if (cosAngle < light.spotCosOuter) continue; // outside cone
-                        // Smooth falloff between inner and outer cone
-                        if (cosAngle < light.spotCosInner)
-                        {
-                            const float t = (cosAngle - light.spotCosOuter) /
-                                            std::max(1e-6f, light.spotCosInner - light.spotCosOuter);
-                            atten *= t * t; // quadratic smooth
-                        }
-                    }
-
-                    // Shadow test
-                    if (isOccluded(worldP, light.position, faceNormal, shadowBVH, settings.bias))
-                        continue;
-
-                    // Distance attenuation: smooth quadratic falloff
-                    const float ratio = dist / light.radius;
-                    atten *= std::max(0.0f, 1.0f - ratio * ratio);
-                }
-
-                const float contribution = NdotL * atten * light.intensity;
-                lighting += light.color * contribution;
-                if (contribution > 0.001f)
-                    outLit = true;
-            }
-
-            return lighting;
-        };
-
         // For each texel in this face's atlas rect, compute world position and light
         for (int ty = 0; ty < pr.h; ++ty)
         {
@@ -620,8 +769,9 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
                 for (int sampleIndex = 0; sampleIndex < sampleCount; ++sampleIndex)
                 {
-                    const float sampleOffsetX = halton(sampleIndex + 1, 2);
-                    const float sampleOffsetY = halton(sampleIndex + 1, 3);
+                    // For single sample, use texel center; otherwise use Halton sequence
+                    const float sampleOffsetX = (sampleCount == 1) ? 0.5f : halton(sampleIndex + 1, 2);
+                    const float sampleOffsetY = (sampleCount == 1) ? 0.5f : halton(sampleIndex + 1, 3);
 
                     // Normalized position within the face rect
                     const float u = (static_cast<float>(tx) + sampleOffsetX) / static_cast<float>(pr.w);
@@ -649,7 +799,7 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
                     }
 
                     bool sampleLit = false;
-                    accumulated += computeLightingAtPoint(worldP, sampleLit);
+                    accumulated += computeLightingAtPoint(worldP, faceNormal, sampleLit);
                     faceGotLight = faceGotLight || sampleLit;
                     ++validSamples;
                 }
@@ -659,15 +809,22 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
 
                 const glm::vec3 lighting = accumulated / static_cast<float>(validSamples);
 
+                // Apply gamma correction (linear -> sRGB) for correct visual brightness
+                const glm::vec3 srgb(
+                    std::pow(std::min(1.0f, lighting.r), 1.0f / 2.2f),
+                    std::pow(std::min(1.0f, lighting.g), 1.0f / 2.2f),
+                    std::pow(std::min(1.0f, lighting.b), 1.0f / 2.2f)
+                );
+
                 // Write to atlas
                 const int px = pr.x + tx;
                 const int py = pr.y + ty;
                 if (px >= 0 && px < atlasSize && py >= 0 && py < atlasSize)
                 {
                     const int idx = (py * atlasSize + px) * 3;
-                    atlasPixels[idx + 0] = static_cast<uint8_t>(std::min(255.0f, lighting.r * 255.0f));
-                    atlasPixels[idx + 1] = static_cast<uint8_t>(std::min(255.0f, lighting.g * 255.0f));
-                    atlasPixels[idx + 2] = static_cast<uint8_t>(std::min(255.0f, lighting.b * 255.0f));
+                    atlasPixels[idx + 0] = static_cast<uint8_t>(srgb.r * 255.0f);
+                    atlasPixels[idx + 1] = static_cast<uint8_t>(srgb.g * 255.0f);
+                    atlasPixels[idx + 2] = static_cast<uint8_t>(srgb.b * 255.0f);
                     occupied[py * atlasSize + px] = 1;
                 }
             }
@@ -705,6 +862,126 @@ LightmapResult BakeLightmaps(const LevelEditorScene& scene, const LightmapSettin
                    ndl, dist, occ ? 1 : 0, pr.w, pr.h);
         }
         bakedFaces++;
+    }
+
+    // ── Terrain bake: single continuous rect per terrain mesh ──────────────
+    for (const auto& te : terrainEntries)
+    {
+        const auto& packedRect = packRects_vec[static_cast<std::size_t>(te.packRectIndex)];
+        const auto& pr = packedRect.rect;
+        if (!pr.was_packed) continue;
+
+        const int atlasPage = std::clamp(packedRect.atlasIndex, 0, static_cast<int>(result.atlases.size()) - 1);
+        auto& atlasPixels = result.atlases[static_cast<std::size_t>(atlasPage)].pixels;
+        auto& occupied = occupiedMaps[static_cast<std::size_t>(atlasPage)];
+
+        const auto& obj = scene.meshObjects()[static_cast<std::size_t>(te.meshIdx)];
+        const auto& verts = obj.mesh.vertices();
+        const int cols = te.cols;
+        const int rows = te.rows;
+
+        const int sampleCount = std::max(1, settings.samplesPerTexel);
+
+        // Bake each texel: map to local grid position, bilinear interpolate height + normal, transform to world
+        for (int ty = 0; ty < pr.h; ++ty)
+        {
+            for (int tx = 0; tx < pr.w; ++tx)
+            {
+                glm::vec3 accumulated(0.0f);
+                int validSamples = 0;
+
+                for (int si = 0; si < sampleCount; ++si)
+                {
+                    const float sox = (sampleCount == 1) ? 0.5f : halton(si + 1, 2);
+                    const float soy = (sampleCount == 1) ? 0.5f : halton(si + 1, 3);
+
+                    // Normalized position in the rect [0..1]
+                    const float u = (static_cast<float>(tx) + sox) / static_cast<float>(pr.w);
+                    const float v = (static_cast<float>(ty) + soy) / static_cast<float>(pr.h);
+
+                    // Map to local-space grid coordinates
+                    const float fx = u * static_cast<float>(cols - 1);
+                    const float fz = v * static_cast<float>(rows - 1);
+                    const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, cols - 2);
+                    const int z0 = std::clamp(static_cast<int>(std::floor(fz)), 0, rows - 2);
+                    const int x1 = x0 + 1;
+                    const int z1 = z0 + 1;
+                    const float txf = fx - static_cast<float>(x0);
+                    const float tzf = fz - static_cast<float>(z0);
+
+                    // Bilinear interpolation of local position
+                    const auto& v00 = verts[static_cast<std::size_t>(z0 * cols + x0)];
+                    const auto& v10 = verts[static_cast<std::size_t>(z0 * cols + x1)];
+                    const auto& v01 = verts[static_cast<std::size_t>(z1 * cols + x0)];
+                    const auto& v11 = verts[static_cast<std::size_t>(z1 * cols + x1)];
+
+                    const glm::vec3 localPos = glm::mix(
+                        glm::mix(v00.position, v10.position, txf),
+                        glm::mix(v01.position, v11.position, txf),
+                        tzf
+                    );
+                    const glm::vec3 localNrm = glm::normalize(glm::mix(
+                        glm::mix(v00.normal, v10.normal, txf),
+                        glm::mix(v01.normal, v11.normal, txf),
+                        tzf
+                    ));
+
+                    // Transform to world space
+                    const glm::vec3 worldP = glm::vec3(te.model * glm::vec4(localPos, 1.0f));
+                    glm::vec3 worldN = glm::normalize(te.normalMat * localNrm);
+
+                    bool sampleLit = false;
+                    accumulated += computeLightingAtPoint(worldP, worldN, sampleLit);
+                    ++validSamples;
+                }
+
+                if (validSamples == 0) continue;
+
+                const glm::vec3 lighting = accumulated / static_cast<float>(validSamples);
+                const glm::vec3 srgb(
+                    std::pow(std::min(1.0f, lighting.r), 1.0f / 2.2f),
+                    std::pow(std::min(1.0f, lighting.g), 1.0f / 2.2f),
+                    std::pow(std::min(1.0f, lighting.b), 1.0f / 2.2f)
+                );
+
+                const int px = pr.x + tx;
+                const int py = pr.y + ty;
+                if (px >= 0 && px < atlasSize && py >= 0 && py < atlasSize)
+                {
+                    const int idx = (py * atlasSize + px) * 3;
+                    atlasPixels[idx + 0] = static_cast<uint8_t>(srgb.r * 255.0f);
+                    atlasPixels[idx + 1] = static_cast<uint8_t>(srgb.g * 255.0f);
+                    atlasPixels[idx + 2] = static_cast<uint8_t>(srgb.b * 255.0f);
+                    occupied[py * atlasSize + px] = 1;
+                }
+            }
+        }
+
+        // Assign continuous UVs to each face's vertices.
+        // Face (r, c) in the grid has vertices at: (r*cols+c), (r*cols+c+1), ((r+1)*cols+c+1), ((r+1)*cols+c)
+        auto& meshUVData = result.meshUVs[static_cast<std::size_t>(te.meshIdx)];
+        for (int fi = 0; fi < static_cast<int>(obj.mesh.faceCount()); ++fi)
+        {
+            const auto& face = obj.mesh.faces()[fi];
+            meshUVData.faceAtlasIndices[fi] = atlasPage;
+            meshUVData.faceVertexUVs[fi].resize(face.indices.size());
+            for (std::size_t vi = 0; vi < face.indices.size(); ++vi)
+            {
+                const int vertIdx = face.indices[vi];
+                const int col = vertIdx % cols;
+                const int row = vertIdx / cols;
+                // Normalized position within the grid [0..1]
+                const float nu = static_cast<float>(col) / static_cast<float>(cols - 1);
+                const float nv = static_cast<float>(row) / static_cast<float>(rows - 1);
+                // Map to atlas UV
+                const float uvx = (static_cast<float>(pr.x) + nu * static_cast<float>(pr.w) + 0.5f) / static_cast<float>(atlasSize);
+                const float uvy = (static_cast<float>(pr.y) + nv * static_cast<float>(pr.h) + 0.5f) / static_cast<float>(atlasSize);
+                meshUVData.faceVertexUVs[fi][vi] = glm::vec2(uvx, uvy);
+            }
+        }
+
+        printf("[Lightmap] Terrain mesh %d baked: %dx%d rect on atlas page %d\n",
+               te.meshIdx, pr.w, pr.h, atlasPage);
     }
 
     if (progress) progress->store(1.0f);

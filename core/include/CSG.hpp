@@ -9,20 +9,16 @@
 //  surfaces, materials and AABB already computed and uploaded.
 //
 //  Requirements:
-//    • Both meshes should be watertight (closed, no holes).
-//    • Faces wound counter-clockwise (standard OpenGL front-face).
+//     Both meshes should be watertight (closed, no holes).
+//     Faces wound counter-clockwise (standard OpenGL front-face).
 //
-//  Pipeline:
-//    1. Flatten to world-space triangle soup (preserving matIndex).
-//    2. BVH broad-phase — O(n log n), SAH split.
-//    3. Triangle–triangle intersection (Möller 1997) with full
-//       coplanar handling via Sutherland-Hodgman clipping.
-//    4. cutTriangle() — per-edge bucket sort, dedup, ear-clip.
-//    5. isInsideMesh() — rays offset by rayEpsilon; only tests
-//       against the *other* mesh's soup (no auto-intersections).
-//    6. Face selection by operation.
-//    7. buildMesh() — weld, remove degenerate tris, rebuild
-//       Surface/material table, compute_normals/tangents, upload.
+//  Pipeline (BSP-tree, based on csg.js / Evan Wallace):
+//    1. Convert meshes to world-space convex polygon soup.
+//    2. Build BSP trees for both meshes.
+//    3. Clip trees against each other (removes inside/outside).
+//    4. Merge surviving polygons.
+//    5. Fan-triangulate, rebuild Surface/material table,
+//       compute normals/tangents, upload.
 // ============================================================
 
 namespace CSG
@@ -65,5 +61,30 @@ namespace CSG
                   const glm::mat4& matA = glm::mat4(1.f),
                   const glm::mat4& matB = glm::mat4(1.f),
                   const Options& opts   = {});
+
+    // Symmetric difference (XOR): parts in A or B but not both.
+    Mesh* makeSymmetricDifference(const Mesh& A, const Mesh& B,
+                                  const glm::mat4& matA = glm::mat4(1.f),
+                                  const glm::mat4& matB = glm::mat4(1.f),
+                                  const Options& opts   = {});
+
+    // Invert a single mesh (flip inside/outside, reverse winding + normals).
+    Mesh* makeInvert(const Mesh& A,
+                     const glm::mat4& matA = glm::mat4(1.f),
+                     const Options& opts   = {});
+
+    // Split a mesh along a plane. Returns two halves (front, back).
+    // Either pointer may be null if the mesh is entirely on one side.
+    struct SplitResult { Mesh* front = nullptr; Mesh* back = nullptr; };
+    SplitResult makeSplit(const Mesh& A,
+                          const glm::vec3& planeNormal, float planeDist,
+                          const glm::mat4& matA = glm::mat4(1.f),
+                          const Options& opts   = {});
+
+    // Hollow (shell): shrink a copy inward and subtract from the original.
+    // thickness = wall thickness in world units.
+    Mesh* makeHollow(const Mesh& A, float thickness,
+                     const glm::mat4& matA = glm::mat4(1.f),
+                     const Options& opts   = {});
 
 } // namespace CSG

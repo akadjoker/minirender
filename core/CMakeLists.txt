@@ -46,6 +46,8 @@ set(SOURCES
     src/GridMapMeshBuilder.cpp
     src/GridMapNode.cpp
     src/Input.cpp
+    src/LevelFormat.cpp
+    src/LevelNode.cpp
     src/Material.cpp
     src/Math.cpp
     src/M8Texture.cpp

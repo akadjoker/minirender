@@ -28,11 +28,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <map>
 #include <limits>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 
 #include <glm/gtx/norm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -111,17 +113,6 @@ const char* assetViewModeName(LevelEditorApp::AssetViewMode mode)
     return "Details";
 }
 
-const char* csgAxisName(int axis)
-{
-    switch (axis)
-    {
-    case 0: return "X";
-    case 1: return "Y";
-    case 2: return "Z";
-    }
-    return "Y";
-}
-
 const char* entityTypeName(LevelEntityType type)
 {
     switch (type)
@@ -132,6 +123,9 @@ const char* entityTypeName(LevelEntityType type)
     case LevelEntityType::Elevator: return "Elevator";
     case LevelEntityType::Platform: return "Platform";
     case LevelEntityType::Placement: return "Placement";
+    case LevelEntityType::Trigger: return "Trigger";
+    case LevelEntityType::Teleporter: return "Teleporter";
+    case LevelEntityType::SoundEmitter: return "Sound Emitter";
     }
     return "Entity";
 }
@@ -171,6 +165,9 @@ const char* meshBlendModeName(LevelMeshBlendMode mode)
     {
     case LevelMeshBlendMode::Alpha: return "Alpha";
     case LevelMeshBlendMode::Additive: return "Additive";
+    case LevelMeshBlendMode::Multiply: return "Multiply";
+    case LevelMeshBlendMode::Screen: return "Screen";
+    case LevelMeshBlendMode::PreMultipliedAlpha: return "PreMul Alpha";
     }
     return "Alpha";
 }
@@ -268,7 +265,7 @@ bool containsInsensitive(const std::string& text, const std::string& pattern)
 
 std::filesystem::path ensureSceneExtension(const std::filesystem::path& path)
 {
-    if (path.extension() == ".mred" || path.extension() == ".mredb" || path.extension() == ".mrbin")
+    if (path.extension() == ".mredb" || path.extension() == ".mrbin")
         return path;
     std::filesystem::path out = path;
     out.replace_extension(".mredb");
@@ -445,6 +442,305 @@ glm::vec3 worldNormalForLocalDirection(const LevelMeshObject& object, const glm:
     if (len2 <= 1e-8f)
         return glm::vec3(0.0f, 1.0f, 0.0f);
     return glm::normalize(worldDirection);
+}
+
+// ── Merge / Weld vertices ─────────────────────────────────────────────────
+// Merges selected vertices that are within `threshold` distance of each other.
+// Groups of close vertices collapse to their centroid. Returns number of vertices merged.
+int weldVertices(EditableMesh& mesh, const std::vector<int>& selectedIndices, float threshold)
+{
+    if (selectedIndices.size() < 2) return 0;
+
+    auto& verts = mesh.verticesMutable();
+    auto& faces = mesh.facesMutable();
+    const float thresh2 = threshold * threshold;
+
+    // Union-Find to group close vertices
+    std::vector<int> parent(verts.size());
+    for (int i = 0; i < static_cast<int>(parent.size()); ++i) parent[i] = i;
+
+    std::function<int(int)> find = [&](int x) -> int {
+        return parent[x] == x ? x : (parent[x] = find(parent[x]));
+    };
+    auto unite = [&](int a, int b) { parent[find(a)] = find(b); };
+
+    // Only merge among selected vertices
+    for (std::size_t i = 0; i < selectedIndices.size(); ++i)
+    {
+        for (std::size_t j = i + 1; j < selectedIndices.size(); ++j)
+        {
+            const int a = selectedIndices[i], b = selectedIndices[j];
+            if (a < 0 || a >= static_cast<int>(verts.size()) ||
+                b < 0 || b >= static_cast<int>(verts.size())) continue;
+            if (glm::distance2(verts[a].position, verts[b].position) <= thresh2)
+                unite(a, b);
+        }
+    }
+
+    // Compute centroid of each group and build remap
+    std::unordered_map<int, std::vector<int>> groups;
+    for (int idx : selectedIndices)
+    {
+        if (idx >= 0 && idx < static_cast<int>(verts.size()))
+            groups[find(idx)].push_back(idx);
+    }
+
+    int mergedCount = 0;
+    std::vector<int> remap(verts.size());
+    for (int i = 0; i < static_cast<int>(remap.size()); ++i) remap[i] = i;
+
+    for (const auto& [root, members] : groups)
+    {
+        if (members.size() < 2) continue;
+        // Centroid position
+        glm::vec3 center(0.0f);
+        glm::vec3 normalSum(0.0f);
+        glm::vec2 uvSum(0.0f);
+        for (int idx : members)
+        {
+            center += verts[idx].position;
+            normalSum += verts[idx].normal;
+            uvSum += verts[idx].uv;
+        }
+        const float n = static_cast<float>(members.size());
+        center /= n;
+        uvSum /= n;
+        normalSum = glm::length(normalSum) > 1e-6f ? glm::normalize(normalSum) : glm::vec3(0,1,0);
+
+        // Keep the root vertex, point all others to it
+        verts[root].position = center;
+        verts[root].normal = normalSum;
+        verts[root].uv = uvSum;
+        for (int idx : members)
+            remap[idx] = root;
+        mergedCount += static_cast<int>(members.size()) - 1;
+    }
+
+    // Remap face indices
+    for (auto& face : faces)
+        for (int& idx : face.indices)
+            if (idx >= 0 && idx < static_cast<int>(remap.size()))
+                idx = remap[idx];
+
+    // Remove degenerate faces (faces where the same vertex appears multiple times)
+    faces.erase(std::remove_if(faces.begin(), faces.end(), [](const EditableFace& f) {
+        std::set<int> unique(f.indices.begin(), f.indices.end());
+        return unique.size() < 3;
+    }), faces.end());
+
+    return mergedCount;
+}
+
+// ── Smooth vertices (Laplacian relaxation) ────────────────────────────────
+// Moves each selected vertex toward the average of its connected neighbors.
+// factor: 0 = no movement, 1 = full move to average. iterations: number of passes.
+void smoothVertices(EditableMesh& mesh, const std::vector<int>& selectedIndices, float factor, int iterations)
+{
+    if (selectedIndices.empty() || factor <= 0.0f || iterations <= 0) return;
+
+    auto& verts = mesh.verticesMutable();
+    const auto& faces = mesh.faces();
+
+    // Build adjacency: for each vertex, which other vertices are connected via shared edges
+    std::vector<std::set<int>> adjacency(verts.size());
+    for (const auto& face : faces)
+    {
+        const int n = static_cast<int>(face.indices.size());
+        for (int i = 0; i < n; ++i)
+        {
+            const int a = face.indices[i];
+            const int b = face.indices[(i + 1) % n];
+            if (a >= 0 && a < static_cast<int>(verts.size()) &&
+                b >= 0 && b < static_cast<int>(verts.size()))
+            {
+                adjacency[a].insert(b);
+                adjacency[b].insert(a);
+            }
+        }
+    }
+
+    // Mark selected set for fast lookup
+    std::set<int> selectedSet(selectedIndices.begin(), selectedIndices.end());
+
+    for (int iter = 0; iter < iterations; ++iter)
+    {
+        // Snapshot positions (so all vertices move based on same reference)
+        std::vector<glm::vec3> oldPositions(verts.size());
+        for (std::size_t i = 0; i < verts.size(); ++i)
+            oldPositions[i] = verts[i].position;
+
+        for (int idx : selectedIndices)
+        {
+            if (idx < 0 || idx >= static_cast<int>(verts.size())) continue;
+            const auto& neighbors = adjacency[idx];
+            if (neighbors.empty()) continue;
+
+            glm::vec3 avg(0.0f);
+            for (int ni : neighbors)
+                avg += oldPositions[ni];
+            avg /= static_cast<float>(neighbors.size());
+
+            verts[idx].position = glm::mix(oldPositions[idx], avg, factor);
+        }
+    }
+}
+
+// ── Dissolve faces ────────────────────────────────────────────────────────
+// Removes selected faces without leaving holes — merges adjacent coplanar faces.
+// This is a simplified dissolve: removes the face, then for each edge that was shared
+// with only one other face (boundary edge), does nothing. For interior edges (shared with
+// exactly one remaining face), the edge is effectively dissolved.
+// Returns number of faces dissolved.
+int dissolveFaces(EditableMesh& mesh, const std::vector<int>& faceIndices)
+{
+    if (faceIndices.empty()) return 0;
+
+    auto& faces = mesh.facesMutable();
+    auto& verts = mesh.verticesMutable();
+    const int totalFaces = static_cast<int>(faces.size());
+
+    // Mark faces to dissolve
+    std::set<int> dissolveSet;
+    for (int fi : faceIndices)
+        if (fi >= 0 && fi < totalFaces)
+            dissolveSet.insert(fi);
+
+    if (dissolveSet.empty()) return 0;
+
+    // Build edge→face adjacency for non-dissolved faces
+    // Edge is (min(a,b), max(a,b))
+    using Edge = std::pair<int, int>;
+    auto makeEdge = [](int a, int b) -> Edge {
+        return a < b ? Edge{a, b} : Edge{b, a};
+    };
+
+    // Collect edges of dissolved faces
+    std::set<Edge> dissolvedEdges;
+    for (int fi : dissolveSet)
+    {
+        const auto& face = faces[fi];
+        const int n = static_cast<int>(face.indices.size());
+        for (int i = 0; i < n; ++i)
+            dissolvedEdges.insert(makeEdge(face.indices[i], face.indices[(i + 1) % n]));
+    }
+
+    // For remaining faces, find which edges border a dissolved face (interior edges to remove)
+    // Build map: edge → list of remaining face indices
+    std::map<Edge, std::vector<int>> edgeToFaces;
+    for (int fi = 0; fi < totalFaces; ++fi)
+    {
+        if (dissolveSet.count(fi)) continue;
+        const auto& face = faces[fi];
+        const int n = static_cast<int>(face.indices.size());
+        for (int i = 0; i < n; ++i)
+            edgeToFaces[makeEdge(face.indices[i], face.indices[(i + 1) % n])].push_back(fi);
+    }
+
+    // Try to merge adjacent surviving faces along dissolved edges.
+    // For each dissolved edge that is shared by exactly 2 surviving faces,
+    // merge face B into face A by walking the perimeter.
+    std::set<int> mergedAway; // faces consumed by merge
+    for (const Edge& edge : dissolvedEdges)
+    {
+        auto it = edgeToFaces.find(edge);
+        if (it == edgeToFaces.end()) continue;
+        // Collect non-merged faces sharing this edge
+        std::vector<int> alive;
+        for (int fi : it->second)
+            if (!mergedAway.count(fi)) alive.push_back(fi);
+        if (alive.size() != 2) continue;
+
+        const int fiA = alive[0], fiB = alive[1];
+        auto& faceA = faces[fiA];
+        auto& faceB = faces[fiB];
+
+        // Find shared edge in faceA and faceB
+        int sharedA0 = -1, sharedA1 = -1;
+        for (int i = 0; i < static_cast<int>(faceA.indices.size()); ++i)
+        {
+            const int next = (i + 1) % static_cast<int>(faceA.indices.size());
+            Edge e = makeEdge(faceA.indices[i], faceA.indices[next]);
+            if (e == edge) { sharedA0 = i; sharedA1 = next; break; }
+        }
+        int sharedB0 = -1, sharedB1 = -1;
+        for (int i = 0; i < static_cast<int>(faceB.indices.size()); ++i)
+        {
+            const int next = (i + 1) % static_cast<int>(faceB.indices.size());
+            Edge e = makeEdge(faceB.indices[i], faceB.indices[next]);
+            if (e == edge) { sharedB0 = i; sharedB1 = next; break; }
+        }
+        if (sharedA0 < 0 || sharedB0 < 0) continue;
+
+        // Build merged polygon: walk faceA skipping shared edge, insert faceB vertices
+        std::vector<int> merged;
+        const int nA = static_cast<int>(faceA.indices.size());
+        const int nB = static_cast<int>(faceB.indices.size());
+
+        // Walk faceA from after shared edge end to shared edge start
+        for (int i = 0; i < nA; ++i)
+        {
+            const int ci = (sharedA1 + i) % nA;
+            if (ci == sharedA0) continue; // skip shared edge start (it's the vertex before the shared edge)
+            merged.push_back(faceA.indices[ci]);
+        }
+
+        // Walk faceB from after shared edge end to shared edge start (reverse direction)
+        // faceB's shared edge is sharedB0→sharedB1, we skip both endpoints
+        for (int i = 1; i < nB - 1; ++i)
+        {
+            const int ci = (sharedB1 + i) % nB;
+            merged.push_back(faceB.indices[ci]);
+        }
+
+        if (merged.size() >= 3)
+        {
+            faceA.indices = merged;
+            mergedAway.insert(fiB);
+            // Update edge map: faceB's edges now point to faceA
+            for (int i = 0; i < nB; ++i)
+            {
+                Edge be = makeEdge(faceB.indices[i], faceB.indices[(i + 1) % nB]);
+                auto& flist = edgeToFaces[be];
+                for (int& f : flist)
+                    if (f == fiB) f = fiA;
+            }
+        }
+    }
+
+    // Remove dissolved + merged-away faces
+    std::set<int> toRemove = dissolveSet;
+    toRemove.insert(mergedAway.begin(), mergedAway.end());
+
+    std::vector<EditableFace> keptFaces;
+    for (int fi = 0; fi < totalFaces; ++fi)
+        if (!toRemove.count(fi))
+            keptFaces.push_back(faces[fi]);
+
+    // Clean up unused vertices
+    std::vector<bool> used(verts.size(), false);
+    for (const auto& f : keptFaces)
+        for (int idx : f.indices)
+            if (idx >= 0 && idx < static_cast<int>(used.size()))
+                used[idx] = true;
+
+    std::vector<int> remap(verts.size(), -1);
+    std::vector<EditableVertex> keptVerts;
+    for (std::size_t i = 0; i < verts.size(); ++i)
+    {
+        if (used[i])
+        {
+            remap[i] = static_cast<int>(keptVerts.size());
+            keptVerts.push_back(verts[i]);
+        }
+    }
+
+    for (auto& f : keptFaces)
+        for (int& idx : f.indices)
+            if (idx >= 0 && idx < static_cast<int>(remap.size()))
+                idx = remap[idx];
+
+    mesh.setData(keptVerts, keptFaces);
+    return static_cast<int>(dissolveSet.size());
 }
 
 glm::vec3 orthoVisibleAxisMask(LevelEditorApp::ViewType viewType)
@@ -903,7 +1199,9 @@ EditableMesh makeEditableFromRenderMesh(const Mesh& mesh, const glm::mat4& trans
         const Vertex& sv = mesh.buffer.vertices[srcIndex];
         EditableVertex v;
         v.position = glm::vec3(transform * glm::vec4(sv.position, 1.0f));
-        v.normal = glm::normalize(glm::mat3(transform) * sv.normal);
+        const glm::vec3 rawN = glm::transpose(glm::inverse(glm::mat3(transform))) * sv.normal;
+        const float nLen = glm::length(rawN);
+        v.normal = nLen > 1e-8f ? rawN / nLen : glm::vec3(0.f, 1.f, 0.f);
         v.uv = sv.uv;
         mapped = static_cast<int>(vertices.size());
         vertices.push_back(v);
@@ -1600,6 +1898,10 @@ void LevelEditorApp::SaveEditorSettings()
     j["lmSamples"] = lightmapSettings_.samplesPerTexel;
     j["lmBias"] = lightmapSettings_.bias;
     j["lmAmbient"] = lightmapSettings_.ambient;
+    j["lmAoEnabled"] = lightmapSettings_.aoEnabled;
+    j["lmAoSamples"] = lightmapSettings_.aoSamples;
+    j["lmAoRadius"] = lightmapSettings_.aoRadius;
+    j["lmAoIntensity"] = lightmapSettings_.aoIntensity;
 
     // Section collapse states
     nlohmann::json secJson;
@@ -1707,6 +2009,10 @@ void LevelEditorApp::LoadEditorSettings()
     if (j.contains("lmSamples")) lightmapSettings_.samplesPerTexel = j["lmSamples"].get<int>();
     if (j.contains("lmBias")) lightmapSettings_.bias = j["lmBias"].get<float>();
     if (j.contains("lmAmbient")) lightmapSettings_.ambient = j["lmAmbient"].get<float>();
+    if (j.contains("lmAoEnabled")) lightmapSettings_.aoEnabled = j["lmAoEnabled"].get<bool>();
+    if (j.contains("lmAoSamples")) lightmapSettings_.aoSamples = j["lmAoSamples"].get<int>();
+    if (j.contains("lmAoRadius")) lightmapSettings_.aoRadius = j["lmAoRadius"].get<float>();
+    if (j.contains("lmAoIntensity")) lightmapSettings_.aoIntensity = j["lmAoIntensity"].get<float>();
 
     // Section collapse states
     if (j.contains("sections") && j["sections"].is_object())
@@ -2053,6 +2359,238 @@ bool LevelEditorApp::ExportSceneH3D(const std::string& path)
     printf("[Export] H3D saved: %s  (%zu verts, %zu tris, %zu mats, %zu surfs%s)\n",
            path.c_str(), data.vertices.size(), data.indices.size() / 3,
            data.materialNames.size(), data.subMeshes.size(),
+           data.hasLightmapUVs ? ", +lightmap" : "");
+    return true;
+}
+
+// ============================================================
+//  Export .mrlvl — MiniRender Level format
+//
+//  Chunk-based binary: mesh geometry + materials + tangents +
+//  lightmap UVs + embedded lightmap + entity data.
+//
+//  Layout:
+//    u32  magic    "MRLV" (0x564C524D)
+//    u32  version  1
+//    MATS chunk — material names + texture paths
+//    BUFF chunk — VRTS + IDXS + SURF (same layout as H3D)
+//    LMAP chunk — embedded lightmap pixels (optional)
+//    ENTS chunk — entity list
+// ============================================================
+bool LevelEditorApp::ExportLevelMRLVL(const std::string& path)
+{
+    constexpr uint32_t MRLV_MAGIC   = 0x564C524Du; // "MRLV"
+    constexpr uint32_t MRLV_VERSION = 1;
+    constexpr uint32_t CHUNK_ENTS   = 0x454E5453u; // "ENTS"
+
+    const bool haveLM = !lightmapResult_.pixels.empty();
+    ExportData data = gatherExportData(scene_, haveLM ? &lightmapResult_ : nullptr);
+    if (data.vertices.empty()) return false;
+
+    BinaryStream stream(path, "wb");
+    if (!stream.isOpen()) return false;
+
+    stream.writeU32(MRLV_MAGIC);
+    stream.writeU32(MRLV_VERSION);
+
+    // ---- MATS chunk ----
+    {
+        stream.writeU32(CHUNK_MATS);
+        stream.writeU32(0);
+        Sint64 start = stream.tell();
+
+        stream.writeU32(static_cast<uint32_t>(data.materialNames.size()));
+        for (const auto& name : data.materialNames)
+        {
+            stream.writeStr(name);
+            stream.writeF32(0.8f); stream.writeF32(0.8f); stream.writeF32(0.8f);
+            stream.writeStr(""); // texture path (resolved at load)
+        }
+
+        Sint64 end = stream.tell();
+        stream.seek(start - 4);
+        stream.writeU32(static_cast<uint32_t>(end - start));
+        stream.seek(end);
+    }
+
+    // Precompute tangents
+    std::vector<glm::vec4> tangents(data.vertices.size(), glm::vec4(1, 0, 0, 1));
+    for (size_t i = 0; i + 2 < data.indices.size(); i += 3)
+    {
+        uint32_t i0 = data.indices[i], i1 = data.indices[i + 1], i2 = data.indices[i + 2];
+        glm::vec4 t = computeTangent(data.vertices[i0], data.vertices[i1], data.vertices[i2], data.vertices[i0].normal);
+        tangents[i0] = t;
+        tangents[i1] = t;
+        tangents[i2] = t;
+    }
+
+    // ---- BUFF chunk (VRTS + IDXS + SURF) ----
+    {
+        stream.writeU32(CHUNK_BUFF);
+        stream.writeU32(0);
+        Sint64 buffStart = stream.tell();
+
+        stream.writeU32(BUFFER_FLAG_TANGENTS | (data.hasLightmapUVs ? BUFFER_FLAG_LIGHTMAP : 0));
+
+        // VRTS
+        {
+            stream.writeU32(CHUNK_VRTS);
+            stream.writeU32(0);
+            Sint64 vrtsStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.vertices.size()));
+            for (size_t i = 0; i < data.vertices.size(); ++i)
+            {
+                const auto& v = data.vertices[i];
+                stream.writeF32(v.pos.x); stream.writeF32(v.pos.y); stream.writeF32(v.pos.z);
+                stream.writeF32(v.normal.x); stream.writeF32(v.normal.y); stream.writeF32(v.normal.z);
+                stream.writeF32(tangents[i].x); stream.writeF32(tangents[i].y);
+                stream.writeF32(tangents[i].z); stream.writeF32(tangents[i].w);
+                stream.writeF32(v.uv.x); stream.writeF32(v.uv.y);
+                if (data.hasLightmapUVs) {
+                    stream.writeF32(v.lightmapUv.x); stream.writeF32(v.lightmapUv.y);
+                }
+            }
+
+            Sint64 vrtsEnd = stream.tell();
+            stream.seek(vrtsStart - 4);
+            stream.writeU32(static_cast<uint32_t>(vrtsEnd - vrtsStart));
+            stream.seek(vrtsEnd);
+        }
+
+        // IDXS
+        {
+            stream.writeU32(CHUNK_IDXS);
+            stream.writeU32(0);
+            Sint64 idxsStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.indices.size()));
+            for (auto idx : data.indices) stream.writeU32(idx);
+
+            Sint64 idxsEnd = stream.tell();
+            stream.seek(idxsStart - 4);
+            stream.writeU32(static_cast<uint32_t>(idxsEnd - idxsStart));
+            stream.seek(idxsEnd);
+        }
+
+        // SURF
+        {
+            stream.writeU32(CHUNK_SURF);
+            stream.writeU32(0);
+            Sint64 surfStart = stream.tell();
+
+            stream.writeU32(static_cast<uint32_t>(data.subMeshes.size()));
+            for (const auto& sm : data.subMeshes)
+            {
+                stream.writeU32(sm.indexStart);
+                stream.writeU32(sm.indexCount);
+                stream.writeI32(sm.materialIdx);
+            }
+
+            Sint64 surfEnd = stream.tell();
+            stream.seek(surfStart - 4);
+            stream.writeU32(static_cast<uint32_t>(surfEnd - surfStart));
+            stream.seek(surfEnd);
+        }
+
+        Sint64 buffEnd = stream.tell();
+        stream.seek(buffStart - 4);
+        stream.writeU32(static_cast<uint32_t>(buffEnd - buffStart));
+        stream.seek(buffEnd);
+    }
+
+    // ---- LMAP chunk ----
+    if (data.hasLightmapUVs && !lightmapResult_.pixels.empty())
+    {
+        stream.writeU32(CHUNK_LMAP);
+        stream.writeU32(0);
+        Sint64 lmStart = stream.tell();
+
+        stream.writeI32(lightmapResult_.width);
+        stream.writeI32(lightmapResult_.height);
+        stream.writeI32(3);
+        stream.writeRaw(lightmapResult_.pixels.data(), lightmapResult_.pixels.size());
+
+        Sint64 lmEnd = stream.tell();
+        stream.seek(lmStart - 4);
+        stream.writeU32(static_cast<uint32_t>(lmEnd - lmStart));
+        stream.seek(lmEnd);
+    }
+
+    // ---- ENTS chunk ----
+    {
+        stream.writeU32(CHUNK_ENTS);
+        stream.writeU32(0);
+        Sint64 entsStart = stream.tell();
+
+        const auto& entities = scene_.entities();
+        stream.writeU32(static_cast<uint32_t>(entities.size()));
+        for (const auto& ent : entities)
+        {
+            stream.writeStr(ent.name);
+            stream.writeU32(static_cast<uint32_t>(ent.type));
+            stream.writeF32(ent.position.x); stream.writeF32(ent.position.y); stream.writeF32(ent.position.z);
+
+            // Type-specific payload
+            switch (ent.type)
+            {
+            case LevelEntityType::Light:
+                stream.writeU32(static_cast<uint32_t>(ent.lightType));
+                stream.writeF32(ent.color.x); stream.writeF32(ent.color.y); stream.writeF32(ent.color.z);
+                stream.writeF32(ent.intensity);
+                stream.writeF32(ent.radius);
+                stream.writeF32(ent.direction.x); stream.writeF32(ent.direction.y); stream.writeF32(ent.direction.z);
+                stream.writeF32(ent.spotAngle);
+                stream.writeF32(ent.spotSoftness);
+                break;
+            case LevelEntityType::PlayerStart:
+                stream.writeF32(ent.direction.x); stream.writeF32(ent.direction.y); stream.writeF32(ent.direction.z);
+                break;
+            case LevelEntityType::Door:
+                stream.writeU32(static_cast<uint32_t>(ent.doorType));
+                stream.writeF32(ent.direction.x); stream.writeF32(ent.direction.y); stream.writeF32(ent.direction.z);
+                stream.writeF32(ent.doorDistance);
+                stream.writeF32(ent.doorSpeed);
+                stream.writeU8(ent.doorStartOpen ? 1u : 0u);
+                stream.writeI32(ent.linkedMeshIndex);
+                break;
+            case LevelEntityType::Elevator:
+            case LevelEntityType::Platform:
+                stream.writeF32(ent.endPosition.x); stream.writeF32(ent.endPosition.y); stream.writeF32(ent.endPosition.z);
+                stream.writeF32(ent.moveSpeed);
+                stream.writeF32(ent.waitTime);
+                stream.writeI32(ent.linkedMeshIndex);
+                break;
+            case LevelEntityType::Placement:
+                stream.writeI32(ent.itemType);
+                stream.writeF32(ent.rotationY);
+                break;
+            case LevelEntityType::Trigger:
+                stream.writeF32(ent.triggerRadius);
+                stream.writeStr(ent.targetName);
+                break;
+            case LevelEntityType::Teleporter:
+                stream.writeF32(ent.teleportTarget.x); stream.writeF32(ent.teleportTarget.y); stream.writeF32(ent.teleportTarget.z);
+                break;
+            case LevelEntityType::SoundEmitter:
+                stream.writeStr(ent.soundPath);
+                stream.writeF32(ent.soundRadius);
+                stream.writeF32(ent.soundVolume);
+                stream.writeU8(ent.soundLooping ? 1u : 0u);
+                break;
+            }
+        }
+
+        Sint64 entsEnd = stream.tell();
+        stream.seek(entsStart - 4);
+        stream.writeU32(static_cast<uint32_t>(entsEnd - entsStart));
+        stream.seek(entsEnd);
+    }
+
+    printf("[Export] MRLVL saved: %s  (%zu verts, %zu tris, %zu mats, %zu surfs, %zu entities%s)\n",
+           path.c_str(), data.vertices.size(), data.indices.size() / 3,
+           data.materialNames.size(), data.subMeshes.size(),
+           scene_.entities().size(),
            data.hasLightmapUVs ? ", +lightmap" : "");
     return true;
 }
@@ -3585,7 +4123,9 @@ bool LevelEditorApp::LoadSceneFromPath(const std::string& path)
     scenePath_ = sceneFilePath.generic_string();
     sceneDirty_ = false;
     undoStack_.clear();
+    undoActionNames_.clear();
     redoStack_.clear();
+    redoActionNames_.clear();
     selectedMeshIndex_ = std::clamp(selectedMeshIndex_, 0, std::max(0, static_cast<int>(scene_.meshObjects().size()) - 1));
     SyncSelectedMeshes();
     SyncSelectedFaces();
@@ -3798,6 +4338,8 @@ void LevelEditorApp::HandleFileDialogs()
             const std::string ext = result.path.extension().string();
             if (ext == ".obj")
                 ExportSceneOBJ(result.path.generic_string());
+            else if (ext == ".mrlvl")
+                ExportLevelMRLVL(result.path.generic_string());
             else if (ext == ".h3d" || ext == ".mesh")
                 ExportSceneH3D(result.path.generic_string());
             else
@@ -3806,6 +4348,8 @@ void LevelEditorApp::HandleFileDialogs()
                 const std::string s = result.path.generic_string();
                 if (s.find(".obj") != std::string::npos)
                     ExportSceneOBJ(s);
+                else if (s.find(".mrlvl") != std::string::npos)
+                    ExportLevelMRLVL(s);
                 else
                     ExportSceneH3D(s);
             }
@@ -4076,13 +4620,18 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
     }
 }
 
-void LevelEditorApp::PushUndoState()
+void LevelEditorApp::PushUndoState(const char* actionName)
 {
     undoStack_.push_back(scene_);
+    undoActionNames_.push_back(actionName ? actionName : "");
     redoStack_.clear();
+    redoActionNames_.clear();
     sceneDirty_ = true;
     if (static_cast<int>(undoStack_.size()) > maxUndoStates_)
+    {
         undoStack_.erase(undoStack_.begin());
+        undoActionNames_.erase(undoActionNames_.begin());
+    }
 }
 
 bool LevelEditorApp::PerformUndo()
@@ -4091,8 +4640,13 @@ bool LevelEditorApp::PerformUndo()
         return false;
 
     redoStack_.push_back(scene_);
+    redoActionNames_.push_back(!undoActionNames_.empty() ? undoActionNames_.back() : "");
     scene_ = undoStack_.back();
     undoStack_.pop_back();
+    const std::string undone = !undoActionNames_.empty() ? undoActionNames_.back() : "";
+    if (!undoActionNames_.empty()) undoActionNames_.pop_back();
+    if (!undone.empty())
+        sceneStatusMessage_ = "Undo: " + undone;
     InvalidateTerrainCompositeCache();
     sceneDirty_ = true;
 
@@ -4110,8 +4664,13 @@ bool LevelEditorApp::PerformRedo()
         return false;
 
     undoStack_.push_back(scene_);
+    undoActionNames_.push_back(!redoActionNames_.empty() ? redoActionNames_.back() : "");
     scene_ = redoStack_.back();
     redoStack_.pop_back();
+    const std::string redone = !redoActionNames_.empty() ? redoActionNames_.back() : "";
+    if (!redoActionNames_.empty()) redoActionNames_.pop_back();
+    if (!redone.empty())
+        sceneStatusMessage_ = "Redo: " + redone;
     InvalidateTerrainCompositeCache();
     sceneDirty_ = true;
 
@@ -4435,7 +4994,7 @@ void LevelEditorApp::HandleToolShortcuts()
         selectedEntityIndex_ < static_cast<int>(scene_.entities().size()) &&
         (selectedMeshIndex_ < 0 || selectedMeshIndex_ >= static_cast<int>(scene_.meshObjects().size())))
     {
-        PushUndoState();
+        PushUndoState("Delete Entity");
         scene_.entities().erase(scene_.entities().begin() + selectedEntityIndex_);
         if (selectedEntityIndex_ >= static_cast<int>(scene_.entities().size()))
             selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
@@ -4447,7 +5006,7 @@ void LevelEditorApp::HandleToolShortcuts()
     {
         if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()))
         {
-            PushUndoState();
+            PushUndoState("Duplicate Mesh");
             LevelMeshObject copy = scene_.meshObjects()[(size_t)selectedMeshIndex_];
             copy.name += " (copy)";
             copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
@@ -4458,7 +5017,7 @@ void LevelEditorApp::HandleToolShortcuts()
         }
         else if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
         {
-            PushUndoState();
+            PushUndoState("Duplicate Entity");
             LevelEntityObject copy = scene_.entities()[(size_t)selectedEntityIndex_];
             copy.name += " (copy)";
             copy.position += glm::vec3(16.0f, 0.0f, 0.0f);
@@ -5371,10 +5930,21 @@ glm::vec3 LevelEditorApp::ApplyViewDelta(const glm::vec3& delta, ViewType viewTy
 void LevelEditorApp::HandleViewportInput(bool viewportHovered)
 {
     const ImGuiIO& io = ImGui::GetIO();
-    if (!viewportHovered)
+
+    // Check if any drag operation is currently active
+    const bool anyDragActive = draggingObjectInView_ || draggingVerticesInView_ ||
+                               draggingFaceInView_ || draggingFaceExtrudeInView_ ||
+                               boxSelecting_ || terrainSculpting_ || terrainPainting_ ||
+                               cameraDragging_;
+
+    // During an active drag, lock input to the view where the drag started (activeViewIndex_).
+    // This prevents the mouse crossing into another viewport from hijacking the operation.
+    if (!viewportHovered && !anyDragActive)
         return;
 
-    LevelEditorView* hovered = HoveredView();
+    LevelEditorView* hovered = anyDragActive
+        ? &views_[std::clamp(activeViewIndex_, 0, activeViewCount_ - 1)]
+        : HoveredView();
     if (!hovered)
         return;
 
@@ -5415,6 +5985,22 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
         !ImGuizmo::IsOver() &&
         !ImGuizmo::IsUsing() &&
         (middleDragging || (ctrlDown && rightDragging) || (ctrlDown && leftDragging && !boxSelecting_));
+
+    // Track camera dragging to lock viewport during camera operations
+    const bool anyCameraGesture =
+        orthoPanGesture ||
+        (hovered->type == ViewType::Perspective && rightDragging && (shiftDown || ctrlDown)) ||
+        middleDragging;
+    if (anyCameraGesture && !cameraDragging_)
+    {
+        cameraDragging_ = true;
+        cameraDragViewIndex_ = std::clamp(activeViewIndex_, 0, activeViewCount_ - 1);
+    }
+    if (cameraDragging_ && !rightDragging && !middleDragging && !leftDragging)
+    {
+        cameraDragging_ = false;
+        cameraDragViewIndex_ = -1;
+    }
 
     const bool expensivePerspectiveHover =
         hovered->type == ViewType::Perspective &&
@@ -6929,10 +7515,6 @@ void LevelEditorApp::DrawTransformGizmo()
                     const glm::quat deltaRotation = glm::quat(glm::radians(glm::vec3(dr[0], dr[1], dr[2])));
                     newRotation = normalizeEulerDegrees(glm::degrees(glm::eulerAngles(glm::normalize(deltaRotation * currentRotation))));
                 }
-                else
-                {
-                    newRotation = normalizeEulerDegrees(glm::vec3(r[0], r[1], r[2]));
-                }
 
                 if (newPosition != meshObject.position ||
                     newRotation != meshObject.rotationEuler ||
@@ -7172,10 +7754,24 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
 
                 if (drawBlendedPass)
                 {
-                    if (object.blendMode == LevelMeshBlendMode::Additive)
+                    switch (object.blendMode)
+                    {
+                    case LevelMeshBlendMode::Additive:
                         rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    else
+                        break;
+                    case LevelMeshBlendMode::Multiply:
+                        rs.setBlendFunc(GL_DST_COLOR, GL_ZERO);
+                        break;
+                    case LevelMeshBlendMode::Screen:
+                        rs.setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR);
+                        break;
+                    case LevelMeshBlendMode::PreMultipliedAlpha:
+                        rs.setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                        break;
+                    default: // Alpha
                         rs.setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                        break;
+                    }
                 }
 
                 const glm::mat4 modelMatrix = meshObjectModelMatrix(object);
@@ -7877,23 +8473,68 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     viewBatch_->SetColor(255, 200, 80, alpha);
                     glm::vec3 dir = glm::length(ent.direction) > 0.01f ? glm::normalize(ent.direction) : glm::vec3(1, 0, 0);
                     const glm::vec3 mid = p + up * 0.5f;
-                    viewBatch_->Line3D(mid, mid + dir * s * 2.0f);
+                    const glm::vec3 endPos = mid + dir * ent.doorDistance;
+                    viewBatch_->Line3D(mid, endPos);
                     // Arrowhead
                     glm::vec3 as = glm::cross(dir, glm::vec3(0, 1, 0));
                     if (glm::length(as) < 0.01f) as = glm::cross(dir, glm::vec3(1, 0, 0));
                     as = glm::normalize(as) * 2.0f;
-                    const glm::vec3 ab = mid + dir * s * 2.0f - dir * 3.0f;
-                    viewBatch_->Line3D(mid + dir * s * 2.0f, ab + as);
-                    viewBatch_->Line3D(mid + dir * s * 2.0f, ab - as);
+                    const glm::vec3 ab = endPos - dir * 3.0f;
+                    viewBatch_->Line3D(endPos, ab + as);
+                    viewBatch_->Line3D(endPos, ab - as);
 
-                    // Shutter: second arrow in opposite direction
+                    // Ghost door outline at end position (slide offset)
+                    viewBatch_->SetColor(180, 120, 60, alpha / 3);
+                    const glm::vec3 slideOffset = dir * ent.doorDistance;
+                    viewBatch_->Line3D(bl + slideOffset, br + slideOffset);
+                    viewBatch_->Line3D(br + slideOffset, tr + slideOffset);
+                    viewBatch_->Line3D(tr + slideOffset, tl + slideOffset);
+                    viewBatch_->Line3D(tl + slideOffset, bl + slideOffset);
+
+                    // Shutter: second arrow + ghost in opposite direction
                     if (ent.doorType == DoorType::Shutter)
                     {
-                        viewBatch_->Line3D(mid, mid - dir * s * 2.0f);
-                        const glm::vec3 ab2 = mid - dir * s * 2.0f + dir * 3.0f;
-                        viewBatch_->Line3D(mid - dir * s * 2.0f, ab2 + as);
-                        viewBatch_->Line3D(mid - dir * s * 2.0f, ab2 - as);
+                        const glm::vec3 endPos2 = mid - dir * ent.doorDistance;
+                        viewBatch_->SetColor(255, 200, 80, alpha);
+                        viewBatch_->Line3D(mid, endPos2);
+                        const glm::vec3 ab2 = endPos2 + dir * 3.0f;
+                        viewBatch_->Line3D(endPos2, ab2 + as);
+                        viewBatch_->Line3D(endPos2, ab2 - as);
+
+                        viewBatch_->SetColor(180, 120, 60, alpha / 3);
+                        const glm::vec3 slideOffset2 = -dir * ent.doorDistance;
+                        viewBatch_->Line3D(bl + slideOffset2, br + slideOffset2);
+                        viewBatch_->Line3D(br + slideOffset2, tr + slideOffset2);
+                        viewBatch_->Line3D(tr + slideOffset2, tl + slideOffset2);
+                        viewBatch_->Line3D(tl + slideOffset2, bl + slideOffset2);
                     }
+                }
+
+                // Turn door: arc showing swing range
+                if (ent.doorType == DoorType::Turn)
+                {
+                    viewBatch_->SetColor(255, 200, 80, alpha);
+                    const glm::vec3 hinge = bl; // hinge at bottom-left
+                    const float doorWidth = glm::length(right) * 2.0f;
+                    const float angleRad = glm::radians(ent.doorDistance);
+                    glm::vec3 doorDir = glm::normalize(br - bl);
+                    const int arcSegs = 16;
+                    glm::vec3 prev = hinge + doorDir * doorWidth;
+                    for (int ai = 1; ai <= arcSegs; ++ai)
+                    {
+                        const float t = static_cast<float>(ai) / static_cast<float>(arcSegs);
+                        const float a = angleRad * t;
+                        const glm::vec3 rotDir = glm::vec3(
+                            glm::rotate(glm::mat4(1.0f), a, glm::vec3(0, 1, 0)) * glm::vec4(doorDir, 0.0f));
+                        const glm::vec3 cur = hinge + rotDir * doorWidth;
+                        viewBatch_->Line3D(prev, cur);
+                        prev = cur;
+                    }
+                    // Line from hinge to end of swing
+                    viewBatch_->SetColor(180, 120, 60, alpha / 3);
+                    viewBatch_->Line3D(hinge, prev);
+                    viewBatch_->Line3D(hinge + up, prev + up);
+                    viewBatch_->Line3D(prev, prev + up);
                 }
 
                 // Selection highlight
@@ -7911,7 +8552,7 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 const uint8_t alpha = selected ? 255 : 180;
                 const float s = 6.0f;
 
-                // Platform icon: flat square
+                // Platform icon: flat square at start
                 viewBatch_->SetColor(100, 180, 255, alpha);
                 viewBatch_->Line3D(p + glm::vec3(-s, 0, -s), p + glm::vec3(s, 0, -s));
                 viewBatch_->Line3D(p + glm::vec3(s, 0, -s), p + glm::vec3(s, 0, s));
@@ -7925,12 +8566,20 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 viewBatch_->SetColor(100, 255, 100, selected ? 200 : 100);
                 viewBatch_->Line3D(p, ent.endPosition);
 
-                // Small cross at end position
-                viewBatch_->SetColor(100, 255, 100, selected ? 180 : 80);
-                const float es = 3.0f;
-                viewBatch_->Line3D(ent.endPosition + glm::vec3(-es, 0, 0), ent.endPosition + glm::vec3(es, 0, 0));
-                viewBatch_->Line3D(ent.endPosition + glm::vec3(0, -es, 0), ent.endPosition + glm::vec3(0, es, 0));
-                viewBatch_->Line3D(ent.endPosition + glm::vec3(0, 0, -es), ent.endPosition + glm::vec3(0, 0, es));
+                // Ghost square at end position
+                const glm::vec3 ep = ent.endPosition;
+                viewBatch_->SetColor(100, 255, 100, selected ? 120 : 60);
+                viewBatch_->Line3D(ep + glm::vec3(-s, 0, -s), ep + glm::vec3(s, 0, -s));
+                viewBatch_->Line3D(ep + glm::vec3(s, 0, -s), ep + glm::vec3(s, 0, s));
+                viewBatch_->Line3D(ep + glm::vec3(s, 0, s), ep + glm::vec3(-s, 0, s));
+                viewBatch_->Line3D(ep + glm::vec3(-s, 0, s), ep + glm::vec3(-s, 0, -s));
+
+                // Vertical guide rails between start and end corners
+                viewBatch_->SetColor(100, 180, 255, selected ? 60 : 30);
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, -s), ep + glm::vec3(-s, 0, -s));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, -s), ep + glm::vec3(s, 0, -s));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, s), ep + glm::vec3(s, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, s), ep + glm::vec3(-s, 0, s));
             }
             else if (ent.type == LevelEntityType::Placement)
             {
@@ -7952,6 +8601,77 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 viewBatch_->SetColor(255, 255, 80, alpha);
                 viewBatch_->Line3D(p, p + fwd * s * 2.0f);
             }
+            else if (ent.type == LevelEntityType::Trigger)
+            {
+                const uint8_t alpha = selected ? 255 : 140;
+                const float r = ent.triggerRadius * 0.1f;
+
+                viewBatch_->SetColor(255, 160, 50, alpha);
+                const int seg = 20;
+                for (int i = 0; i < seg; ++i)
+                {
+                    const float a0 = (static_cast<float>(i) / static_cast<float>(seg)) * 6.283185f;
+                    const float a1 = (static_cast<float>(i + 1) / static_cast<float>(seg)) * 6.283185f;
+                    viewBatch_->Line3D(p + glm::vec3(std::cos(a0) * r, 0, std::sin(a0) * r),
+                                       p + glm::vec3(std::cos(a1) * r, 0, std::sin(a1) * r));
+                }
+                viewBatch_->SetColor(255, 200, 100, alpha);
+                viewBatch_->Line3D(p + glm::vec3(-r * 0.5f, 0, 0), p + glm::vec3(r * 0.5f, 0, 0));
+                viewBatch_->Line3D(p + glm::vec3(0, 0, -r * 0.5f), p + glm::vec3(0, 0, r * 0.5f));
+                viewBatch_->Line3D(p, p + glm::vec3(0, r, 0));
+            }
+            else if (ent.type == LevelEntityType::Teleporter)
+            {
+                const uint8_t alpha = selected ? 255 : 160;
+                const float s = 6.0f;
+
+                viewBatch_->SetColor(100, 255, 255, alpha);
+                viewBatch_->Line3D(p + glm::vec3(0, 0, -s), p + glm::vec3(s, 0, 0));
+                viewBatch_->Line3D(p + glm::vec3(s, 0, 0), p + glm::vec3(0, 0, s));
+                viewBatch_->Line3D(p + glm::vec3(0, 0, s), p + glm::vec3(-s, 0, 0));
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, 0), p + glm::vec3(0, 0, -s));
+                viewBatch_->Line3D(p + glm::vec3(0, s * 3, -s), p + glm::vec3(s, s * 3, 0));
+                viewBatch_->Line3D(p + glm::vec3(s, s * 3, 0), p + glm::vec3(0, s * 3, s));
+                viewBatch_->Line3D(p + glm::vec3(0, s * 3, s), p + glm::vec3(-s, s * 3, 0));
+                viewBatch_->Line3D(p + glm::vec3(-s, s * 3, 0), p + glm::vec3(0, s * 3, -s));
+                viewBatch_->SetColor(100, 255, 255, alpha / 2);
+                viewBatch_->Line3D(p + glm::vec3(s, 0, 0), p + glm::vec3(s, s * 3, 0));
+                viewBatch_->Line3D(p + glm::vec3(-s, 0, 0), p + glm::vec3(-s, s * 3, 0));
+                viewBatch_->Line3D(p + glm::vec3(0, 0, s), p + glm::vec3(0, s * 3, s));
+                viewBatch_->Line3D(p + glm::vec3(0, 0, -s), p + glm::vec3(0, s * 3, -s));
+
+                viewBatch_->SetColor(100, 255, 180, selected ? 200 : 80);
+                viewBatch_->Line3D(p, ent.teleportTarget);
+                const float es = 3.0f;
+                viewBatch_->SetColor(100, 255, 180, selected ? 180 : 60);
+                viewBatch_->Line3D(ent.teleportTarget + glm::vec3(-es, 0, 0), ent.teleportTarget + glm::vec3(es, 0, 0));
+                viewBatch_->Line3D(ent.teleportTarget + glm::vec3(0, -es, 0), ent.teleportTarget + glm::vec3(0, es, 0));
+                viewBatch_->Line3D(ent.teleportTarget + glm::vec3(0, 0, -es), ent.teleportTarget + glm::vec3(0, 0, es));
+            }
+            else if (ent.type == LevelEntityType::SoundEmitter)
+            {
+                const uint8_t alpha = selected ? 255 : 140;
+                const float r = ent.soundRadius * 0.1f;
+
+                const int seg = 20;
+                for (int ring = 1; ring <= 3; ++ring)
+                {
+                    const float rr = r * (static_cast<float>(ring) / 3.0f);
+                    const uint8_t ra = static_cast<uint8_t>(alpha / ring);
+                    viewBatch_->SetColor(180, 120, 255, ra);
+                    for (int i = 0; i < seg; ++i)
+                    {
+                        const float a0 = (static_cast<float>(i) / static_cast<float>(seg)) * 6.283185f;
+                        const float a1 = (static_cast<float>(i + 1) / static_cast<float>(seg)) * 6.283185f;
+                        viewBatch_->Line3D(p + glm::vec3(std::cos(a0) * rr, 0, std::sin(a0) * rr),
+                                           p + glm::vec3(std::cos(a1) * rr, 0, std::sin(a1) * rr));
+                    }
+                }
+                viewBatch_->SetColor(180, 120, 255, alpha);
+                viewBatch_->Line3D(p, p + glm::vec3(0, 8, 0));
+                viewBatch_->Line3D(p + glm::vec3(0, 8, 0), p + glm::vec3(3, 6, 0));
+                viewBatch_->Line3D(p + glm::vec3(3, 6, 0), p + glm::vec3(0, 5, 0));
+            }
             else
             {
                 // Generic entity: small cross
@@ -7966,28 +8686,57 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
         const glm::vec3 pivotPos = scene_.creationPivotPosition();
         const glm::vec3 pivotRot = glm::radians(scene_.creationPivotRotation());
         const glm::mat3 pivotBasis = glm::mat3_cast(glm::quat(pivotRot));
-        const float pivotAxisLen = 20.0f;
-        const float pivotCrossLen = 6.0f;
-        const float pivotSquare = 4.0f;
+        const float pivotAxisLen = 24.0f;
+        const float pivotRingRadius = 10.0f;
+        const int pivotRingSegments = 24;
         const glm::vec3 axisX = pivotBasis * glm::vec3(1.0f, 0.0f, 0.0f);
         const glm::vec3 axisY = pivotBasis * glm::vec3(0.0f, 1.0f, 0.0f);
         const glm::vec3 axisZ = pivotBasis * glm::vec3(0.0f, 0.0f, 1.0f);
 
-        viewBatch_->SetColor(255, 90, 90, 235);
-        viewBatch_->Line3D(pivotPos - axisX * pivotCrossLen, pivotPos + axisX * pivotAxisLen);
-        viewBatch_->SetColor(90, 255, 120, 235);
-        viewBatch_->Line3D(pivotPos - axisY * pivotCrossLen, pivotPos + axisY * pivotAxisLen);
-        viewBatch_->SetColor(90, 170, 255, 235);
-        viewBatch_->Line3D(pivotPos - axisZ * pivotCrossLen, pivotPos + axisZ * pivotAxisLen);
+        // Axis lines (colored, starting from center)
+        viewBatch_->SetColor(220, 60, 60, 255);
+        viewBatch_->Line3D(pivotPos, pivotPos + axisX * pivotAxisLen);
+        viewBatch_->SetColor(60, 200, 80, 255);
+        viewBatch_->Line3D(pivotPos, pivotPos + axisY * pivotAxisLen);
+        viewBatch_->SetColor(60, 130, 255, 255);
+        viewBatch_->Line3D(pivotPos, pivotPos + axisZ * pivotAxisLen);
 
-        viewBatch_->SetColor(255, 235, 120, 220);
-        const glm::vec3 right = axisX * pivotSquare;
-        const glm::vec3 forward = axisZ * pivotSquare;
-        viewBatch_->Line3D(pivotPos - right - forward, pivotPos + right - forward);
-        viewBatch_->Line3D(pivotPos + right - forward, pivotPos + right + forward);
-        viewBatch_->Line3D(pivotPos + right + forward, pivotPos - right + forward);
-        viewBatch_->Line3D(pivotPos - right + forward, pivotPos - right - forward);
-        viewBatch_->Line3D(pivotPos, pivotPos + axisY * (pivotAxisLen * 0.55f));
+        // Negative axis hints (faint dashed)
+        viewBatch_->SetColor(220, 60, 60, 80);
+        viewBatch_->Line3D(pivotPos, pivotPos - axisX * (pivotAxisLen * 0.35f));
+        viewBatch_->SetColor(60, 200, 80, 80);
+        viewBatch_->Line3D(pivotPos, pivotPos - axisY * (pivotAxisLen * 0.35f));
+        viewBatch_->SetColor(60, 130, 255, 80);
+        viewBatch_->Line3D(pivotPos, pivotPos - axisZ * (pivotAxisLen * 0.35f));
+
+        // Ground ring (XZ plane)
+        viewBatch_->SetColor(255, 220, 80, 200);
+        for (int i = 0; i < pivotRingSegments; ++i)
+        {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(pivotRingSegments)) * 6.283185f;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(pivotRingSegments)) * 6.283185f;
+            const glm::vec3 p0 = pivotPos + (axisX * std::cos(a0) + axisZ * std::sin(a0)) * pivotRingRadius;
+            const glm::vec3 p1 = pivotPos + (axisX * std::cos(a1) + axisZ * std::sin(a1)) * pivotRingRadius;
+            viewBatch_->Line3D(p0, p1);
+        }
+
+        // Vertical ring (XY plane) — subtle
+        viewBatch_->SetColor(255, 220, 80, 80);
+        for (int i = 0; i < pivotRingSegments; ++i)
+        {
+            const float a0 = (static_cast<float>(i) / static_cast<float>(pivotRingSegments)) * 6.283185f;
+            const float a1 = (static_cast<float>(i + 1) / static_cast<float>(pivotRingSegments)) * 6.283185f;
+            const glm::vec3 p0 = pivotPos + (axisX * std::cos(a0) + axisY * std::sin(a0)) * pivotRingRadius;
+            const glm::vec3 p1 = pivotPos + (axisX * std::cos(a1) + axisY * std::sin(a1)) * pivotRingRadius;
+            viewBatch_->Line3D(p0, p1);
+        }
+
+        // Small center cross marker
+        const float crossLen = 3.0f;
+        viewBatch_->SetColor(255, 255, 255, 240);
+        viewBatch_->Line3D(pivotPos - axisX * crossLen, pivotPos + axisX * crossLen);
+        viewBatch_->Line3D(pivotPos - axisY * crossLen, pivotPos + axisY * crossLen);
+        viewBatch_->Line3D(pivotPos - axisZ * crossLen, pivotPos + axisZ * crossLen);
 
         viewBatch_->Render();
         rs.setBlend(false);
@@ -8204,37 +8953,38 @@ void LevelEditorApp::DrawViewTile(const LevelEditorView& view, ImDrawList* drawL
 
         if (vertexFrontOnly_)
         {
-            constexpr float overlapTolerance = 6.0f;
-            std::vector<bool> hidden(drawVertices.size(), false);
-            for (std::size_t i = 0; i < drawVertices.size(); ++i)
-            {
-                if (hidden[i])
-                    continue;
-                for (std::size_t j = i + 1; j < drawVertices.size(); ++j)
-                {
-                    if (std::fabs(drawVertices[j].point.x - drawVertices[i].point.x) <= overlapTolerance &&
-                        std::fabs(drawVertices[j].point.y - drawVertices[i].point.y) <= overlapTolerance)
-                    {
-                        if (drawVertices[j].depth < drawVertices[i].depth)
-                        {
-                            hidden[i] = true;
-                            break;
-                        }
-                        hidden[j] = true;
-                    }
-                }
-            }
+            // Grid-based front-only occlusion: keep only the closest vertex per screen cell.
+            // O(n) instead of O(n²) — safe for meshes with thousands of vertices.
+            constexpr float cellSize = 6.0f; // same as old overlapTolerance
+            std::unordered_map<uint64_t, std::size_t> cellBest; // cell key → index in drawVertices
+            cellBest.reserve(drawVertices.size());
+
+            auto cellKey = [](float x, float y) -> uint64_t {
+                const auto cx = static_cast<int32_t>(std::floor(x / cellSize));
+                const auto cy = static_cast<int32_t>(std::floor(y / cellSize));
+                return (static_cast<uint64_t>(static_cast<uint32_t>(cx)) << 32) |
+                        static_cast<uint64_t>(static_cast<uint32_t>(cy));
+            };
 
             for (std::size_t i = 0; i < drawVertices.size(); ++i)
             {
-                if (hidden[i])
-                    continue;
-                const bool selected = IsVertexSelected(drawVertices[i].index);
+                const uint64_t key = cellKey(drawVertices[i].point.x, drawVertices[i].point.y);
+                auto it = cellBest.find(key);
+                if (it == cellBest.end())
+                    cellBest.emplace(key, i);
+                else if (drawVertices[i].depth < drawVertices[it->second].depth)
+                    it->second = i;
+            }
+
+            for (const auto& [key, idx] : cellBest)
+            {
+                const DrawVertex& dv = drawVertices[idx];
+                const bool selected = IsVertexSelected(dv.index);
                 const float radius = selected ? 5.5f : 4.0f;
                 const ImU32 fillColor = selected ? IM_COL32(255, 210, 90, 255) : IM_COL32(235, 240, 245, 230);
                 const ImU32 strokeColor = selected ? IM_COL32(255, 250, 215, 255) : IM_COL32(60, 75, 92, 255);
-                drawList->AddCircleFilled(drawVertices[i].point, radius, fillColor, 10);
-                drawList->AddCircle(drawVertices[i].point, radius, strokeColor, 10, 1.4f);
+                drawList->AddCircleFilled(dv.point, radius, fillColor, 10);
+                drawList->AddCircle(dv.point, radius, strokeColor, 10, 1.4f);
             }
         }
         else
@@ -8281,11 +9031,6 @@ void LevelEditorApp::DrawViewTile(const LevelEditorView& view, ImDrawList* drawL
 
     if (view.type == ViewType::Perspective)
     {
-        const ImVec2 center((minPos.x + maxPos.x) * 0.5f, (minPos.y + maxPos.y) * 0.5f);
-        drawList->AddLine(ImVec2(center.x, center.y), ImVec2(center.x + 48.0f, center.y), IM_COL32(220, 70, 70, 255), 2.0f);
-        drawList->AddLine(ImVec2(center.x, center.y), ImVec2(center.x, center.y - 48.0f), IM_COL32(80, 220, 110, 255), 2.0f);
-        drawList->AddLine(ImVec2(center.x, center.y), ImVec2(center.x - 34.0f, center.y + 34.0f), IM_COL32(80, 120, 240, 255), 2.0f);
-
         char cameraInfo[128];
         std::snprintf(cameraInfo, sizeof(cameraInfo), "Yaw %.0f  Pitch %.0f  Dist %.0f",
                       view.perspectiveYaw, view.perspectivePitch, view.perspectiveDistance);
@@ -8314,7 +9059,7 @@ void LevelEditorApp::ShowMenuBar()
     {
         if (ImGui::MenuItem("New Level"))
         {
-            PushUndoState();
+            PushUndoState("New Level");
             scene_.reset();
             for (GLuint texture : lightmapTextures_)
                 glDeleteTextures(1, &texture);
@@ -8359,6 +9104,9 @@ void LevelEditorApp::ShowMenuBar()
         ImGui::Separator();
         if (ImGui::BeginMenu("Export"))
         {
+            if (ImGui::MenuItem("Export Level (.mrlvl)..."))
+                exportDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "level.mrlvl");
+            ImGui::Separator();
             if (ImGui::MenuItem("Export OBJ..."))
                 exportDialog_.Open(ImGuiFileDialog::Mode::SaveFile, std::filesystem::current_path(), "scene.obj");
             if (ImGui::MenuItem("Export H3D..."))
@@ -8370,9 +9118,15 @@ void LevelEditorApp::ShowMenuBar()
 
     if (ImGui::BeginMenu("Edit"))
     {
-        if (ImGui::MenuItem("Undo", "Ctrl+Z", false, !undoStack_.empty()))
+        char undoLabel[128] = "Undo";
+        if (!undoActionNames_.empty() && !undoActionNames_.back().empty())
+            std::snprintf(undoLabel, sizeof(undoLabel), "Undo %s", undoActionNames_.back().c_str());
+        char redoLabel[128] = "Redo";
+        if (!redoActionNames_.empty() && !redoActionNames_.back().empty())
+            std::snprintf(redoLabel, sizeof(redoLabel), "Redo %s", redoActionNames_.back().c_str());
+        if (ImGui::MenuItem(undoLabel, "Ctrl+Z", false, !undoStack_.empty()))
             PerformUndo();
-        if (ImGui::MenuItem("Redo", "Ctrl+Y", false, !redoStack_.empty()))
+        if (ImGui::MenuItem(redoLabel, "Ctrl+Y", false, !redoStack_.empty()))
             PerformRedo();
         ImGui::Separator();
         ImGui::MenuItem("Copy Entity", "Ctrl+C", false,
@@ -9080,99 +9834,154 @@ void LevelEditorApp::ShowLeftPanel()
             ImGui::PopID();
         }
 
-        if (ImGui::Button("Add Light"))
         {
-            PushUndoState();
-            LevelEntityObject entity;
-            // Auto-number: find highest existing Light index
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::Light)
-                    ++maxIdx;
-            entity.name = "Light " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::Light;
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add Door"))
-        {
-            PushUndoState();
-            LevelEntityObject entity;
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::Door)
-                    ++maxIdx;
-            entity.name = "Door " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::Door;
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add Player Start"))
-        {
-            PushUndoState();
-            LevelEntityObject entity;
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::PlayerStart)
-                    ++maxIdx;
-            entity.name = "Player Start " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::PlayerStart;
-            entity.direction = glm::vec3(0, 0, -1);
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
-        }
+            const float thirdW = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+            const glm::vec3 pivotPos = scene_.creationPivotPosition();
 
-        if (ImGui::Button("Add Elevator"))
-        {
-            PushUndoState();
-            LevelEntityObject entity;
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::Elevator)
-                    ++maxIdx;
-            entity.name = "Elevator " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::Elevator;
-            entity.endPosition = glm::vec3(0, 128, 0);
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add Platform"))
-        {
-            PushUndoState();
-            LevelEntityObject entity;
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::Platform)
-                    ++maxIdx;
-            entity.name = "Platform " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::Platform;
-            entity.endPosition = glm::vec3(128, 0, 0);
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add Placement"))
-        {
-            PushUndoState();
-            LevelEntityObject entity;
-            int maxIdx = 0;
-            for (const auto& e : scene_.entities())
-                if (e.type == LevelEntityType::Placement)
-                    ++maxIdx;
-            entity.name = "Item " + std::to_string(maxIdx + 1);
-            entity.type = LevelEntityType::Placement;
-            scene_.entities().push_back(entity);
-            selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            if (ImGui::Button("Add Light", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Light)
+                        ++maxIdx;
+                entity.name = "Light " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Light;
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Door", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Door)
+                        ++maxIdx;
+                entity.name = "Door " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Door;
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Spawn", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::PlayerStart)
+                        ++maxIdx;
+                entity.name = "Player Start " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::PlayerStart;
+                entity.direction = glm::vec3(0, 0, -1);
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+
+            if (ImGui::Button("Add Elevator", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Elevator)
+                        ++maxIdx;
+                entity.name = "Elevator " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Elevator;
+                entity.endPosition = glm::vec3(0, 128, 0);
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Platform", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Platform)
+                        ++maxIdx;
+                entity.name = "Platform " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Platform;
+                entity.endPosition = glm::vec3(128, 0, 0);
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Item", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Placement)
+                        ++maxIdx;
+                entity.name = "Item " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Placement;
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+
+            if (ImGui::Button("Add Trigger", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Trigger)
+                        ++maxIdx;
+                entity.name = "Trigger " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Trigger;
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Teleport", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::Teleporter)
+                        ++maxIdx;
+                entity.name = "Teleporter " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::Teleporter;
+                entity.position = pivotPos;
+                entity.teleportTarget = pivotPos + glm::vec3(128, 0, 0);
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add Sound", ImVec2(thirdW, 0)))
+            {
+                PushUndoState();
+                LevelEntityObject entity;
+                int maxIdx = 0;
+                for (const auto& e : scene_.entities())
+                    if (e.type == LevelEntityType::SoundEmitter)
+                        ++maxIdx;
+                entity.name = "Sound " + std::to_string(maxIdx + 1);
+                entity.type = LevelEntityType::SoundEmitter;
+                entity.position = pivotPos;
+                scene_.entities().push_back(entity);
+                selectedEntityIndex_ = static_cast<int>(scene_.entities().size()) - 1;
+            }
         }
 
         // Delete selected entity
         if (selectedEntityIndex_ >= 0 && selectedEntityIndex_ < static_cast<int>(scene_.entities().size()))
         {
-            ImGui::SameLine();
-            if (ImGui::Button("Delete##Entity"))
+            if (ImGui::Button("Delete##Entity", ImVec2(-1, 0)))
             {
                 PushUndoState();
                 scene_.entities().erase(scene_.entities().begin() + selectedEntityIndex_);
@@ -9197,7 +10006,7 @@ void LevelEditorApp::ShowLeftPanel()
 
             if (ImGui::Button("Recalculate Normals"))
             {
-                PushUndoState();
+                PushUndoState("Recalculate Normals");
                 auto& verts = meshObject.mesh.verticesMutable();
                 // Reset all normals to zero
                 for (auto& v : verts)
@@ -9227,12 +10036,13 @@ void LevelEditorApp::ShowLeftPanel()
                     const float len = glm::length(v.normal);
                     v.normal = len > 1e-8f ? v.normal / len : glm::vec3(0.0f, 1.0f, 0.0f);
                 }
+                meshCacheValid_ = false;
                 sceneDirty_ = true;
             }
             ImGui::SameLine();
             if (ImGui::Button("Flat Normals"))
             {
-                PushUndoState();
+                PushUndoState("Flat Normals");
                 // Duplicate vertices per face so each face has independent flat normals
                 std::vector<EditableVertex> newVerts;
                 std::vector<EditableFace> newFaces;
@@ -9268,6 +10078,7 @@ void LevelEditorApp::ShowLeftPanel()
                 selectedFaceIndex_ = -1;
                 selectedFaceIndices_.clear();
                 selectedVertexIndices_.clear();
+                meshCacheValid_ = false;
                 sceneDirty_ = true;
             }
 
@@ -9281,11 +10092,13 @@ void LevelEditorApp::ShowLeftPanel()
                 const float maxThickness = std::min(std::min(size.x, size.y), size.z) * 0.5f - 0.001f;
                 if (maxThickness > 0.001f)
                 {
-                    PushUndoState();
-                    meshObject.mesh = EditableMesh::MakeHollowBox(bounds.min, bounds.max, hollowWallThickness_);
+                    PushUndoState("Hollow Box");
+                    const float clampedThickness = std::min(hollowWallThickness_, maxThickness);
+                    meshObject.mesh = EditableMesh::MakeHollowBox(bounds.min, bounds.max, clampedThickness);
                     selectedFaceIndex_ = -1;
                     selectedFaceIndices_.clear();
                     selectedVertexIndices_.clear();
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
                 }
             }
@@ -9331,12 +10144,13 @@ void LevelEditorApp::ShowLeftPanel()
                     ImGui::BeginDisabled(selectedVertexIndices_.size() < 3);
                     if (ImGui::Button("Create Face"))
                     {
-                        PushUndoState();
+                        PushUndoState("Create Face");
                         EditableFace newFace;
                         newFace.materialName = currentTexturePath_.empty() ? "default" : currentTexturePath_;
                         for (int idx : selectedVertexIndices_)
                             newFace.indices.push_back(idx);
                         meshObject.mesh.facesMutable().push_back(newFace);
+                        meshCacheValid_ = false;
                         sceneDirty_ = true;
                     }
                     ImGui::EndDisabled();
@@ -9346,7 +10160,7 @@ void LevelEditorApp::ShowLeftPanel()
                     ImGui::SameLine();
                     if (ImGui::Button("Merge Vertices"))
                     {
-                        PushUndoState();
+                        PushUndoState("Merge Vertices");
                         auto& verts = meshObject.mesh.verticesMutable();
                         auto& faces = meshObject.mesh.facesMutable();
 
@@ -9444,6 +10258,7 @@ void LevelEditorApp::ShowLeftPanel()
                         selectedVertexIndices_.clear();
                         selectedFaceIndex_ = -1;
                         selectedFaceIndices_.clear();
+                        meshCacheValid_ = false;
                         sceneDirty_ = true;
                     }
                     ImGui::EndDisabled();
@@ -9454,7 +10269,7 @@ void LevelEditorApp::ShowLeftPanel()
                     ImGui::SameLine();
                     if (ImGui::Button("Delete Selected Vertices"))
                     {
-                        PushUndoState();
+                        PushUndoState("Delete Vertices");
                         std::vector<bool> removeVtx(meshObject.mesh.vertexCount(), false);
                         for (int idx : selectedVertexIndices_)
                             if (idx >= 0 && idx < static_cast<int>(removeVtx.size()))
@@ -9491,6 +10306,46 @@ void LevelEditorApp::ShowLeftPanel()
                         selectedVertexIndices_.clear();
                         selectedFaceIndex_ = -1;
                         selectedFaceIndices_.clear();
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                    }
+                }
+
+                // Weld / Smooth / operations on selected vertices
+                if (!selectedVertexIndices_.empty())
+                {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Weld");
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::DragFloat("##WeldDist", &weldThreshold_, 0.01f, 0.001f, 10.0f, "Threshold: %.3f");
+                    if (ImGui::Button("Weld Selected", ImVec2(-1, 0)))
+                    {
+                        PushUndoState("Weld Vertices");
+                        const int merged = weldVertices(meshObject.mesh, selectedVertexIndices_, weldThreshold_);
+                        if (merged > 0)
+                        {
+                            selectedVertexIndices_.clear();
+                            selectedFaceIndex_ = -1;
+                            selectedFaceIndices_.clear();
+                            meshCacheValid_ = false;
+                            sceneDirty_ = true;
+                            sceneStatusMessage_ = "Welded " + std::to_string(merged) + " vertices";
+                        }
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Smooth");
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+                    ImGui::DragFloat("##SmoothFactor", &smoothFactor_, 0.01f, 0.0f, 1.0f, "Factor: %.2f");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::DragInt("##SmoothIter", &smoothIterations_, 1, 1, 100, "Iter: %d");
+                    if (ImGui::Button("Smooth Selected", ImVec2(-1, 0)))
+                    {
+                        PushUndoState("Smooth Vertices");
+                        smoothVertices(meshObject.mesh, selectedVertexIndices_, smoothFactor_, smoothIterations_);
+                        recomputeEditableMeshNormals(meshObject.mesh);
+                        meshCacheValid_ = false;
                         sceneDirty_ = true;
                     }
                 }
@@ -9517,17 +10372,82 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::DragFloat("Extrude##FaceExtrudeDistance", &faceExtrudeDistance_, 0.5f, -1024.0f, 1024.0f);
                 if (ImGui::Button("Extrude Face"))
                 {
-                    if (std::fabs(faceExtrudeDistance_) > 1e-4f)
+                    if (std::fabs(faceExtrudeDistance_) > 1e-4f &&
+                        selectedFaceIndex_ >= 0 && selectedFaceIndex_ < static_cast<int>(meshObject.mesh.faceCount()))
                     {
-                        PushUndoState();
+                        PushUndoState("Extrude Face");
                         if (extrudeMeshFace(meshObject, selectedFaceIndex_, faceExtrudeDistance_))
+                        {
+                            meshCacheValid_ = false;
                             sceneDirty_ = true;
+                        }
+                    }
+                }
+                if (selectedFaceIndices_.size() > 1)
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Extrude Selected"))
+                    {
+                        if (std::fabs(faceExtrudeDistance_) > 1e-4f)
+                        {
+                            PushUndoState("Extrude Faces");
+                            // Sort descending so extruding doesn't invalidate earlier indices
+                            // (extrudeMeshFace appends new faces, doesn't reorder existing ones)
+                            std::vector<int> sorted = selectedFaceIndices_;
+                            std::sort(sorted.rbegin(), sorted.rend());
+                            int extruded = 0;
+                            for (int fi : sorted)
+                            {
+                                if (fi >= 0 && fi < static_cast<int>(meshObject.mesh.faceCount()))
+                                {
+                                    if (extrudeMeshFace(meshObject, fi, faceExtrudeDistance_))
+                                        ++extruded;
+                                }
+                            }
+                            if (extruded > 0)
+                            {
+                                meshCacheValid_ = false;
+                                sceneDirty_ = true;
+                                sceneStatusMessage_ = "Extruded " + std::to_string(extruded) + " faces";
+                            }
+                        }
+                    }
+                }
+                if (selectedFaceIndices_.size() > 1)
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Extrude Selected"))
+                    {
+                        if (std::fabs(faceExtrudeDistance_) > 1e-4f)
+                        {
+                            PushUndoState("Extrude Faces");
+                            // Sort descending so extruding doesn't invalidate earlier indices
+                            // (extrudeMeshFace appends new faces, doesn't reorder existing ones)
+                            std::vector<int> sorted = selectedFaceIndices_;
+                            std::sort(sorted.rbegin(), sorted.rend());
+                            int extruded = 0;
+                            for (int fi : sorted)
+                            {
+                                if (fi >= 0 && fi < static_cast<int>(meshObject.mesh.faceCount()))
+                                {
+                                    if (extrudeMeshFace(meshObject, fi, faceExtrudeDistance_))
+                                        ++extruded;
+                                }
+                            }
+                            if (extruded > 0)
+                            {
+                                meshCacheValid_ = false;
+                                sceneDirty_ = true;
+                                sceneStatusMessage_ = "Extruded " + std::to_string(extruded) + " faces";
+                            }
+                        }
                     }
                 }
                     ImGui::SameLine();
-                if (ImGui::Button("Delete Face"))
+                if (ImGui::Button("Delete Face") &&
+                    selectedFaceIndex_ >= 0 && selectedFaceIndex_ < static_cast<int>(meshObject.mesh.faceCount()))
                 {
-                    PushUndoState();
+                    PushUndoState("Delete Face");
                     auto& faces = meshObject.mesh.facesMutable();
                     faces.erase(faces.begin() + selectedFaceIndex_);
 
@@ -9568,29 +10488,52 @@ void LevelEditorApp::ShowLeftPanel()
                     selectedFaceIndex_ = -1;
                     selectedFaceIndices_.clear();
                     selectedVertexIndices_.clear();
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
                 }
 
                 if (ImGui::Button("Flip Normal"))
                 {
-                    PushUndoState();
+                    PushUndoState("Flip Normal");
                     auto& indices = meshObject.mesh.facesMutable()[(size_t)selectedFaceIndex_].indices;
                     std::reverse(indices.begin(), indices.end());
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Flip All Normals"))
                 {
-                    PushUndoState();
+                    PushUndoState("Flip All Normals");
                     for (auto& face : meshObject.mesh.facesMutable())
                         std::reverse(face.indices.begin(), face.indices.end());
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
+                }
+
+                // Dissolve selected faces
+                if (!selectedFaceIndices_.empty())
+                {
+                    if (ImGui::Button("Dissolve Faces"))
+                    {
+                        PushUndoState("Dissolve Faces");
+                        const int dissolved = dissolveFaces(meshObject.mesh, selectedFaceIndices_);
+                        if (dissolved > 0)
+                        {
+                            recomputeEditableMeshNormals(meshObject.mesh);
+                            selectedFaceIndex_ = -1;
+                            selectedFaceIndices_.clear();
+                            selectedVertexIndices_.clear();
+                            meshCacheValid_ = false;
+                            sceneDirty_ = true;
+                            sceneStatusMessage_ = "Dissolved " + std::to_string(dissolved) + " faces";
+                        }
+                    }
                 }
 
                 ImGui::DragFloat("Inset##FaceInsetAmount", &faceInsetAmount_, 0.5f, 0.1f, 1024.0f);
                 if (ImGui::Button("Inset Face"))
                 {
-                    PushUndoState();
+                    PushUndoState("Inset Face");
                     const EditableFace& srcFace = meshObject.mesh.faces()[(size_t)selectedFaceIndex_];
                     const auto& verts = meshObject.mesh.vertices();
                     if (srcFace.indices.size() >= 3)
@@ -9640,6 +10583,7 @@ void LevelEditorApp::ShowLeftPanel()
                         }
 
                         meshObject.mesh.setData(newVerts, newFaces);
+                        meshCacheValid_ = false;
                         sceneDirty_ = true;
                     }
                 }
@@ -9745,25 +10689,99 @@ void LevelEditorApp::ShowLeftPanel()
             ImGui::PopID();
         }
 
+        // Merge meshes (combine 2+ selected meshes into one, no CSG)
+        if (selectedMeshIndices_.size() >= 2 && selectedMeshIndex_ >= 0)
+        {
+            if (ImGui::Button("Merge Selected Meshes"))
+            {
+                PushUndoState("Merge Meshes");
+
+                std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
+                const int targetIdx = selectedMeshIndex_;
+                const glm::mat4 targetInverse = glm::inverse(meshObjectModelMatrix(meshObjects[(size_t)targetIdx]));
+
+                // Collect all verts/faces from other selected meshes into target's local space
+                std::vector<EditableVertex> mergedVerts = meshObjects[(size_t)targetIdx].mesh.vertices();
+                std::vector<EditableFace> mergedFaces = meshObjects[(size_t)targetIdx].mesh.faces();
+
+                // Gather indices to merge (all selected except target), sorted descending for safe erase
+                std::vector<int> toRemove;
+                for (int idx : selectedMeshIndices_)
+                {
+                    if (idx != targetIdx && idx >= 0 && idx < static_cast<int>(meshObjects.size()))
+                        toRemove.push_back(idx);
+                }
+                std::sort(toRemove.rbegin(), toRemove.rend());
+
+                for (int srcIdx : selectedMeshIndices_)
+                {
+                    if (srcIdx == targetIdx) continue;
+                    if (srcIdx < 0 || srcIdx >= static_cast<int>(meshObjects.size())) continue;
+
+                    const glm::mat4 srcToTarget = targetInverse * meshObjectModelMatrix(meshObjects[(size_t)srcIdx]);
+                    const glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(srcToTarget)));
+
+                    const int vertOffset = static_cast<int>(mergedVerts.size());
+                    for (const EditableVertex& v : meshObjects[(size_t)srcIdx].mesh.vertices())
+                    {
+                        EditableVertex tv;
+                        tv.position = glm::vec3(srcToTarget * glm::vec4(v.position, 1.0f));
+                        const glm::vec3 rawN = normalMat * v.normal;
+                        const float nLen = glm::length(rawN);
+                        tv.normal = nLen > 1e-8f ? rawN / nLen : glm::vec3(0.f, 1.f, 0.f);
+                        tv.uv = v.uv;
+                        mergedVerts.push_back(tv);
+                    }
+                    for (const EditableFace& f : meshObjects[(size_t)srcIdx].mesh.faces())
+                    {
+                        EditableFace nf;
+                        nf.materialName = f.materialName;
+                        for (int i : f.indices)
+                            nf.indices.push_back(i + vertOffset);
+                        mergedFaces.push_back(nf);
+                    }
+                }
+
+                meshObjects[(size_t)targetIdx].mesh.setData(mergedVerts, mergedFaces);
+
+                // Remove merged sources (descending order to keep indices valid)
+                for (int removeIdx : toRemove)
+                    meshObjects.erase(meshObjects.begin() + removeIdx);
+
+                // Fix selection
+                int newTarget = targetIdx;
+                for (int removeIdx : toRemove)
+                    if (removeIdx < targetIdx) --newTarget;
+                selectedMeshIndex_ = newTarget;
+                selectedFaceIndex_ = -1;
+                selectedFaceIndices_.clear();
+                selectedVertexIndices_.clear();
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
+                SyncSelectedMeshes();
+                sceneStatusMessage_ = "Merged " + std::to_string(toRemove.size() + 1) + " meshes";
+            }
+        }
+
         if (Section("CSG"))
         {
             ImGui::PushID("CSGSection");
 
             if (selectedMeshIndices_.size() >= 2)
             {
-                const int cutterIndex = selectedMeshIndices_[0] == selectedMeshIndex_
+                const int cutterIndex = selectedMeshIndex_;
+                const int targetIndex = selectedMeshIndices_[0] == selectedMeshIndex_
                     ? selectedMeshIndices_[1]
                     : selectedMeshIndices_[0];
-                if (cutterIndex >= 0 && cutterIndex < static_cast<int>(scene_.meshObjects().size()))
+                if (cutterIndex >= 0 && cutterIndex < static_cast<int>(scene_.meshObjects().size()) &&
+                    targetIndex >= 0 && targetIndex < static_cast<int>(scene_.meshObjects().size()))
                 {
-                    ImGui::TextDisabled("Primary = target, secondary = cutter");
+                    ImGui::TextDisabled("Primary = cutter, secondary = target");
 
                     if (ImGui::Button("Subtract"))
                     {
-                        PushUndoState();
-
                         std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
-                        const LevelMeshObject targetCopy = meshObjects[(size_t)selectedMeshIndex_];
+                        const LevelMeshObject targetCopy = meshObjects[(size_t)targetIndex];
                         const LevelMeshObject cutterCopy = meshObjects[(size_t)cutterIndex];
 
                         const glm::mat4 cutterWorld = meshObjectModelMatrix(cutterCopy);
@@ -9774,27 +10792,31 @@ void LevelEditorApp::ShowLeftPanel()
 
                         if (!pieces.empty())
                         {
-                            meshObjects[(size_t)selectedMeshIndex_].mesh = pieces[0];
+                            PushUndoState("CSG Subtract");
+                            meshObjects[(size_t)targetIndex].mesh = pieces[0];
 
                             for (std::size_t i = 1; i < pieces.size(); ++i)
                             {
                                 LevelMeshObject pieceObject = targetCopy;
                                 pieceObject.name = targetCopy.name + " part " + std::to_string(i + 1);
                                 pieceObject.mesh = pieces[i];
-                                meshObjects.insert(meshObjects.begin() + selectedMeshIndex_ + static_cast<int>(i), pieceObject);
+                                meshObjects.insert(meshObjects.begin() + targetIndex + static_cast<int>(i), pieceObject);
                             }
 
                             int removeCutterIdx = cutterIndex;
-                            if (cutterIndex > selectedMeshIndex_)
+                            if (cutterIndex > targetIndex)
                                 removeCutterIdx += static_cast<int>(pieces.size()) - 1;
                             meshObjects.erase(meshObjects.begin() + removeCutterIdx);
 
-                            if (cutterIndex < selectedMeshIndex_)
-                                selectedMeshIndex_--;
+                            if (cutterIndex < targetIndex)
+                                selectedMeshIndex_ = targetIndex - 1;
+                            else
+                                selectedMeshIndex_ = targetIndex;
 
                             selectedFaceIndex_ = -1;
                             selectedFaceIndices_.clear();
                             selectedVertexIndices_.clear();
+                            meshCacheValid_ = false;
                             sceneDirty_ = true;
                             SyncSelectedMeshes();
                         }
@@ -9803,10 +10825,8 @@ void LevelEditorApp::ShowLeftPanel()
                     ImGui::SameLine();
                     if (ImGui::Button("Intersect"))
                     {
-                        PushUndoState();
-
                         std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
-                        const LevelMeshObject targetCopy = meshObjects[(size_t)selectedMeshIndex_];
+                        const LevelMeshObject targetCopy = meshObjects[(size_t)targetIndex];
                         const LevelMeshObject cutterCopy = meshObjects[(size_t)cutterIndex];
 
                         const glm::mat4 cutterWorld = meshObjectModelMatrix(cutterCopy);
@@ -9817,15 +10837,19 @@ void LevelEditorApp::ShowLeftPanel()
 
                         if (result.faceCount() > 0)
                         {
-                            meshObjects[(size_t)selectedMeshIndex_].mesh = result;
+                            PushUndoState("CSG Intersect");
+                            meshObjects[(size_t)targetIndex].mesh = result;
 
                             meshObjects.erase(meshObjects.begin() + cutterIndex);
-                            if (cutterIndex < selectedMeshIndex_)
-                                selectedMeshIndex_--;
+                            if (cutterIndex < targetIndex)
+                                selectedMeshIndex_ = targetIndex - 1;
+                            else
+                                selectedMeshIndex_ = targetIndex;
 
                             selectedFaceIndex_ = -1;
                             selectedFaceIndices_.clear();
                             selectedVertexIndices_.clear();
+                            meshCacheValid_ = false;
                             sceneDirty_ = true;
                             SyncSelectedMeshes();
                         }
@@ -9834,10 +10858,8 @@ void LevelEditorApp::ShowLeftPanel()
                     ImGui::SameLine();
                     if (ImGui::Button("Add"))
                     {
-                        PushUndoState();
-
                         std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
-                        const LevelMeshObject targetCopy = meshObjects[(size_t)selectedMeshIndex_];
+                        const LevelMeshObject targetCopy = meshObjects[(size_t)targetIndex];
                         const LevelMeshObject cutterCopy = meshObjects[(size_t)cutterIndex];
 
                         const glm::mat4 cutterWorld = meshObjectModelMatrix(cutterCopy);
@@ -9880,102 +10902,169 @@ void LevelEditorApp::ShowLeftPanel()
 
                         if (!mergedFaces.empty())
                         {
-                            meshObjects[(size_t)selectedMeshIndex_].mesh.setData(mergedVerts, mergedFaces);
+                            PushUndoState("CSG Add");
+                            meshObjects[(size_t)targetIndex].mesh.setData(mergedVerts, mergedFaces);
 
-                            int removeCutterIdx = cutterIndex;
-                            if (cutterIndex > selectedMeshIndex_)
-                                removeCutterIdx = cutterIndex;
-                            meshObjects.erase(meshObjects.begin() + removeCutterIdx);
-                            if (cutterIndex < selectedMeshIndex_)
-                                selectedMeshIndex_--;
+                            meshObjects.erase(meshObjects.begin() + cutterIndex);
+                            if (cutterIndex < targetIndex)
+                                selectedMeshIndex_ = targetIndex - 1;
+                            else
+                                selectedMeshIndex_ = targetIndex;
 
                             selectedFaceIndex_ = -1;
                             selectedFaceIndices_.clear();
                             selectedVertexIndices_.clear();
+                            meshCacheValid_ = false;
                             sceneDirty_ = true;
                             SyncSelectedMeshes();
                         }
                     }
 
-                    if (Section("Experimental Mesh CSG", false))
+                    if (Section("BSP Polygon CSG", false))
                     {
-                        if (ImGui::Button("Union Root CSG"))
+                        if (ImGui::Button("BSP Union"))
                         {
-                            PushUndoState();
-
-                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
-                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
                             Mesh targetMesh;
                             Mesh cutterMesh;
-                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
-                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)targetIndex].mesh, targetMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)cutterIndex].mesh, cutterMesh);
                             Mesh* resultMesh = CSG::makeUnion(targetMesh, cutterMesh,
-                                                              meshObjectModelMatrix(targetObject),
-                                                              meshObjectModelMatrix(cutterObject));
+                                                              meshObjectModelMatrix(meshObjects[(size_t)targetIndex]),
+                                                              meshObjectModelMatrix(meshObjects[(size_t)cutterIndex]));
 
                             if (resultMesh)
                             {
-                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
-                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                PushUndoState();
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(meshObjects[(size_t)targetIndex]));
+                                meshObjects[(size_t)targetIndex].mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
                                 delete resultMesh;
+
+                                meshObjects.erase(meshObjects.begin() + cutterIndex);
+                                if (cutterIndex < targetIndex)
+                                    selectedMeshIndex_ = targetIndex - 1;
+                                else
+                                    selectedMeshIndex_ = targetIndex;
+
                                 selectedFaceIndex_ = -1;
                                 selectedFaceIndices_.clear();
                                 selectedVertexIndices_.clear();
+                                meshCacheValid_ = false;
                                 sceneDirty_ = true;
+                                SyncSelectedMeshes();
                             }
                         }
 
                         ImGui::SameLine();
-                        if (ImGui::Button("Difference Root CSG"))
+                        if (ImGui::Button("BSP Difference"))
                         {
-                            PushUndoState();
-
-                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
-                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
                             Mesh targetMesh;
                             Mesh cutterMesh;
-                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
-                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)targetIndex].mesh, targetMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)cutterIndex].mesh, cutterMesh);
                             Mesh* resultMesh = CSG::makeDifference(targetMesh, cutterMesh,
-                                                                   meshObjectModelMatrix(targetObject),
-                                                                   meshObjectModelMatrix(cutterObject));
+                                                                   meshObjectModelMatrix(meshObjects[(size_t)targetIndex]),
+                                                                   meshObjectModelMatrix(meshObjects[(size_t)cutterIndex]));
 
                             if (resultMesh)
                             {
-                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
-                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                PushUndoState("BSP Difference");
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(meshObjects[(size_t)targetIndex]));
+                                meshObjects[(size_t)targetIndex].mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
                                 delete resultMesh;
+
+                                meshObjects.erase(meshObjects.begin() + cutterIndex);
+                                if (cutterIndex < targetIndex)
+                                    selectedMeshIndex_ = targetIndex - 1;
+                                else
+                                    selectedMeshIndex_ = targetIndex;
+
                                 selectedFaceIndex_ = -1;
                                 selectedFaceIndices_.clear();
                                 selectedVertexIndices_.clear();
+                                meshCacheValid_ = false;
                                 sceneDirty_ = true;
+                                SyncSelectedMeshes();
+                            }
+                            else
+                            {
+                                sceneStatusMessage_ = "BSP Difference failed — meshes may not be watertight";
                             }
                         }
 
                         ImGui::SameLine();
-                        if (ImGui::Button("Intersect Root CSG"))
+                        if (ImGui::Button("BSP Intersect"))
                         {
-                            PushUndoState();
-
-                            LevelMeshObject& targetObject = scene_.meshObjects()[selectedMeshIndex_];
-                            const LevelMeshObject& cutterObject = scene_.meshObjects()[cutterIndex];
+                            std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
                             Mesh targetMesh;
                             Mesh cutterMesh;
-                            fillRenderMeshFromEditable(targetObject.mesh, targetMesh);
-                            fillRenderMeshFromEditable(cutterObject.mesh, cutterMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)targetIndex].mesh, targetMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)cutterIndex].mesh, cutterMesh);
                             Mesh* resultMesh = CSG::makeIntersection(targetMesh, cutterMesh,
-                                                                     meshObjectModelMatrix(targetObject),
-                                                                     meshObjectModelMatrix(cutterObject));
+                                                                     meshObjectModelMatrix(meshObjects[(size_t)targetIndex]),
+                                                                     meshObjectModelMatrix(meshObjects[(size_t)cutterIndex]));
 
                             if (resultMesh)
                             {
-                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(targetObject));
-                                targetObject.mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                PushUndoState("BSP Intersection");
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(meshObjects[(size_t)targetIndex]));
+                                meshObjects[(size_t)targetIndex].mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
                                 delete resultMesh;
+
+                                meshObjects.erase(meshObjects.begin() + cutterIndex);
+                                if (cutterIndex < targetIndex)
+                                    selectedMeshIndex_ = targetIndex - 1;
+                                else
+                                    selectedMeshIndex_ = targetIndex;
+
                                 selectedFaceIndex_ = -1;
                                 selectedFaceIndices_.clear();
                                 selectedVertexIndices_.clear();
+                                meshCacheValid_ = false;
                                 sceneDirty_ = true;
+                                SyncSelectedMeshes();
+                            }
+                            else
+                            {
+                                sceneStatusMessage_ = "BSP Intersection failed — meshes may not be watertight";
+                            }
+                        }
+
+                        if (ImGui::Button("BSP Symmetric Diff (XOR)"))
+                        {
+                            std::vector<LevelMeshObject>& meshObjects = scene_.meshObjects();
+                            Mesh targetMesh;
+                            Mesh cutterMesh;
+                            fillRenderMeshFromEditable(meshObjects[(size_t)targetIndex].mesh, targetMesh);
+                            fillRenderMeshFromEditable(meshObjects[(size_t)cutterIndex].mesh, cutterMesh);
+                            Mesh* resultMesh = CSG::makeSymmetricDifference(targetMesh, cutterMesh,
+                                                                            meshObjectModelMatrix(meshObjects[(size_t)targetIndex]),
+                                                                            meshObjectModelMatrix(meshObjects[(size_t)cutterIndex]));
+
+                            if (resultMesh)
+                            {
+                                PushUndoState("BSP Symmetric Difference");
+                                const glm::mat4 inverseTarget = glm::inverse(meshObjectModelMatrix(meshObjects[(size_t)targetIndex]));
+                                meshObjects[(size_t)targetIndex].mesh = makeEditableFromRenderMesh(*resultMesh, inverseTarget);
+                                delete resultMesh;
+
+                                meshObjects.erase(meshObjects.begin() + cutterIndex);
+                                if (cutterIndex < targetIndex)
+                                    selectedMeshIndex_ = targetIndex - 1;
+                                else
+                                    selectedMeshIndex_ = targetIndex;
+
+                                selectedFaceIndex_ = -1;
+                                selectedFaceIndices_.clear();
+                                selectedVertexIndices_.clear();
+                                meshCacheValid_ = false;
+                                sceneDirty_ = true;
+                                SyncSelectedMeshes();
+                            }
+                            else
+                            {
+                                sceneStatusMessage_ = "BSP XOR failed — meshes may not be watertight";
                             }
                         }
                     }
@@ -9986,45 +11075,139 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::TextDisabled("Select 2+ meshes for CSG");
             }
 
-            if (Section("Plane Clip", false))
+            if (Section("BSP Single-Mesh Ops", false))
             {
-                ImGui::SetNextItemWidth(80.0f);
-                if (ImGui::BeginCombo("Clip Axis##CSGClipAxis", csgAxisName(csgClipAxis_)))
+                // --- BSP Invert ---
+                if (ImGui::Button("BSP Invert"))
                 {
-                    for (int axis = 0; axis < 3; ++axis)
-                    {
-                        const bool selectedAxis = axis == csgClipAxis_;
-                        if (ImGui::Selectable(csgAxisName(axis), selectedAxis))
-                            csgClipAxis_ = axis;
-                        if (selectedAxis)
-                            ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::DragFloat("Clip Offset##CSGClipOffset", &csgClipOffset_, 0.5f, -4096.0f, 4096.0f);
-                ImGui::Checkbox("Keep Front##CSGKeepFront", &csgClipKeepFront_);
-                if (ImGui::Button("Apply Plane Clip"))
-                {
-                    glm::vec3 normal(0.0f);
-                    normal[(size_t)glm::clamp(csgClipAxis_, 0, 2)] = 1.0f;
-                    glm::vec3 point(0.0f);
-                    point[(size_t)glm::clamp(csgClipAxis_, 0, 2)] = csgClipOffset_;
+                    LevelMeshObject& obj = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+                    Mesh srcMesh;
+                    fillRenderMeshFromEditable(obj.mesh, srcMesh);
+                    const glm::mat4 modelMat = meshObjectModelMatrix(obj);
+                    Mesh* resultMesh = CSG::makeInvert(srcMesh, modelMat);
 
-                    const EditableMesh clipped = clipEditableMeshAgainstPlane(
-                        meshObject.mesh,
-                        MeshPlane::FromPointNormal(point, normal),
-                        csgClipKeepFront_);
-
-                    if (clipped.faceCount() > 0)
+                    if (resultMesh)
                     {
-                        PushUndoState();
-                        meshObject.mesh = clipped;
+                        PushUndoState("BSP Invert");
+                        const glm::mat4 invModel = glm::inverse(modelMat);
+                        obj.mesh = makeEditableFromRenderMesh(*resultMesh, invModel);
+                        delete resultMesh;
                         selectedFaceIndex_ = -1;
                         selectedFaceIndices_.clear();
                         selectedVertexIndices_.clear();
+                        meshCacheValid_ = false;
                         sceneDirty_ = true;
                     }
+                    else
+                    {
+                        sceneStatusMessage_ = "BSP Invert failed";
+                    }
                 }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Flip inside/outside (reverses winding and normals)");
+
+                ImGui::Separator();
+
+                // --- BSP Split ---
+                ImGui::Text("BSP Split (Plane Cut)");
+                static const char* splitAxisNames[] = {"X", "Y", "Z"};
+                ImGui::SetNextItemWidth(80.0f);
+                ImGui::Combo("Split Axis##BSPSplit", &bspSplitAxis_, splitAxisNames, 3);
+                ImGui::DragFloat("Split Offset##BSPSplit", &bspSplitOffset_, 0.05f, -4096.0f, 4096.0f);
+
+                if (ImGui::Button("BSP Split"))
+                {
+                    const size_t objIdx = (size_t)selectedMeshIndex_;
+                    Mesh srcMesh;
+                    fillRenderMeshFromEditable(scene_.meshObjects()[objIdx].mesh, srcMesh);
+                    const glm::mat4 modelMat = meshObjectModelMatrix(scene_.meshObjects()[objIdx]);
+
+                    glm::vec3 planeNormal(0.0f);
+                    planeNormal[glm::clamp(bspSplitAxis_, 0, 2)] = 1.0f;
+
+                    CSG::SplitResult split = CSG::makeSplit(srcMesh, planeNormal, bspSplitOffset_, modelMat);
+
+                    if (split.front && split.back)
+                    {
+                        PushUndoState("BSP Split");
+                        const glm::mat4 invModel = glm::inverse(modelMat);
+
+                        // Copy transform before modifying anything
+                        const std::string origName = scene_.meshObjects()[objIdx].name;
+                        const glm::vec3 origPos = scene_.meshObjects()[objIdx].position;
+                        const glm::vec3 origRot = scene_.meshObjects()[objIdx].rotationEuler;
+                        const glm::vec3 origScale = scene_.meshObjects()[objIdx].scale;
+
+                        // Replace original with front half
+                        scene_.meshObjects()[objIdx].mesh = makeEditableFromRenderMesh(*split.front, invModel);
+                        delete split.front;
+
+                        // Create back half as new object (push_back may invalidate references!)
+                        LevelMeshObject newObj;
+                        newObj.name = origName + "_back";
+                        newObj.mesh = makeEditableFromRenderMesh(*split.back, invModel);
+                        newObj.position = origPos;
+                        newObj.rotationEuler = origRot;
+                        newObj.scale = origScale;
+                        delete split.back;
+                        scene_.meshObjects().push_back(std::move(newObj));
+
+                        selectedFaceIndex_ = -1;
+                        selectedFaceIndices_.clear();
+                        selectedVertexIndices_.clear();
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                        SyncSelectedMeshes();
+                    }
+                    else
+                    {
+                        // Mesh entirely on one side — clean up
+                        if (split.front) delete split.front;
+                        if (split.back) delete split.back;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Cuts the mesh into two halves along a plane.\nFront half replaces the original, back half becomes a new mesh.");
+
+                ImGui::Separator();
+
+                // --- BSP Hollow ---
+                ImGui::Text("BSP Hollow (Shell)");
+                ImGui::DragFloat("Wall Thickness##BSPHollow", &bspHollowThickness_, 0.01f, 0.01f, 100.0f, "%.3f");
+
+                if (ImGui::Button("BSP Hollow"))
+                {
+                    LevelMeshObject& obj = scene_.meshObjects()[(size_t)selectedMeshIndex_];
+                    Mesh srcMesh;
+                    fillRenderMeshFromEditable(obj.mesh, srcMesh);
+                    const glm::mat4 modelMat = meshObjectModelMatrix(obj);
+                    Mesh* resultMesh = CSG::makeHollow(srcMesh, bspHollowThickness_, modelMat);
+
+                    if (resultMesh)
+                    {
+                        PushUndoState("BSP Hollow");
+                        const glm::mat4 invModel = glm::inverse(modelMat);
+                        obj.mesh = makeEditableFromRenderMesh(*resultMesh, invModel);
+                        delete resultMesh;
+                        selectedFaceIndex_ = -1;
+                        selectedFaceIndices_.clear();
+                        selectedVertexIndices_.clear();
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                    }
+                    else
+                    {
+                        sceneStatusMessage_ = "BSP Hollow failed — mesh may not be watertight";
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Creates a hollow version of the mesh (shell).\nShrinks a copy inward and subtracts it from the original.");
             }
 
             ImGui::PopID();
@@ -10244,6 +11427,13 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::DragInt("Samples/Texel", &lightmapSettings_.samplesPerTexel, 1, 1, 1024);
         ImGui::DragFloat("Bias", &lightmapSettings_.bias, 0.01f, 0.001f, 10.0f);
         ImGui::DragFloat("Ambient", &lightmapSettings_.ambient, 0.01f, 0.0f, 1.0f);
+        ImGui::Checkbox("AO Enabled", &lightmapSettings_.aoEnabled);
+        if (lightmapSettings_.aoEnabled)
+        {
+            ImGui::DragInt("AO Samples", &lightmapSettings_.aoSamples, 1, 1, 256);
+            ImGui::DragFloat("AO Radius", &lightmapSettings_.aoRadius, 0.1f, 0.1f, 100.0f);
+            ImGui::DragFloat("AO Intensity", &lightmapSettings_.aoIntensity, 0.01f, 0.0f, 1.0f);
+        }
         ImGui::Checkbox("Use Lightmap", &useLightmap_);
         if (isBaking) ImGui::EndDisabled();
 
@@ -10376,6 +11566,7 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::Checkbox("Draw Tangents", &debugDrawTangents_);
         if (debugDrawNormals_ || debugDrawTangents_)
             ImGui::DragFloat("Line Length", &debugNormalLength_, 0.5f, 0.01f, 100.0f);
+        ImGui::Checkbox("Debug Overlay (F12)", &showDebugOverlay_);
     }
 
     if (selectedMeshIndex_ >= 0 && selectedMeshIndex_ < static_cast<int>(scene_.meshObjects().size()) &&
@@ -10447,7 +11638,7 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::BeginDisabled(!meshObject.blendEnabled);
         ImGui::TextUnformatted("Blend Mode");
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-        const char* blendModeLabels[] = {"Alpha", "Additive"};
+        const char* blendModeLabels[] = {"Alpha", "Additive", "Multiply", "Screen", "PreMul Alpha"};
         if (ImGui::Combo("##MeshBlendMode", &blendModeIndex, blendModeLabels, IM_ARRAYSIZE(blendModeLabels)) &&
             blendModeIndex != static_cast<int>(meshObject.blendMode))
         {
@@ -11130,6 +12321,67 @@ void LevelEditorApp::ShowRightPanel()
             }
         }
 
+        // Trigger properties
+        if (entity.type == LevelEntityType::Trigger)
+        {
+            float tr = entity.triggerRadius;
+            if (ImGui::DragFloat("Radius##Trigger", &tr, 1.0f, 1.0f, 2048.0f) && tr != entity.triggerRadius)
+            {
+                PushUndoState();
+                entity.triggerRadius = tr;
+            }
+
+            std::string tn = entity.targetName;
+            if (ImGui::InputText("Target Name", &tn) && tn != entity.targetName)
+            {
+                PushUndoState();
+                entity.targetName = tn;
+            }
+        }
+
+        // Teleporter properties
+        if (entity.type == LevelEntityType::Teleporter)
+        {
+            glm::vec3 tt = entity.teleportTarget;
+            if (ImGui::DragFloat3("Target Pos##Teleport", &tt.x, 1.0f) && tt != entity.teleportTarget)
+            {
+                PushUndoState();
+                entity.teleportTarget = tt;
+            }
+        }
+
+        // SoundEmitter properties
+        if (entity.type == LevelEntityType::SoundEmitter)
+        {
+            std::string sp = entity.soundPath;
+            if (ImGui::InputText("Sound File", &sp) && sp != entity.soundPath)
+            {
+                PushUndoState();
+                entity.soundPath = sp;
+            }
+
+            float sr = entity.soundRadius;
+            if (ImGui::DragFloat("Radius##Sound", &sr, 1.0f, 1.0f, 4096.0f) && sr != entity.soundRadius)
+            {
+                PushUndoState();
+                entity.soundRadius = sr;
+            }
+
+            float sv = entity.soundVolume;
+            if (ImGui::DragFloat("Volume##Sound", &sv, 0.01f, 0.0f, 1.0f) && sv != entity.soundVolume)
+            {
+                PushUndoState();
+                entity.soundVolume = sv;
+            }
+
+            bool sl = entity.soundLooping;
+            if (ImGui::Checkbox("Looping##Sound", &sl) && sl != entity.soundLooping)
+            {
+                PushUndoState();
+                entity.soundLooping = sl;
+            }
+        }
+
         // Preview button for Door / Elevator / Platform
         if ((entity.type == LevelEntityType::Door ||
              entity.type == LevelEntityType::Elevator ||
@@ -11567,14 +12819,14 @@ void LevelEditorApp::ShowRightPanel()
         ImGui::EndDisabled();
     }
 
-    if (Section("Roadmap"))
-    {
-        ImGui::BulletText("Create box -> render real mesh");
-        ImGui::BulletText("Object / Face / Vertex selection");
-        ImGui::BulletText("Extrude, split, clip, bevel");
-        ImGui::BulletText("Entities with editable properties");
-        ImGui::BulletText("CSG as a higher-level operation");
-    }
+    // if (Section("Roadmap"))
+    // {
+    //     ImGui::BulletText("Create box -> render real mesh");
+    //     ImGui::BulletText("Object / Face / Vertex selection");
+    //     ImGui::BulletText("Extrude, split, clip, bevel");
+    //     ImGui::BulletText("Entities with editable properties");
+    //     ImGui::BulletText("CSG as a higher-level operation");
+    // }
 
     ImGui::End();
 }

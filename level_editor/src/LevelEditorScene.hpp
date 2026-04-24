@@ -13,7 +13,10 @@ enum class LevelEntityType
     Door,
     Elevator,
     Platform,
-    Placement
+    Placement,
+    Trigger,
+    Teleporter,
+    SoundEmitter
 };
 
 enum class DoorType
@@ -51,7 +54,10 @@ enum class LevelMeshPrimitive
 enum class LevelMeshBlendMode
 {
     Alpha = 0,
-    Additive
+    Additive,
+    Multiply,
+    Screen,
+    PreMultipliedAlpha
 };
 
 struct LevelMeshObject
@@ -121,6 +127,19 @@ struct LevelEntityObject
     // Placement properties
     int itemType = 0;
     float rotationY = 0.0f;
+
+    // Trigger properties
+    float triggerRadius = 64.0f;
+    std::string targetName;       // name of entity/event to trigger
+
+    // Teleporter properties
+    glm::vec3 teleportTarget {0.0f, 0.0f, 0.0f};
+
+    // SoundEmitter properties
+    std::string soundPath;
+    float soundRadius = 256.0f;
+    float soundVolume = 1.0f;
+    bool soundLooping = true;
 };
 
 class LevelEditorScene

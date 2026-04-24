@@ -381,50 +381,74 @@ EditableMesh EditableMesh::MakeCylinder(const glm::vec3& center, float radius, f
     EditableMesh mesh;
     const float halfH = height * 0.5f;
 
-    // Bottom center = 0, top center = 1
-    mesh.vertices_.push_back({{center.x, center.y - halfH, center.z}});
-    mesh.vertices_.push_back({{center.x, center.y + halfH, center.z}});
-
-    // Bottom ring starts at index 2, top ring at 2 + segments
-    for (int i = 0; i < segments; ++i)
-    {
-        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
-        const float x = center.x + radius * std::cos(angle);
-        const float z = center.z + radius * std::sin(angle);
-        mesh.vertices_.push_back({{x, center.y - halfH, z}});
-    }
-    for (int i = 0; i < segments; ++i)
-    {
-        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
-        const float x = center.x + radius * std::cos(angle);
-        const float z = center.z + radius * std::sin(angle);
-        mesh.vertices_.push_back({{x, center.y + halfH, z}});
-    }
-
-    const int botBase = 2;
-    const int topBase = 2 + segments;
-
+    // We build a flattened mesh (separate verts per face) so each face gets its own UVs.
     // Bottom cap
-    EditableFace bottomCap;
-    bottomCap.materialName = "bottom";
-    for (int i = 0; i < segments; ++i)
-        bottomCap.indices.push_back(botBase + i);
-    mesh.faces_.push_back(bottomCap);
+    {
+        EditableFace bottomCap;
+        bottomCap.materialName = "bottom";
+        for (int i = 0; i < segments; ++i)
+        {
+            const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+            const float cx = std::cos(angle);
+            const float cz = std::sin(angle);
+            EditableVertex v;
+            v.position = {center.x + radius * cx, center.y - halfH, center.z + radius * cz};
+            v.uv = {cx * 0.5f + 0.5f, cz * 0.5f + 0.5f};
+            bottomCap.indices.push_back(static_cast<int>(mesh.vertices_.size()));
+            mesh.vertices_.push_back(v);
+        }
+        mesh.faces_.push_back(bottomCap);
+    }
 
     // Top cap
-    EditableFace topCap;
-    topCap.materialName = "top";
-    for (int i = segments - 1; i >= 0; --i)
-        topCap.indices.push_back(topBase + i);
-    mesh.faces_.push_back(topCap);
+    {
+        EditableFace topCap;
+        topCap.materialName = "top";
+        for (int i = segments - 1; i >= 0; --i)
+        {
+            const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+            const float cx = std::cos(angle);
+            const float cz = std::sin(angle);
+            EditableVertex v;
+            v.position = {center.x + radius * cx, center.y + halfH, center.z + radius * cz};
+            v.uv = {cx * 0.5f + 0.5f, cz * 0.5f + 0.5f};
+            topCap.indices.push_back(static_cast<int>(mesh.vertices_.size()));
+            mesh.vertices_.push_back(v);
+        }
+        mesh.faces_.push_back(topCap);
+    }
 
-    // Side quads
+    // Side quads — each quad gets 4 unique verts with cylindrical UVs
     for (int i = 0; i < segments; ++i)
     {
         const int next = (i + 1) % segments;
+        const float u0 = static_cast<float>(i) / static_cast<float>(segments);
+        const float u1 = static_cast<float>(next) / static_cast<float>(segments);
+        // Handle wrap-around: last quad goes from u0 near 1.0 to u1=1.0 (not 0.0)
+        const float u1actual = (next == 0) ? 1.0f : u1;
+
+        const float angle0 = static_cast<float>(2.0 * M_PI * i / segments);
+        const float angle1 = static_cast<float>(2.0 * M_PI * next / segments);
+
+        const int base = static_cast<int>(mesh.vertices_.size());
+        EditableVertex v0, v1, v2, v3;
+        v0.position = {center.x + radius * std::cos(angle0), center.y - halfH, center.z + radius * std::sin(angle0)};
+        v0.uv = {u0, 1.0f};
+        v1.position = {center.x + radius * std::cos(angle0), center.y + halfH, center.z + radius * std::sin(angle0)};
+        v1.uv = {u0, 0.0f};
+        v2.position = {center.x + radius * std::cos(angle1), center.y + halfH, center.z + radius * std::sin(angle1)};
+        v2.uv = {u1actual, 0.0f};
+        v3.position = {center.x + radius * std::cos(angle1), center.y - halfH, center.z + radius * std::sin(angle1)};
+        v3.uv = {u1actual, 1.0f};
+
+        mesh.vertices_.push_back(v0);
+        mesh.vertices_.push_back(v1);
+        mesh.vertices_.push_back(v2);
+        mesh.vertices_.push_back(v3);
+
         EditableFace side;
         side.materialName = "side";
-        side.indices = {botBase + i, topBase + i, topBase + next, botBase + next};
+        side.indices = {base, base + 1, base + 2, base + 3};
         mesh.faces_.push_back(side);
     }
 
@@ -437,34 +461,51 @@ EditableMesh EditableMesh::MakeCone(const glm::vec3& center, float radius, float
     EditableMesh mesh;
     const float halfH = height * 0.5f;
 
-    const int apexIndex = 0;
-    mesh.vertices_.push_back({{center.x, center.y + halfH, center.z}});
-
-    mesh.vertices_.push_back({{center.x, center.y - halfH, center.z}});
-
-    const int baseRingStart = 2;
-    for (int i = 0; i < segments; ++i)
+    // Base cap — separate verts with radial UVs
     {
-        const float angle = static_cast<float>(2.0 * M_PI * i / segments);
-        mesh.vertices_.push_back({{
-            center.x + radius * std::cos(angle),
-            center.y - halfH,
-            center.z + radius * std::sin(angle)
-        }});
+        EditableFace baseCap;
+        baseCap.materialName = "bottom";
+        for (int i = 0; i < segments; ++i)
+        {
+            const float angle = static_cast<float>(2.0 * M_PI * i / segments);
+            const float cx = std::cos(angle);
+            const float cz = std::sin(angle);
+            EditableVertex v;
+            v.position = {center.x + radius * cx, center.y - halfH, center.z + radius * cz};
+            v.uv = {cx * 0.5f + 0.5f, cz * 0.5f + 0.5f};
+            baseCap.indices.push_back(static_cast<int>(mesh.vertices_.size()));
+            mesh.vertices_.push_back(v);
+        }
+        mesh.faces_.push_back(baseCap);
     }
 
-    EditableFace baseCap;
-    baseCap.materialName = "bottom";
-    for (int i = 0; i < segments; ++i)
-        baseCap.indices.push_back(baseRingStart + i);
-    mesh.faces_.push_back(baseCap);
-
+    // Side triangles — each triangle gets 3 unique verts with UVs
     for (int i = 0; i < segments; ++i)
     {
         const int next = (i + 1) % segments;
+        const float u0 = static_cast<float>(i) / static_cast<float>(segments);
+        const float u1 = (next == 0) ? 1.0f : static_cast<float>(next) / static_cast<float>(segments);
+        const float uMid = (u0 + u1) * 0.5f;
+
+        const float angle0 = static_cast<float>(2.0 * M_PI * next / segments);
+        const float angle1 = static_cast<float>(2.0 * M_PI * i / segments);
+
+        const int base = static_cast<int>(mesh.vertices_.size());
+        EditableVertex vApex, v0, v1;
+        vApex.position = {center.x, center.y + halfH, center.z};
+        vApex.uv = {uMid, 0.0f};
+        v0.position = {center.x + radius * std::cos(angle0), center.y - halfH, center.z + radius * std::sin(angle0)};
+        v0.uv = {u1, 1.0f};
+        v1.position = {center.x + radius * std::cos(angle1), center.y - halfH, center.z + radius * std::sin(angle1)};
+        v1.uv = {u0, 1.0f};
+
+        mesh.vertices_.push_back(vApex);
+        mesh.vertices_.push_back(v0);
+        mesh.vertices_.push_back(v1);
+
         EditableFace side;
         side.materialName = "side";
-        side.indices = {apexIndex, baseRingStart + next, baseRingStart + i};
+        side.indices = {base, base + 1, base + 2};
         mesh.faces_.push_back(side);
     }
 
@@ -477,63 +518,114 @@ EditableMesh EditableMesh::MakeSphere(const glm::vec3& center, float radius, int
     if (segments < 3) segments = 3;
     EditableMesh mesh;
 
-    // Top pole = 0
-    mesh.vertices_.push_back({{center.x, center.y + radius, center.z}});
-
-    // Ring vertices: ring 1..rings-1, each with 'segments' vertices
-    for (int r = 1; r < rings; ++r)
-    {
-        const float phi = static_cast<float>(M_PI * r / rings);
-        const float y = center.y + radius * std::cos(phi);
-        const float ringR = radius * std::sin(phi);
-        for (int s = 0; s < segments; ++s)
-        {
-            const float theta = static_cast<float>(2.0 * M_PI * s / segments);
-            mesh.vertices_.push_back({{
-                center.x + ringR * std::cos(theta),
-                y,
-                center.z + ringR * std::sin(theta)
-            }});
-        }
-    }
-
-    // Bottom pole
-    const int bottomPole = static_cast<int>(mesh.vertices_.size());
-    mesh.vertices_.push_back({{center.x, center.y - radius, center.z}});
-
+    // Build with separate verts per face for proper UVs (spherical mapping)
     // Top cap triangles
     for (int s = 0; s < segments; ++s)
     {
         const int next = (s + 1) % segments;
+        const float u0 = static_cast<float>(s) / segments;
+        const float u1 = (next == 0) ? 1.0f : static_cast<float>(next) / segments;
+        const float uMid = (u0 + u1) * 0.5f;
+
+        const float phi1 = static_cast<float>(M_PI * 1.0 / rings);
+        const float y1 = center.y + radius * std::cos(phi1);
+        const float r1 = radius * std::sin(phi1);
+        const float theta0 = static_cast<float>(2.0 * M_PI * next / segments);
+        const float theta1 = static_cast<float>(2.0 * M_PI * s / segments);
+
+        const int base = static_cast<int>(mesh.vertices_.size());
+        EditableVertex vPole, v0, v1;
+        vPole.position = {center.x, center.y + radius, center.z};
+        vPole.uv = {uMid, 0.0f};
+        v0.position = {center.x + r1 * std::cos(theta0), y1, center.z + r1 * std::sin(theta0)};
+        v0.uv = {u1, 1.0f / rings};
+        v1.position = {center.x + r1 * std::cos(theta1), y1, center.z + r1 * std::sin(theta1)};
+        v1.uv = {u0, 1.0f / rings};
+
+        mesh.vertices_.push_back(vPole);
+        mesh.vertices_.push_back(v0);
+        mesh.vertices_.push_back(v1);
+
         EditableFace f;
         f.materialName = "default";
-        f.indices = {0, 1 + next, 1 + s};
+        f.indices = {base, base + 1, base + 2};
         mesh.faces_.push_back(f);
     }
 
     // Middle quads
-    for (int r = 0; r < rings - 2; ++r)
+    for (int r = 1; r < rings - 1; ++r)
     {
-        const int ringStart = 1 + r * segments;
-        const int nextRingStart = 1 + (r + 1) * segments;
+        const float phi0 = static_cast<float>(M_PI * r / rings);
+        const float phi1 = static_cast<float>(M_PI * (r + 1) / rings);
+        const float y0 = center.y + radius * std::cos(phi0);
+        const float y1 = center.y + radius * std::cos(phi1);
+        const float r0 = radius * std::sin(phi0);
+        const float r1r = radius * std::sin(phi1);
+        const float v0 = static_cast<float>(r) / rings;
+        const float v1 = static_cast<float>(r + 1) / rings;
+
         for (int s = 0; s < segments; ++s)
         {
             const int next = (s + 1) % segments;
+            const float u0 = static_cast<float>(s) / segments;
+            const float u1 = (next == 0) ? 1.0f : static_cast<float>(next) / segments;
+            const float theta0 = static_cast<float>(2.0 * M_PI * s / segments);
+            const float theta1 = static_cast<float>(2.0 * M_PI * next / segments);
+
+            const int base = static_cast<int>(mesh.vertices_.size());
+            EditableVertex va, vb, vc, vd;
+            va.position = {center.x + r0 * std::cos(theta0), y0, center.z + r0 * std::sin(theta0)};
+            va.uv = {u0, v0};
+            vb.position = {center.x + r0 * std::cos(theta1), y0, center.z + r0 * std::sin(theta1)};
+            vb.uv = {u1, v0};
+            vc.position = {center.x + r1r * std::cos(theta1), y1, center.z + r1r * std::sin(theta1)};
+            vc.uv = {u1, v1};
+            vd.position = {center.x + r1r * std::cos(theta0), y1, center.z + r1r * std::sin(theta0)};
+            vd.uv = {u0, v1};
+
+            mesh.vertices_.push_back(va);
+            mesh.vertices_.push_back(vb);
+            mesh.vertices_.push_back(vc);
+            mesh.vertices_.push_back(vd);
+
             EditableFace f;
             f.materialName = "default";
-            f.indices = {ringStart + s, ringStart + next, nextRingStart + next, nextRingStart + s};
+            f.indices = {base, base + 1, base + 2, base + 3};
             mesh.faces_.push_back(f);
         }
     }
 
     // Bottom cap triangles
-    const int lastRingStart = 1 + (rings - 2) * segments;
     for (int s = 0; s < segments; ++s)
     {
         const int next = (s + 1) % segments;
+        const float u0 = static_cast<float>(s) / segments;
+        const float u1 = (next == 0) ? 1.0f : static_cast<float>(next) / segments;
+        const float uMid = (u0 + u1) * 0.5f;
+
+        const float phi = static_cast<float>(M_PI * (rings - 1) / rings);
+        const float yR = center.y + radius * std::cos(phi);
+        const float rR = radius * std::sin(phi);
+        const float theta0 = static_cast<float>(2.0 * M_PI * s / segments);
+        const float theta1 = static_cast<float>(2.0 * M_PI * next / segments);
+        const float vCoord = static_cast<float>(rings - 1) / rings;
+
+        const int base = static_cast<int>(mesh.vertices_.size());
+        EditableVertex va, vb, vPole;
+        va.position = {center.x + rR * std::cos(theta0), yR, center.z + rR * std::sin(theta0)};
+        va.uv = {u0, vCoord};
+        vb.position = {center.x + rR * std::cos(theta1), yR, center.z + rR * std::sin(theta1)};
+        vb.uv = {u1, vCoord};
+        vPole.position = {center.x, center.y - radius, center.z};
+        vPole.uv = {uMid, 1.0f};
+
+        mesh.vertices_.push_back(va);
+        mesh.vertices_.push_back(vb);
+        mesh.vertices_.push_back(vPole);
+
         EditableFace f;
         f.materialName = "default";
-        f.indices = {lastRingStart + s, lastRingStart + next, bottomPole};
+        f.indices = {base, base + 1, base + 2};
         mesh.faces_.push_back(f);
     }
 

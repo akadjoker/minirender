@@ -219,7 +219,7 @@ private:
     void ShowStatusBar(float deltaTime);
     void UpdatePanelLayout();
     bool Section(const char* label, bool defaultOpen = true);
-    void PushUndoState();
+    void PushUndoState(const char* actionName = "");
     bool PerformUndo();
     bool PerformRedo();
     void HandleUndoRedoShortcuts();
@@ -237,6 +237,7 @@ private:
     void ShowTerrainRawHeightmapDialog();
     bool ExportSceneOBJ(const std::string& path);
     bool ExportSceneH3D(const std::string& path);
+    bool ExportLevelMRLVL(const std::string& path);
     void InvalidateTerrainCompositeCache();
     std::unique_ptr<Pixmap> BuildTerrainCompositePixmap(const LevelMeshObject& object);
     bool ExportTerrainCompositeTexture(int objectIndex, const std::string& path);
@@ -317,7 +318,9 @@ private:
     // Collapsing header open/closed states (persisted in settings)
     std::unordered_map<std::string, bool> sectionOpen_;
     std::vector<LevelEditorScene> undoStack_;
+    std::vector<std::string> undoActionNames_;
     std::vector<LevelEditorScene> redoStack_;
+    std::vector<std::string> redoActionNames_;
     int maxUndoStates_ = 64;
     std::string assetRoot_ = "assets";
     std::string assetFilter_;
@@ -339,10 +342,13 @@ private:
     float terrainPaintStrength_ = 0.35f;
     float faceExtrudeDistance_ = 16.0f;
     float faceInsetAmount_ = 8.0f;
+    float weldThreshold_ = 0.1f;
+    float smoothFactor_ = 0.5f;
+    int smoothIterations_ = 1;
     float hollowWallThickness_ = 16.0f;
-    int csgClipAxis_ = 0;
-    float csgClipOffset_ = 0.0f;
-    bool csgClipKeepFront_ = true;
+    int bspSplitAxis_ = 1;      // 0=X, 1=Y, 2=Z
+    float bspSplitOffset_ = 0.0f;
+    float bspHollowThickness_ = 0.1f;
 
     // Primitive creation
     enum class PrimitiveType { Box, Room, Sector, RoomBoxes, Cylinder, Cone, Sphere, Torus, Tube, Pyramid, DoorFrame, Terrain, Pillar, Plane, Wedge, Stairs, SpiralStairs, Text };
@@ -445,6 +451,8 @@ private:
     glm::vec3 terrainBrushPreviewLocalCenter_ = glm::vec3(0.0f);
     bool draggingFaceInView_ = false;
     bool draggingFaceExtrudeInView_ = false;
+    bool cameraDragging_ = false;
+    int cameraDragViewIndex_ = -1;
     glm::vec2 dragStartMouse_ = glm::vec2(0.0f);
     glm::vec3 dragStartWorld_ = glm::vec3(0.0f);
     glm::vec3 dragStartObjectPosition_ = glm::vec3(0.0f);
@@ -497,6 +505,7 @@ private:
     bool debugDrawNormals_ = false;
     bool debugDrawTangents_ = false;
     float debugNormalLength_ = 10.0f;
+    bool showDebugOverlay_ = false;
 
     // Lightmap
     LightmapResult lightmapResult_;

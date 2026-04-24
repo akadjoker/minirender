@@ -234,7 +234,7 @@ EditableMesh clipEditableMeshAgainstPlane(const EditableMesh& mesh,
 
             const bool crosses = (currentDistance > epsilon && nextDistance < -epsilon) ||
                                  (currentDistance < -epsilon && nextDistance > epsilon);
-            if (crosses || (currentOn && !nextOn) || (!currentOn && nextOn))
+            if (crosses)
             {
                 const float denom = currentDistance - nextDistance;
                 const float t = std::fabs(denom) <= epsilon ? 0.0f : (currentDistance / denom);

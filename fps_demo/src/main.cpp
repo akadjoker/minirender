@@ -103,7 +103,14 @@ void drawCollisionDebug(RenderBatch &batch,
         batch.Line3D(moveTrace.start, moveTrace.endPos);
     }
 
-    if (slideTrace.hit && slideTrace.planeIndex >= 0)
+    const bool slideHasPlane = slideTrace.hit &&
+                               slideTrace.fraction < 1.0f &&
+                               glm::length2(slideTrace.planeNormal) > 1e-8f;
+    const bool moveHasPlane = moveTrace.hit &&
+                              moveTrace.fraction < 1.0f &&
+                              glm::length2(moveTrace.planeNormal) > 1e-8f;
+
+    if (slideHasPlane)
     {
         batch.SetColor(255, 70, 60, 255);
         batch.Line3D(slideTrace.endPos, slideTrace.endPos + slideTrace.planeNormal * 24.0f);
@@ -111,7 +118,7 @@ void drawCollisionDebug(RenderBatch &batch,
         batch.SetColor(255, 220, 70, 180);
         drawPlanePatch(batch, slideTrace.endPos, slideTrace.planeNormal, planeHalfSize);
     }
-    else if (moveTrace.hit && moveTrace.planeIndex >= 0)
+    else if (moveHasPlane)
     {
         batch.SetColor(255, 90, 40, 255);
         batch.Line3D(moveTrace.endPos, moveTrace.endPos + moveTrace.planeNormal * 24.0f);
@@ -289,6 +296,67 @@ glm::vec3 currentForwardFlat(const FpsPlayerController &controller)
     if (glm::length2(forward) <= 1e-8f)
         return glm::vec3(0.0f, 0.0f, -1.0f);
     return glm::normalize(forward);
+}
+
+bool findNearbyFreePosition(const GenesisBspCollider &collider,
+                            const glm::vec3 &origin,
+                            float radius,
+                            const glm::vec3 &hintDir,
+                            glm::vec3 &outPos)
+{
+    if (!collider.hasTree())
+        return false;
+
+    const glm::vec3 mins(-radius, -radius, -radius);
+    const glm::vec3 maxs(radius, radius, radius);
+    GenesisTraceResult probe;
+
+    auto isFree = [&](const glm::vec3 &p) -> bool
+    {
+        collider.traceBoxDetailed(p, p, mins, maxs, probe);
+        return !probe.startSolid;
+    };
+
+    if (isFree(origin))
+    {
+        outPos = origin;
+        return true;
+    }
+
+    glm::vec3 h = hintDir;
+    if (glm::length2(h) > 1e-8f)
+        h = glm::normalize(h);
+    else
+        h = glm::vec3(0.0f, 0.0f, 1.0f);
+
+    const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), h));
+    const glm::vec3 fwd = glm::normalize(glm::cross(right, glm::vec3(0.0f, 1.0f, 0.0f)));
+    const std::array<glm::vec3, 10> dirs = {
+        glm::vec3(0.0f, 1.0f, 0.0f),
+        -glm::vec3(0.0f, 1.0f, 0.0f),
+        fwd, -fwd,
+        right, -right,
+        glm::normalize(fwd + right),
+        glm::normalize(fwd - right),
+        glm::normalize(-fwd + right),
+        glm::normalize(-fwd - right),
+    };
+
+    for (int step = 1; step <= 96; ++step)
+    {
+        const float d = step * 4.0f;
+        for (const glm::vec3 &dir : dirs)
+        {
+            const glm::vec3 candidate = origin + dir * d;
+            if (isFree(candidate))
+            {
+                outPos = candidate;
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 void teleportToPlayerStart(FpsSceneState &state,
@@ -712,6 +780,40 @@ int main(int argc, char **argv)
             controller.useGravity = false;
             controller.useJump = false;
             controller.verticalSpeed = 0.0f;
+        }
+
+        if (state.enableCollision && collider.hasTree())
+        {
+            const glm::vec3 mins(-controller.radius, -controller.radius, -controller.radius);
+            const glm::vec3 maxs(controller.radius, controller.radius, controller.radius);
+            GenesisTraceResult probe;
+            collider.traceBoxDetailed(controller.position, controller.position, mins, maxs, probe);
+            if (probe.startSolid)
+            {
+                glm::vec3 hint(0.0f, 0.0f, 1.0f);
+                if (state.bounds.is_valid())
+                    hint = state.bounds.center() - controller.position;
+
+                glm::vec3 freePos;
+                if (findNearbyFreePosition(collider, controller.position, controller.radius, hint, freePos))
+                {
+                    controller.setSpawn(camera, freePos, currentForwardFlat(controller));
+                }
+                else
+                {
+                    glm::vec3 spawn = fallbackSpawnFromBounds(state.bounds);
+                    glm::vec3 forward(0.0f, 0.0f, -1.0f);
+                    if (!state.playerStarts.empty())
+                    {
+                        spawn = state.playerStarts[0];
+                        if (!state.playerStartForwards.empty())
+                            forward = state.playerStartForwards[0];
+                    }
+                    controller.setSpawn(camera, spawn, forward);
+                }
+                state.teleportPos = {controller.position.x, controller.position.y, controller.position.z};
+                state.teleportPosInitialized = true;
+            }
         }
 
         static GenesisBspCollider noCollisionCollider;

@@ -273,10 +273,13 @@ struct Surface
     uint32_t index_start = 0;
     uint32_t index_count = 0;
     int material_index = 0; // index into MeshBase::materials[]
+    int lightmap_index = -1; // optional index into level lightmap pages
     BoundingBox aabb = {};
     Surface() = default;
     Surface(uint32_t start, uint32_t count, int mat)
         : index_start(start), index_count(count), material_index(mat) {}
+    Surface(uint32_t start, uint32_t count, int mat, int lm)
+        : index_start(start), index_count(count), material_index(mat), lightmap_index(lm) {}
 };
 
 // ============================================================

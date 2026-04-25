@@ -3,6 +3,7 @@
 #include "Manager.hpp"
 #include "Utils.hpp"
 #include <SDL2/SDL.h>
+#include <utility>
 
 namespace
 {
@@ -103,9 +104,9 @@ void LevelMesh::drawSurface(int surfaceIndex) const
     buffer.drawRange(s.index_start, s.index_count);
 }
 
-void LevelMesh::add_surface(uint32_t start, uint32_t count, int matIndex)
+void LevelMesh::add_surface(uint32_t start, uint32_t count, int matIndex, int lightmapIndex)
 {
-    surfaces.push_back({start, count, matIndex});
+    surfaces.push_back({start, count, matIndex, lightmapIndex});
 }
 
 LevelMesh::~LevelMesh()
@@ -201,6 +202,7 @@ bool LevelReader::load(const std::string& path, LevelData* out)
                 std::string key = name.empty() ? ("__mat_" + std::to_string(i)) : name;
                 Material* mat = new Material();
                 mat->name = key;
+                mat->setCullFace(false);
                 mat->setVec3("u_color", col);
 
                 if (!textureRef.empty())
@@ -262,12 +264,14 @@ bool LevelReader::load(const std::string& path, LevelData* out)
                 {
                     hasSurfaceChunk = true;
                     uint32_t count = stream.readU32();
+                    uint32_t surfaceBytes = count > 0 ? (subLen - 4u) / count : 12u;
                     for (uint32_t i = 0; i < count; i++)
                     {
                         Surface s;
                         s.index_start    = stream.readU32() + indexStart;
                         s.index_count    = stream.readU32();
                         s.material_index = stream.readI32();
+                        s.lightmap_index = surfaceBytes >= 16u ? stream.readI32() : -1;
                         mesh.surfaces.push_back(s);
                     }
                 }
@@ -284,12 +288,16 @@ bool LevelReader::load(const std::string& path, LevelData* out)
         }
         else if (chunkId == CHUNK_LMAP)
         {
-            mesh.lightmap.width    = stream.readI32();
-            mesh.lightmap.height   = stream.readI32();
-            mesh.lightmap.channels = stream.readI32();
-            uint32_t dataSize = mesh.lightmap.width * mesh.lightmap.height * mesh.lightmap.channels;
-            mesh.lightmap.pixels.resize(dataSize);
-            stream.readRaw(mesh.lightmap.pixels.data(), dataSize);
+            LevelMesh::EmbeddedLightmap lm;
+            lm.width    = stream.readI32();
+            lm.height   = stream.readI32();
+            lm.channels = stream.readI32();
+            uint32_t dataSize = lm.width * lm.height * lm.channels;
+            lm.pixels.resize(dataSize);
+            stream.readRaw(lm.pixels.data(), dataSize);
+            if (mesh.lightmap.empty())
+                mesh.lightmap = lm;
+            mesh.lightmaps.push_back(std::move(lm));
         }
         else if (chunkId == CHUNK_ENTS)
         {

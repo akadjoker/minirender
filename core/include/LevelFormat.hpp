@@ -183,13 +183,13 @@ public:
     std::vector<Surface>   surfaces;
     std::vector<Material*> materials;   // owned by LevelMesh
 
-    // Embedded lightmap
     struct EmbeddedLightmap {
         int width = 0, height = 0, channels = 3;
         std::vector<uint8_t> pixels;
         bool empty() const { return pixels.empty(); }
     };
-    EmbeddedLightmap lightmap;
+    std::vector<EmbeddedLightmap> lightmaps;
+    EmbeddedLightmap lightmap; // legacy single-page access
 
     void upload();          // upload buffer + compute aabb
     void computeAABB();
@@ -205,7 +205,7 @@ public:
     // Picking (same algorithm as Mesh)
     PickResult pick(const Ray& worldRay, const glm::mat4& model = glm::mat4(1.f)) const;
 
-    void add_surface(uint32_t start, uint32_t count, int matIndex);
+    void add_surface(uint32_t start, uint32_t count, int matIndex, int lightmapIndex = -1);
 };
 
 // ============================================================

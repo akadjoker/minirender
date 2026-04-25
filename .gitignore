@@ -5,3 +5,5 @@ bin/demores
 *.d
 .cache/
 tmpo/
+study/
+zips/

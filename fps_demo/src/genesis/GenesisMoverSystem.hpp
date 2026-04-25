@@ -25,9 +25,11 @@ struct GenesisMover
     float speed = 100.0f;
     float wait = 3.0f;
     float travel = 64.0f;
+    float autoTriggerRadius = 96.0f;
 
     bool moving = false;
     bool opening = false;
+    float prevAmount = 0.0f;
     float amount = 0.0f;
     float waitTimer = 0.0f;
 };
@@ -48,6 +50,7 @@ public:
 
     // Position must be in engine coordinates.
     void update(float dt, const glm::vec3 &playerPos);
+    void setForceAutoLoop(bool enabled) { forceAutoLoop_ = enabled; }
 
     const std::vector<GenesisMover> &movers() const { return movers_; }
     const std::vector<GenesisTrigger> &triggers() const { return triggers_; }
@@ -58,5 +61,6 @@ private:
 
     std::vector<GenesisMover> movers_;
     std::vector<GenesisTrigger> triggers_;
+    bool forceAutoLoop_ = false;
 };
 } // namespace mini_genesis

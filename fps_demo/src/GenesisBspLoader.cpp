@@ -44,6 +44,14 @@ struct GenesisTexture
     int32_t paletteIndex = 0;
 };
 
+struct GenesisBspModel
+{
+    int32_t rootNode = 0;
+    int32_t rootBNode = 0;
+    int32_t firstFace = 0;
+    int32_t numFaces = 0;
+};
+
 struct GenesisBspRuntime
 {
     std::vector<GenesisFace> faces;
@@ -55,6 +63,7 @@ struct GenesisBspRuntime
     std::vector<uint8_t> lightData;
     std::vector<uint8_t> palettes;
     std::vector<uint8_t> entData;
+    std::vector<GenesisBspModel> models;
     std::vector<GenesisBspBNode> bnodes;
     std::vector<GenesisBspBNode> nodes;
     std::vector<int32_t> leafContents;
@@ -187,10 +196,25 @@ bool parseGenesisBspRuntime(const std::string &path, GenesisBspRuntime &outBsp, 
                 sawHeader = true;
             break;
         case GBSP_CHUNK_MODELS:
+            outBsp.models.clear();
+            outBsp.models.reserve(static_cast<size_t>(count));
             if (elemSize >= 8 && count > 0)
             {
-                outBsp.rootNode = readI32Raw(bytes, cursor + 0);
-                outBsp.rootBNode = readI32Raw(bytes, cursor + 4);
+                for (int32_t i = 0; i < count; ++i)
+                {
+                    const size_t o = cursor + static_cast<size_t>(i) * static_cast<size_t>(elemSize);
+                    GenesisBspModel model;
+                    model.rootNode = readI32Raw(bytes, o + 0);
+                    model.rootBNode = readI32Raw(bytes, o + 4);
+                    if (elemSize >= 16)
+                    {
+                        model.firstFace = readI32Raw(bytes, o + 8);
+                        model.numFaces = readI32Raw(bytes, o + 12);
+                    }
+                    outBsp.models.push_back(model);
+                }
+                outBsp.rootNode = outBsp.models[0].rootNode;
+                outBsp.rootBNode = outBsp.models[0].rootBNode;
             }
             break;
         case GBSP_CHUNK_NODES:
@@ -506,6 +530,30 @@ glm::vec3 parseSpawnForwardEngine(const std::unordered_map<std::string, std::str
     return glm::vec3(0.0f, 0.0f, -1.0f);
 }
 
+bool isMoverClassname(const std::string &classname)
+{
+    if (classname == "func_door" || classname == "func_door_rotating" || classname == "func_plat")
+        return true;
+    return classname.find("door") != std::string::npos ||
+           classname.find("plat") != std::string::npos ||
+           classname.find("lift") != std::string::npos ||
+           classname.find("elevator") != std::string::npos;
+}
+
+int parseBrushModelIndex(const std::string &modelValue)
+{
+    if (modelValue.size() < 2 || modelValue[0] != '*')
+        return -1;
+    try
+    {
+        return std::stoi(modelValue.substr(1));
+    }
+    catch (...)
+    {
+        return -1;
+    }
+}
+
 struct FaceTexAdjust
 {
     float shiftU = 0.0f;
@@ -707,9 +755,40 @@ bool GenesisBspLoader::load(const std::string &path,
             rgba.size());
     }
 
+    std::string entityError;
+    const std::vector<GenesisEntityRuntime> entities = parseGenesisEntitiesRuntime(gbsp.entData, entityError);
+    std::vector<uint8_t> excludeFace(gbsp.faces.size(), 0u);
+    if (!gbsp.models.empty() && !entities.empty())
+    {
+        for (const GenesisEntityRuntime &entity : entities)
+        {
+            const auto clsIt = entity.kv.find("classname");
+            const std::string classname = (clsIt != entity.kv.end()) ? toLower(clsIt->second) : std::string();
+            if (!isMoverClassname(classname))
+                continue;
+
+            const auto modelIt = entity.kv.find("model");
+            if (modelIt == entity.kv.end())
+                continue;
+            const int modelIndex = parseBrushModelIndex(modelIt->second);
+            if (modelIndex < 0 || modelIndex >= static_cast<int>(gbsp.models.size()))
+                continue;
+
+            const GenesisBspModel &model = gbsp.models[static_cast<size_t>(modelIndex)];
+            if (model.numFaces <= 0 || model.firstFace < 0)
+                continue;
+            const int start = model.firstFace;
+            const int end = std::min<int>(start + model.numFaces, static_cast<int>(excludeFace.size()));
+            for (int f = start; f < end; ++f)
+                excludeFace[static_cast<size_t>(f)] = 1u;
+        }
+    }
+
     std::vector<FaceTexAdjust> faceTexAdjusts(gbsp.faces.size());
     for (size_t faceIndex = 0; faceIndex < gbsp.faces.size(); ++faceIndex)
     {
+        if (excludeFace[faceIndex])
+            continue;
         const GenesisFace &face = gbsp.faces[faceIndex];
         if (face.texInfo < 0 || face.texInfo >= static_cast<int32_t>(gbsp.texInfos.size()))
             continue;
@@ -746,6 +825,8 @@ bool GenesisBspLoader::load(const std::string &path,
     std::map<std::tuple<int, int>, std::vector<size_t>> facesByGroup;
     for (size_t faceIndex = 0; faceIndex < gbsp.faces.size(); ++faceIndex)
     {
+        if (excludeFace[faceIndex])
+            continue;
         const GenesisFace &face = gbsp.faces[faceIndex];
         int texIndex = -1;
         if (face.texInfo >= 0 && face.texInfo < static_cast<int>(gbsp.texInfos.size()))
@@ -894,8 +975,6 @@ bool GenesisBspLoader::load(const std::string &path,
     else
         collider.setTree(gbsp.bnodes, enginePlanes, gbsp.rootBNode);
 
-    std::string entityError;
-    const std::vector<GenesisEntityRuntime> entities = parseGenesisEntitiesRuntime(gbsp.entData, entityError);
     out.playerStarts.clear();
     out.playerStartForwards.clear();
     for (const GenesisEntityRuntime &entity : entities)

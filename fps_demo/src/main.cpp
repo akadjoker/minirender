@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <SDL2/SDL.h>
+#include "glad/glad.h"
 
 #include "Camera.hpp"
 #include "Core.hpp"
@@ -36,10 +37,18 @@ struct FpsSceneState
 
     Mesh *mapMesh = nullptr;
     MeshNode *mapNode = nullptr;
+    struct MoverVisual
+    {
+        int moverIndex = -1;
+        Mesh *mesh = nullptr;
+        MeshNode *node = nullptr;
+    };
+    std::vector<MoverVisual> moverVisuals;
     std::vector<glm::vec3> playerStartsBase;
     std::vector<glm::vec3> playerStartForwardsBase;
     std::vector<glm::vec3> playerStarts;
     std::vector<glm::vec3> playerStartForwards;
+    std::vector<glm::vec3> debugEntityOrigins;
     BoundingBox bounds = {};
     mini_genesis::GenesisPortalSystem portalSystem;
     mini_genesis::GenesisMoverSystem moverSystem;
@@ -47,12 +56,46 @@ struct FpsSceneState
     bool collisionTestMode = false;
     bool drawCollisionDebug = true;
     bool drawEntityDebug = true;
+    bool drawWireframe = false;
+    bool autoMoveDoorsElevators = true;
     bool swapEntityYZ = false;
     int selectedPlayerStart = 0;
     std::array<float, 3> teleportPos = {0.0f, 0.0f, 0.0f};
     bool teleportPosInitialized = false;
     float collisionPlaneDrawSize = 34.0f;
 };
+
+void collectDebugEntityOrigins(const std::vector<mini_genesis::BspEntity> &entities,
+                               std::vector<glm::vec3> &out)
+{
+    out.clear();
+    out.reserve(entities.size());
+    for (const mini_genesis::BspEntity &e : entities)
+    {
+        auto it = e.kv.find("origin");
+        if (it == e.kv.end() || it->second.empty())
+            continue;
+        out.push_back(mini_genesis::genesisPointToEngine(
+            mini_genesis::GenesisEntities::parseVec3(it->second, glm::vec3(0.0f))));
+    }
+}
+
+void collectDebugEntityOrigins(const std::vector<mini_genesis::Entity> &entities,
+                               std::vector<glm::vec3> &out)
+{
+    out.clear();
+    out.reserve(entities.size());
+    for (const mini_genesis::Entity &e : entities)
+    {
+        auto it = e.kv.find("origin");
+        if (it == e.kv.end() || it->second.empty())
+            it = e.kv.find("Origin");
+        if (it == e.kv.end() || it->second.empty())
+            continue;
+        out.push_back(mini_genesis::genesisPointToEngine(
+            mini_genesis::GenesisEntities::parseVec3(it->second, glm::vec3(0.0f))));
+    }
+}
 
 void drawMarker(RenderBatch &batch, const glm::vec3 &p, float s)
 {
@@ -140,41 +183,151 @@ void drawCollisionDebug(RenderBatch &batch,
     batch.Box(playerBox);
 }
 
+void drawMeshWireframe(RenderBatch &batch, const Mesh *mesh, size_t maxTriangles = 0)
+{
+    if (!mesh)
+        return;
+
+    const std::vector<uint32_t> &indices = mesh->buffer.indices;
+    const std::vector<Vertex> &vertices = mesh->buffer.vertices;
+    if (indices.size() < 3 || vertices.empty())
+        return;
+
+    size_t triCount = indices.size() / 3;
+    if (maxTriangles > 0)
+        triCount = std::min(triCount, maxTriangles);
+
+    for (size_t t = 0; t < triCount; ++t)
+    {
+        const uint32_t i0 = indices[t * 3 + 0];
+        const uint32_t i1 = indices[t * 3 + 1];
+        const uint32_t i2 = indices[t * 3 + 2];
+        if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size())
+            continue;
+        batch.TriangleLines(vertices[i0].position, vertices[i1].position, vertices[i2].position);
+    }
+}
+
 void drawEntityDebug(RenderBatch &batch, const FpsSceneState &state)
 {
-    for (size_t i = 0; i < state.playerStarts.size(); ++i)
+    auto moverCurrentPos = [](const mini_genesis::GenesisMover &m) -> glm::vec3
     {
-        const glm::vec3 p = state.playerStarts[i];
-        const bool selected = (static_cast<int>(i) == state.selectedPlayerStart);
-        batch.SetColor(selected ? 40 : 0, selected ? 255 : 190, 255, 255);
-        drawMarker(batch, p, selected ? 12.0f : 9.0f);
-
-        if (i < state.playerStartForwards.size() && glm::length2(state.playerStartForwards[i]) > 1e-8f)
-        {
-            const glm::vec3 f = glm::normalize(state.playerStartForwards[i]);
-            batch.Line3D(p, p + f * 28.0f);
-        }
-    }
+        const glm::vec3 dir = glm::length2(m.moveDir) > 1e-8f ? glm::normalize(m.moveDir) : glm::vec3(0.0f, 1.0f, 0.0f);
+        return m.origin + dir * m.travel * m.amount;
+    };
+    auto moverHalfExtents = [](const mini_genesis::GenesisMover &m) -> glm::vec3
+    {
+        if (m.type == mini_genesis::MoverType::Elevator)
+            return glm::vec3(48.0f, 12.0f, 48.0f);
+        return glm::vec3(24.0f, 56.0f, 24.0f);
+    };
 
     for (const mini_genesis::GenesisMover &m : state.moverSystem.movers())
     {
         const glm::vec3 p0 = m.origin;
+        const glm::vec3 cur = moverCurrentPos(m);
         const glm::vec3 dir = glm::length2(m.moveDir) > 1e-8f ? glm::normalize(m.moveDir) : glm::vec3(0.0f, 1.0f, 0.0f);
         const glm::vec3 p1 = p0 + dir * m.travel;
+        const glm::vec3 he = moverHalfExtents(m);
 
-        batch.SetColor(255, 150, 30, 255);
+        // Door/elevator-only debug colors.
+        if (m.type == mini_genesis::MoverType::Elevator)
+            batch.SetColor(60, 200, 255, 255);
+        else
+            batch.SetColor(255, 150, 30, 255);
         drawMarker(batch, p0, 10.0f);
         batch.Line3D(p0, p1);
-        batch.SetColor(255, 220, 60, 220);
+        if (m.type == mini_genesis::MoverType::Elevator)
+            batch.SetColor(120, 240, 255, 220);
+        else
+            batch.SetColor(255, 220, 60, 220);
         drawMarker(batch, p1, 6.0f);
+        if (m.type == mini_genesis::MoverType::Elevator)
+            batch.SetColor(40, 170, 255, 220);
+        else
+            batch.SetColor(255, 120, 20, 220);
+        drawMarker(batch, cur, 8.0f);
+
+        BoundingBox mb;
+        mb.expand(cur - he);
+        mb.expand(cur + he);
+        if (m.type == mini_genesis::MoverType::Elevator)
+            batch.SetColor(120, 220, 255, 220);
+        else
+            batch.SetColor(255, 170, 80, 220);
+        batch.Box(mb);
+    }
+}
+
+void applyMoverCollision(FpsSceneState &state, FpsPlayerController &controller, Camera *camera)
+{
+    auto moverCurrentPos = [](const mini_genesis::GenesisMover &m) -> glm::vec3
+    {
+        const glm::vec3 dir = glm::length2(m.moveDir) > 1e-8f ? glm::normalize(m.moveDir) : glm::vec3(0.0f, 1.0f, 0.0f);
+        return m.origin + dir * m.travel * m.amount;
+    };
+    auto moverDelta = [](const mini_genesis::GenesisMover &m) -> glm::vec3
+    {
+        const glm::vec3 dir = glm::length2(m.moveDir) > 1e-8f ? glm::normalize(m.moveDir) : glm::vec3(0.0f, 1.0f, 0.0f);
+        return dir * m.travel * (m.amount - m.prevAmount);
+    };
+    auto moverHalfExtents = [](const mini_genesis::GenesisMover &m) -> glm::vec3
+    {
+        if (m.type == mini_genesis::MoverType::Elevator)
+            return glm::vec3(48.0f, 12.0f, 48.0f);
+        return glm::vec3(24.0f, 56.0f, 24.0f);
+    };
+
+    BoundingBox playerBox;
+    playerBox.expand(controller.position - glm::vec3(controller.radius));
+    playerBox.expand(controller.position + glm::vec3(controller.radius));
+
+    for (const mini_genesis::GenesisMover &m : state.moverSystem.movers())
+    {
+        const glm::vec3 cur = moverCurrentPos(m);
+        const glm::vec3 he = moverHalfExtents(m);
+        BoundingBox mb;
+        mb.expand(cur - he);
+        mb.expand(cur + he);
+
+        if (!playerBox.intersects(mb))
+            continue;
+
+        const glm::vec3 pMin = playerBox.min;
+        const glm::vec3 pMax = playerBox.max;
+        const glm::vec3 mMin = mb.min;
+        const glm::vec3 mMax = mb.max;
+        const float ox = std::min(pMax.x, mMax.x) - std::max(pMin.x, mMin.x);
+        const float oy = std::min(pMax.y, mMax.y) - std::max(pMin.y, mMin.y);
+        const float oz = std::min(pMax.z, mMax.z) - std::max(pMin.z, mMin.z);
+        if (ox <= 0.0f || oy <= 0.0f || oz <= 0.0f)
+            continue;
+
+        // If standing on top of a platform, carry vertically.
+        const glm::vec3 dMove = moverDelta(m);
+        const bool onTop = std::abs(pMin.y - mMax.y) < 6.0f &&
+                           pMax.x > mMin.x && pMin.x < mMax.x &&
+                           pMax.z > mMin.z && pMin.z < mMax.z;
+        if (onTop && std::abs(dMove.y) > 1e-4f)
+        {
+            controller.position += glm::vec3(0.0f, dMove.y, 0.0f);
+            playerBox.min.y += dMove.y;
+            playerBox.max.y += dMove.y;
+        }
+
+        // Resolve overlap by minimum translation axis.
+        if (ox <= oy && ox <= oz)
+            controller.position.x += (controller.position.x < cur.x) ? -ox : ox;
+        else if (oy <= ox && oy <= oz)
+            controller.position.y += (controller.position.y < cur.y) ? -oy : oy;
+        else
+            controller.position.z += (controller.position.z < cur.z) ? -oz : oz;
+
+        playerBox.min = controller.position - glm::vec3(controller.radius);
+        playerBox.max = controller.position + glm::vec3(controller.radius);
     }
 
-    for (const mini_genesis::GenesisTrigger &t : state.moverSystem.triggers())
-    {
-        batch.SetColor(180, 80, 255, 220);
-        drawMarker(batch, t.origin, 7.0f);
-        batch.CircleXZ(t.origin, t.radius, 28);
-    }
+    camera->setPosition(controller.eyePosition());
 }
 
 std::string toLower(std::string value)
@@ -192,6 +345,161 @@ bool hasExtension(const std::string &path, const std::string &ext)
     const std::string lowerExt = toLower(ext);
     return lower.size() >= lowerExt.size() &&
            lower.compare(lower.size() - lowerExt.size(), lowerExt.size(), lowerExt) == 0;
+}
+
+int parseBrushModelIndex(const std::string &modelValue)
+{
+    if (modelValue.size() < 2 || modelValue[0] != '*')
+        return -1;
+    try
+    {
+        return std::stoi(modelValue.substr(1));
+    }
+    catch (...)
+    {
+        return -1;
+    }
+}
+
+void clearMoverVisuals(FpsSceneState &state)
+{
+    for (FpsSceneState::MoverVisual &mv : state.moverVisuals)
+    {
+        if (mv.node)
+            mv.node->visible = false;
+    }
+    state.moverVisuals.clear();
+}
+
+bool buildMoverMeshFromModel(const mini_genesis::GbspData &gbsp,
+                             int modelIndex,
+                             Mesh &mesh)
+{
+    mesh.release_materials();
+    mesh.materials.clear();
+    mesh.surfaces.clear();
+    mesh.buffer.vertices.clear();
+    mesh.buffer.indices.clear();
+
+    if (modelIndex < 0 || modelIndex >= static_cast<int>(gbsp.models.size()))
+        return false;
+
+    const mini_genesis::BspModel &model = gbsp.models[static_cast<size_t>(modelIndex)];
+    if (model.numFaces <= 0 || model.firstFace < 0)
+        return false;
+
+    const int firstFace = model.firstFace;
+    const int endFace = std::min<int>(firstFace + model.numFaces, static_cast<int>(gbsp.faces.size()));
+    for (int f = firstFace; f < endFace; ++f)
+    {
+        const mini_genesis::BspFace &face = gbsp.faces[static_cast<size_t>(f)];
+        if (face.numVerts < 3 || face.firstVert < 0)
+            continue;
+        if (static_cast<size_t>(face.firstVert + face.numVerts) > gbsp.vertIndices.size())
+            continue;
+
+        const uint32_t baseVertex = static_cast<uint32_t>(mesh.buffer.vertices.size());
+        std::vector<glm::vec3> positions;
+        positions.reserve(static_cast<size_t>(face.numVerts));
+
+        for (int32_t i = 0; i < face.numVerts; ++i)
+        {
+            const int32_t srcIndex = gbsp.vertIndices[static_cast<size_t>(face.firstVert + i)];
+            if (srcIndex < 0 || srcIndex >= static_cast<int32_t>(gbsp.verts.size()))
+                continue;
+
+            Vertex v{};
+            v.position = gbsp.verts[static_cast<size_t>(srcIndex)];
+            v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            v.tangent = glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            v.uv = glm::vec2(0.0f);
+            mesh.buffer.vertices.push_back(v);
+            positions.push_back(v.position);
+        }
+
+        if (positions.size() < 3)
+            continue;
+
+        glm::vec3 normal = glm::normalize(glm::cross(positions[1] - positions[0], positions[2] - positions[0]));
+        if (face.planeSide)
+            normal = -normal;
+        if (glm::length2(normal) <= 1e-8f)
+            normal = glm::vec3(0.0f, 1.0f, 0.0f);
+
+        const uint32_t faceVertCount = static_cast<uint32_t>(positions.size());
+        for (uint32_t i = 0; i < faceVertCount; ++i)
+            mesh.buffer.vertices[baseVertex + i].normal = normal;
+
+        for (uint32_t i = 1; i + 1 < faceVertCount; ++i)
+        {
+            mesh.buffer.indices.push_back(baseVertex);
+            mesh.buffer.indices.push_back(baseVertex + i);
+            mesh.buffer.indices.push_back(baseVertex + i + 1);
+        }
+    }
+
+    if (mesh.buffer.indices.empty())
+        return false;
+
+    Material *mat = new Material();
+    mat->name = "fps_mover_mat_" + std::to_string(modelIndex);
+    mat->setCullFace(false);
+    mat->setVec4("u_color", glm::vec4(0.95f, 0.95f, 0.95f, 1.0f));
+    mat->setTexture("u_albedo", TextureManager::instance().getWhite());
+    mat->setTexture("u_lightmap", TextureManager::instance().getWhite());
+    mat->setInt("u_hasAlbedo", 0);
+    mat->setInt("u_hasLightmap", 0);
+    const int matIndex = mesh.add_material(mat);
+    mesh.add_surface(0, static_cast<uint32_t>(mesh.buffer.indices.size()), matIndex);
+    mesh.upload();
+    return true;
+}
+
+void rebuildMoverVisuals(FpsSceneState &state,
+                         Scene &scene,
+                         const mini_genesis::GbspData &gbsp)
+{
+    clearMoverVisuals(state);
+    const std::vector<mini_genesis::GenesisMover> &movers = state.moverSystem.movers();
+    state.moverVisuals.reserve(movers.size());
+
+    for (size_t i = 0; i < movers.size(); ++i)
+    {
+        const int modelIndex = parseBrushModelIndex(movers[i].model);
+        if (modelIndex < 0)
+            continue;
+
+        Mesh *mesh = MeshManager::instance().create("fps_mover_model_mesh_" + std::to_string(i));
+        if (!mesh)
+            continue;
+        if (!buildMoverMeshFromModel(gbsp, modelIndex, *mesh))
+            continue;
+
+        MeshNode *node = scene.createMeshNode("fps_mover_model_node_" + std::to_string(i), mesh);
+        node->renderType = RenderType::Solid;
+        node->setPosition(glm::vec3(0.0f));
+        node->visible = true;
+
+        FpsSceneState::MoverVisual mv;
+        mv.moverIndex = static_cast<int>(i);
+        mv.mesh = mesh;
+        mv.node = node;
+        state.moverVisuals.push_back(mv);
+    }
+}
+
+void updateMoverVisuals(FpsSceneState &state)
+{
+    const std::vector<mini_genesis::GenesisMover> &movers = state.moverSystem.movers();
+    for (FpsSceneState::MoverVisual &mv : state.moverVisuals)
+    {
+        if (!mv.node || mv.moverIndex < 0 || mv.moverIndex >= static_cast<int>(movers.size()))
+            continue;
+        const mini_genesis::GenesisMover &m = movers[static_cast<size_t>(mv.moverIndex)];
+        const glm::vec3 dir = glm::length2(m.moveDir) > 1e-8f ? glm::normalize(m.moveDir) : glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 delta = dir * m.travel * m.amount;
+        mv.node->setPosition(delta);
+    }
 }
 
 Shader *createFpsShader()
@@ -401,6 +709,7 @@ bool loadGenesisBspLevel(FpsSceneState &state,
         state.playerStartForwards.clear();
         state.playerStartsBase.clear();
         state.playerStartForwardsBase.clear();
+        clearMoverVisuals(state);
         state.mapNode->visible = false;
         return false;
     }
@@ -425,11 +734,15 @@ bool loadGenesisBspLevel(FpsSceneState &state,
     {
         state.portalSystem.buildFromGbsp(gbspData);
         state.moverSystem.buildFromBspEntities(gbspData.entities);
+        collectDebugEntityOrigins(gbspData.entities, state.debugEntityOrigins);
+        rebuildMoverVisuals(state, scene, gbspData);
     }
     else
     {
         state.portalSystem.clear();
         state.moverSystem.clear();
+        state.debugEntityOrigins.clear();
+        clearMoverVisuals(state);
     }
 
     glm::vec3 spawn = fallbackSpawnFromBounds(state.bounds);
@@ -569,6 +882,7 @@ bool loadCodeTestLevel(FpsSceneState &state,
     state.selectedPlayerStart = 0;
     state.portalSystem.clear();
     state.moverSystem.clear();
+    clearMoverVisuals(state);
 
     controller.radius = 18.0f;
     controller.eyeOffset = 34.0f;
@@ -640,6 +954,7 @@ bool loadAnyLevel(FpsSceneState &state,
             state.playerStartForwards.clear();
             state.playerStartsBase.clear();
             state.playerStartForwardsBase.clear();
+            clearMoverVisuals(state);
             state.mapNode->visible = false;
             collider.clear();
             return false;
@@ -653,6 +968,7 @@ bool loadAnyLevel(FpsSceneState &state,
             state.playerStartForwards.clear();
             state.playerStartsBase.clear();
             state.playerStartForwardsBase.clear();
+            clearMoverVisuals(state);
             state.mapNode->visible = false;
             collider.clear();
             return false;
@@ -681,6 +997,8 @@ bool loadAnyLevel(FpsSceneState &state,
         collider.clear();
         state.portalSystem.clear();
         state.moverSystem.buildFrom3dtEntities(map.entities);
+        collectDebugEntityOrigins(map.entities, state.debugEntityOrigins);
+        clearMoverVisuals(state);
 
         glm::vec3 spawn = fallbackSpawnFromBounds(state.bounds);
         glm::vec3 forward(0.0f, 0.0f, -1.0f);
@@ -820,7 +1138,11 @@ int main(int argc, char **argv)
         const GenesisBspCollider &activeCollider = state.enableCollision ? collider : noCollisionCollider;
         controller.update(camera, activeCollider, dt, allowMouseLook);
         state.portalSystem.update(controller.position);
+        state.moverSystem.setForceAutoLoop(state.autoMoveDoorsElevators);
         state.moverSystem.update(dt, controller.position);
+        updateMoverVisuals(state);
+        if (state.enableCollision)
+            applyMoverCollision(state, controller, camera);
         scene.update(dt);
 
         device.ImGuiBegin();
@@ -953,7 +1275,9 @@ int main(int argc, char **argv)
             }
             ImGui::Checkbox("Collision Test Mode (No Gravity/Jump)", &state.collisionTestMode);
             ImGui::Checkbox("Draw Collision Debug", &state.drawCollisionDebug);
-            ImGui::Checkbox("Draw Entity Debug", &state.drawEntityDebug);
+            ImGui::Checkbox("Draw Doors/Elevators Debug", &state.drawEntityDebug);
+            ImGui::Checkbox("Auto Move Doors/Elevators", &state.autoMoveDoorsElevators);
+            ImGui::Checkbox("Draw Wireframe", &state.drawWireframe);
             ImGui::SliderFloat("Debug Plane Size", &state.collisionPlaneDrawSize, 8.0f, 128.0f, "%.1f");
             ImGui::Checkbox("Use Gravity", &controller.useGravity);
             ImGui::Checkbox("Use Jump", &controller.useJump);
@@ -1016,15 +1340,39 @@ int main(int argc, char **argv)
         shader->setInt("u_hasLightmap", 0);
         shader->setInt("u_hasAlbedo", 0);
         shader->setVec4("u_color", glm::vec4(1.0f));
+#if defined(GL_LINE) && defined(GL_FILL)
+        if (state.drawWireframe)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+#endif
         scene.render(RenderType::Solid);
+#if defined(GL_LINE) && defined(GL_FILL)
+        if (state.drawWireframe)
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
 
-        if (state.drawCollisionDebug)
+        if (state.drawCollisionDebug || state.drawEntityDebug || state.drawWireframe)
         {
             debugBatch.SetMatrix(camera->viewProjection);
-            drawCollisionDebug(debugBatch, controller, state.collisionPlaneDrawSize);
+            if (state.drawWireframe)
+            {
+                debugBatch.SetColor(60, 200, 255, 210);
+                drawMeshWireframe(debugBatch, state.mapMesh, 120000);
+            }
+            if (state.drawCollisionDebug)
+                drawCollisionDebug(debugBatch, controller, state.collisionPlaneDrawSize);
             if (state.drawEntityDebug)
                 drawEntityDebug(debugBatch, state);
+
+            const bool overlayWire = state.drawWireframe;
+            GLboolean depthWasEnabled = GL_FALSE;
+            if (overlayWire)
+            {
+                depthWasEnabled = glIsEnabled(GL_DEPTH_TEST);
+                glDisable(GL_DEPTH_TEST);
+            }
             debugBatch.Render();
+            if (overlayWire && depthWasEnabled == GL_TRUE)
+                glEnable(GL_DEPTH_TEST);
         }
         scene.endPass();
 

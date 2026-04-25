@@ -123,6 +123,14 @@ struct BspEntity
     std::unordered_map<std::string, std::string> kv;
 };
 
+struct BspModel
+{
+    int32_t rootNode = 0;
+    int32_t rootBNode = 0;
+    int32_t firstFace = 0;
+    int32_t numFaces = 0;
+};
+
 struct GbspData
 {
     std::vector<BspFace> faces;
@@ -136,6 +144,7 @@ struct GbspData
     std::vector<uint8_t> palettes;
     std::vector<uint8_t> entData;
     std::vector<BspEntity> entities;
+    std::vector<BspModel> models;
     std::vector<BspPlane> planes;
     std::vector<BspBNode> bnodes;
     std::vector<BspNode> nodes;

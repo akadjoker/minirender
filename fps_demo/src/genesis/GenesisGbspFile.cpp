@@ -143,10 +143,26 @@ bool GenesisGbspFile::load(const std::string &path, GbspData &out, std::string &
                 sawHeader = true;
             break;
         case CHUNK_MODELS:
+            out.models.clear();
+            out.models.reserve(static_cast<size_t>(count));
             if (elemSize >= 8 && count > 0)
             {
-                out.rootNode = readI32Raw(bytes, cursor + 0);
-                out.rootBNode = readI32Raw(bytes, cursor + 4);
+                for (int32_t i = 0; i < count; ++i)
+                {
+                    const size_t o = cursor + static_cast<size_t>(i) * static_cast<size_t>(elemSize);
+                    BspModel model;
+                    model.rootNode = readI32Raw(bytes, o + 0);
+                    model.rootBNode = readI32Raw(bytes, o + 4);
+                    if (elemSize >= 16)
+                    {
+                        model.firstFace = readI32Raw(bytes, o + 8);
+                        model.numFaces = readI32Raw(bytes, o + 12);
+                    }
+                    out.models.push_back(model);
+                }
+
+                out.rootNode = out.models[0].rootNode;
+                out.rootBNode = out.models[0].rootBNode;
             }
             break;
         case CHUNK_NODES:

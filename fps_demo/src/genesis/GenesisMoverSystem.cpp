@@ -35,10 +35,45 @@ std::string getOr(const std::unordered_map<std::string, std::string> &kv, const 
     return {};
 }
 
+std::string getOrAny(const std::unordered_map<std::string, std::string> &kv,
+                     const char *k0,
+                     const char *k1 = nullptr,
+                     const char *k2 = nullptr)
+{
+    if (const auto it = kv.find(k0); it != kv.end() && !it->second.empty())
+        return it->second;
+    if (k1)
+    {
+        if (const auto it = kv.find(k1); it != kv.end() && !it->second.empty())
+            return it->second;
+    }
+    if (k2)
+    {
+        if (const auto it = kv.find(k2); it != kv.end() && !it->second.empty())
+            return it->second;
+    }
+    return {};
+}
+
 glm::vec3 parseAnglesToDir(const std::string &angles)
 {
     const glm::vec3 gdir = genesisAnglesToDir(GenesisEntities::parseVec3(angles, glm::vec3(0.0f)));
     return genesisDirToEngine(gdir);
+}
+
+bool isDoorLike(const std::string &classname)
+{
+    return classname == "func_door" ||
+           classname == "func_door_rotating" ||
+           classname.find("door") != std::string::npos;
+}
+
+bool isElevatorLike(const std::string &classname)
+{
+    return classname == "func_plat" ||
+           classname.find("plat") != std::string::npos ||
+           classname.find("lift") != std::string::npos ||
+           classname.find("elevator") != std::string::npos;
 }
 } // namespace
 
@@ -54,22 +89,32 @@ void GenesisMoverSystem::ingestKV(const std::unordered_map<std::string, std::str
     if (classname.empty())
         return;
 
-    if (classname == "func_door" || classname == "func_door_rotating" || classname == "func_plat")
+    if (isDoorLike(classname) || isElevatorLike(classname))
     {
         GenesisMover m;
-        m.type = (classname == "func_plat") ? MoverType::Elevator : MoverType::Door;
+        m.type = isElevatorLike(classname) ? MoverType::Elevator : MoverType::Door;
         m.name = getOr(kv, "%name%");
         m.model = getOr(kv, "model");
-        m.targetName = getOr(kv, "targetname");
-        m.origin = genesisPointToEngine(GenesisEntities::parseVec3(getOr(kv, "origin"), glm::vec3(0.0f)));
-        m.speed = parseFloatOr(kv, "speed", classname == "func_plat" ? 80.0f : 100.0f);
+        m.targetName = getOrAny(kv, "targetname", "target");
+        m.origin = genesisPointToEngine(GenesisEntities::parseVec3(getOrAny(kv, "origin", "Origin"), glm::vec3(0.0f)));
+        m.speed = parseFloatOr(kv, "speed", m.type == MoverType::Elevator ? 80.0f : 100.0f);
         m.wait = parseFloatOr(kv, "wait", 3.0f);
         m.travel = parseFloatOr(kv, "lip", 64.0f);
+        if (m.travel <= 0.0f)
+            m.travel = parseFloatOr(kv, "height", 64.0f);
+        if (m.travel <= 0.0f)
+            m.travel = parseFloatOr(kv, "distance", 64.0f);
+        m.autoTriggerRadius = parseFloatOr(kv, "radius", m.type == MoverType::Elevator ? 120.0f : 96.0f);
+        if (m.autoTriggerRadius <= 0.0f)
+            m.autoTriggerRadius = (m.type == MoverType::Elevator ? 120.0f : 96.0f);
 
-        if (classname == "func_plat")
+        const glm::vec3 movedir = GenesisEntities::parseVec3(getOrAny(kv, "movedir", "move_dir"), glm::vec3(0.0f));
+        if (glm::length2(movedir) > 1e-8f)
+            m.moveDir = genesisDirToEngine(glm::normalize(movedir));
+        else if (m.type == MoverType::Elevator)
             m.moveDir = genesisDirToEngine(glm::vec3(0.0f, 1.0f, 0.0f));
         else
-            m.moveDir = parseAnglesToDir(getOr(kv, "angles"));
+            m.moveDir = parseAnglesToDir(getOrAny(kv, "angles", "angle"));
 
         movers_.push_back(std::move(m));
         return;
@@ -125,6 +170,29 @@ void GenesisMoverSystem::update(float dt, const glm::vec3 &playerPos)
 
     for (GenesisMover &m : movers_)
     {
+        m.prevAmount = m.amount;
+
+        if (forceAutoLoop_ && !m.moving)
+        {
+            m.moving = true;
+            m.opening = true;
+            m.waitTimer = 0.0f;
+        }
+
+        // Fallback behavior for maps without trigger entities wired to targets:
+        // start mover when player approaches its origin.
+        if (!forceAutoLoop_ && !m.moving)
+        {
+            const float r = std::max(1.0f, m.autoTriggerRadius);
+            const float d2 = glm::length2(playerPos - m.origin);
+            if (d2 <= r * r)
+            {
+                m.moving = true;
+                m.opening = true;
+                m.waitTimer = 0.0f;
+            }
+        }
+
         if (!m.moving)
             continue;
 

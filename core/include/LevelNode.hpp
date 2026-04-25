@@ -1,6 +1,7 @@
 #pragma once
 #include "Node.hpp"
 #include "LevelFormat.hpp"
+#include <vector>
 
 // ============================================================
 //  LevelNode — renders a LevelMesh in the scene graph
@@ -12,7 +13,7 @@ class LevelNode : public RenderableNode
 {
 public:
     LevelMesh* levelMesh = nullptr;
-    GLuint     lightmapTexture = 0;     // uploaded lightmap GL texture
+    std::vector<GLuint> lightmapTextures;
 
     LevelNode();
 
@@ -22,6 +23,5 @@ public:
     // Call once after loading.
     void uploadLightmap();
 
-    // Bind lightmap to a texture unit (default: unit 2)
-    void bindLightmap(Shader* shader, int unit = 2) const;
+    void bindLightmap(Shader* shader, int lightmapIndex, int unit = 2) const;
 };

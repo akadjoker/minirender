@@ -1617,6 +1617,8 @@ void LevelEditorApp::FinishBakeAsync()
     if (!lightmapResult_.pixels.empty())
     {
         // Save PNG
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(lightmapResult_.savedPath).parent_path(), ec);
         stbi_write_png(lightmapResult_.savedPath.c_str(),
                        lightmapResult_.width, lightmapResult_.height,
                        3, lightmapResult_.pixels.data(), lightmapResult_.width * 3);
@@ -1794,6 +1796,8 @@ void LevelEditorApp::BakeAndUploadLightmap()
     // Save to PNG
     if (!lightmapResult_.pixels.empty())
     {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(lightmapResult_.savedPath).parent_path(), ec);
         stbi_write_png(lightmapResult_.savedPath.c_str(),
                        lightmapResult_.width, lightmapResult_.height,
                        3, lightmapResult_.pixels.data(), lightmapResult_.width * 3);
@@ -3113,7 +3117,9 @@ bool LevelEditorApp::SaveSceneToPath(const std::string& path, bool setAsCurrentP
 std::filesystem::path LevelEditorApp::SceneLightmapPathForSceneFile(const std::filesystem::path& scenePath) const
 {
     const std::filesystem::path parent = scenePath.has_parent_path() ? scenePath.parent_path() : std::filesystem::current_path();
-    return parent / (scenePath.stem().generic_string() + "_lightmap.png");
+    const std::string stem = scenePath.stem().generic_string();
+    const std::filesystem::path lightmapDir = parent / (stem + "_lightmap");
+    return lightmapDir / (stem + "_lightmap.png");
 }
 
 namespace
@@ -8180,6 +8186,42 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
             const bool selected = (ei == selectedEntityIndex_);
             const glm::vec3& p = ent.position;
 
+            const bool hasLinkedMesh = ent.linkedMeshIndex >= 0 &&
+                ent.linkedMeshIndex < static_cast<int>(scene_.meshObjects().size());
+            BoundingBox linkedLocalBounds;
+            glm::mat4 linkedModelMatrix(1.0f);
+            BoundingBox linkedWorldBounds;
+            glm::vec3 linkedCenter = p;
+            if (hasLinkedMesh)
+            {
+                const LevelMeshObject& linkedObject = scene_.meshObjects()[static_cast<std::size_t>(ent.linkedMeshIndex)];
+                linkedLocalBounds = editableMeshLocalBounds(linkedObject.mesh);
+                linkedModelMatrix = meshObjectModelMatrix(linkedObject);
+                linkedWorldBounds = linkedLocalBounds.transformed(linkedModelMatrix);
+                linkedCenter = linkedWorldBounds.is_valid() ? linkedWorldBounds.center() : linkedObject.position;
+
+                const uint8_t linkAlpha = selected ? 220 : 95;
+                if (ent.type == LevelEntityType::Door)
+                    viewBatch_->SetColor(255, 180, 70, linkAlpha);
+                else if (ent.type == LevelEntityType::Elevator || ent.type == LevelEntityType::Platform)
+                    viewBatch_->SetColor(90, 210, 255, linkAlpha);
+                else
+                    viewBatch_->SetColor(220, 220, 120, selected ? 180 : 70);
+                viewBatch_->Box(linkedLocalBounds, linkedModelMatrix);
+
+                viewBatch_->SetColor(255, 255, 255, selected ? 160 : 60);
+                viewBatch_->Line3D(p, linkedCenter);
+            }
+            else if ((ent.type == LevelEntityType::Door ||
+                      ent.type == LevelEntityType::Elevator ||
+                      ent.type == LevelEntityType::Platform) && selected)
+            {
+                viewBatch_->SetColor(255, 60, 60, 220);
+                const float miss = 12.0f;
+                viewBatch_->Line3D(p + glm::vec3(-miss, 0, -miss), p + glm::vec3(miss, 0, miss));
+                viewBatch_->Line3D(p + glm::vec3(miss, 0, -miss), p + glm::vec3(-miss, 0, miss));
+            }
+
             if (ent.type == LevelEntityType::Light)
             {
                 const float s = 8.0f;
@@ -8490,6 +8532,11 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                     viewBatch_->Line3D(br + slideOffset, tr + slideOffset);
                     viewBatch_->Line3D(tr + slideOffset, tl + slideOffset);
                     viewBatch_->Line3D(tl + slideOffset, bl + slideOffset);
+                    if (hasLinkedMesh)
+                    {
+                        viewBatch_->SetColor(255, 180, 70, selected ? 120 : 45);
+                        viewBatch_->Box(linkedLocalBounds, glm::translate(glm::mat4(1.0f), slideOffset) * linkedModelMatrix);
+                    }
 
                     // Shutter: second arrow + ghost in opposite direction
                     if (ent.doorType == DoorType::Shutter)
@@ -8507,6 +8554,11 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                         viewBatch_->Line3D(br + slideOffset2, tr + slideOffset2);
                         viewBatch_->Line3D(tr + slideOffset2, tl + slideOffset2);
                         viewBatch_->Line3D(tl + slideOffset2, bl + slideOffset2);
+                        if (hasLinkedMesh)
+                        {
+                            viewBatch_->SetColor(255, 180, 70, selected ? 120 : 45);
+                            viewBatch_->Box(linkedLocalBounds, glm::translate(glm::mat4(1.0f), slideOffset2) * linkedModelMatrix);
+                        }
                     }
                 }
 
@@ -8580,6 +8632,15 @@ void LevelEditorApp::Render3DView(const LevelEditorView& view, ImDrawList* drawL
                 viewBatch_->Line3D(p + glm::vec3(s, 0, -s), ep + glm::vec3(s, 0, -s));
                 viewBatch_->Line3D(p + glm::vec3(s, 0, s), ep + glm::vec3(s, 0, s));
                 viewBatch_->Line3D(p + glm::vec3(-s, 0, s), ep + glm::vec3(-s, 0, s));
+                if (hasLinkedMesh)
+                {
+                    const glm::vec3 objectStart = linkedCenter;
+                    const glm::vec3 objectOffset = ent.endPosition - objectStart;
+                    viewBatch_->SetColor(100, 255, 160, selected ? 140 : 55);
+                    viewBatch_->Box(linkedLocalBounds, glm::translate(glm::mat4(1.0f), objectOffset) * linkedModelMatrix);
+                    viewBatch_->SetColor(100, 255, 160, selected ? 180 : 80);
+                    viewBatch_->Line3D(objectStart, objectStart + objectOffset);
+                }
             }
             else if (ent.type == LevelEntityType::Placement)
             {

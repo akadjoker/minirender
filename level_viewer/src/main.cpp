@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #include "Core.hpp"
@@ -44,10 +45,13 @@ static Shader* createLevelShader()
         in vec2 v_lightmapUv;
         out vec4 FragColor;
 
-        uniform vec4      u_color;
+        uniform vec3      u_color;
         uniform sampler2D u_albedo;
         uniform sampler2D u_lightmap;
+        uniform int       u_hasAlbedo;
         uniform int       u_hasLightmap;
+        uniform int       u_debugMode;
+        uniform float     u_lightmapFactor;
         uniform vec3      u_lightDir;
         uniform vec3      u_ambient;
 
@@ -57,20 +61,42 @@ static Shader* createLevelShader()
             vec3 L = normalize(-u_lightDir);
             float diff = max(dot(N, L), 0.0);
 
-            vec4 albedo = texture(u_albedo, v_uv) * u_color;
-            vec3 lit;
+            vec3 albedo = u_color;
+            if (u_hasAlbedo > 0)
+                albedo *= texture(u_albedo, v_uv).rgb;
 
-            if (u_hasLightmap > 0)
-            {
-                vec3 lm = texture(u_lightmap, v_lightmapUv).rgb;
-                lit = albedo.rgb * lm;
-            }
-            else
-            {
-                lit = albedo.rgb * (u_ambient + vec3(0.85 * diff));
-            }
+            int hasLm = (u_hasLightmap > 0) ? 1 : 0;
+            vec3 lm = (hasLm > 0) ? texture(u_lightmap, v_lightmapUv).rgb : vec3(1.0);
 
-            FragColor = vec4(lit, albedo.a);
+            if (u_debugMode == 0)
+            {
+                float factor = clamp(u_lightmapFactor, 0.0, 2.0);
+                vec3 lit = (hasLm > 0)
+                    ? albedo * mix(vec3(1.0), lm, factor)
+                    : albedo * (u_ambient + vec3(0.85 * diff));
+                FragColor = vec4(lit, 1.0);
+                return;
+            }
+            if (u_debugMode == 1)
+            {
+                FragColor = vec4(lm, 1.0);
+                return;
+            }
+            if (u_debugMode == 2)
+            {
+                FragColor = vec4(albedo, 1.0);
+                return;
+            }
+            if (u_debugMode == 3)
+            {
+                FragColor = vec4(0.75, 0.75, 0.75, 1.0);
+                return;
+            }
+            if (u_debugMode == 4)
+            {
+                FragColor = vec4(fract(v_uv), 0.0, 1.0);
+                return;
+            }
         }
     );
 
@@ -97,7 +123,7 @@ int main(int argc, char** argv)
         device.GetWidth(), device.GetHeight(),
         glm::vec3(0.0f, 100.0f, 200.0f),    // position
         glm::vec3(0.0f, 0.0f, 0.0f),         // target
-        200.0f,                                // move speed
+        800.0f,                                // move speed
         0.15f,                                 // mouse sensitivity
         2.5f                                   // sprint multiplier
     );
@@ -114,10 +140,15 @@ int main(int argc, char** argv)
     }
     shader->setVec3("u_lightDir", glm::normalize(glm::vec3(-0.45f, -1.0f, -0.25f)));
     shader->setVec3("u_ambient", glm::vec3(0.20f, 0.22f, 0.24f));
+    shader->setInt("u_debugMode", 0);
+    shader->setFloat("u_lightmapFactor", 1.0f);
 
     // Load level
     LevelData level;
     LevelReader reader;
+    std::filesystem::path levelFsPath(levelPath);
+    if (levelFsPath.has_parent_path())
+        reader.textureDir = levelFsPath.parent_path().string();
     bool loaded = reader.load(levelPath, &level);
 
     LevelNode* levelNode = nullptr;
@@ -134,9 +165,19 @@ int main(int argc, char** argv)
         {
             const auto& ps = level.playerStarts[0];
             camera->setPosition(ps.position + glm::vec3(0.0f, 64.0f, 0.0f));
+            camera->lookAt(ps.position + ps.direction * 128.0f);
+        }
+        else if (level.mesh.aabb.is_valid())
+        {
+            const glm::vec3 center = level.mesh.aabb.center();
+            const glm::vec3 size = level.mesh.aabb.size();
+            const float radius = glm::max(glm::max(size.x, size.y), size.z) * 0.5f;
+            camera->setViewPlanes(glm::max(1.0f, radius / 2048.0f), glm::max(8192.0f, radius * 6.0f));
+            camera->setPosition(center + glm::vec3(0.0f, radius * 0.35f, radius * 1.35f));
+            camera->lookAt(center);
         }
 
-        shader->setInt("u_hasLightmap", level.mesh.lightmap.empty() ? 0 : 1);
+        shader->setInt("u_hasLightmap", level.mesh.lightmaps.empty() ? 0 : 1);
 
         printf("[LevelViewer] Loaded: %s  (%d verts, %d tris, %d entities)\n",
                levelPath,
@@ -150,6 +191,8 @@ int main(int argc, char** argv)
     }
 
     // Main loop
+    int debugMode = 0;
+    float lightmapFactor = 1.0f;
     while (device.Run())
     {
         const float dt = device.GetFrameTime();
@@ -177,7 +220,15 @@ int main(int argc, char** argv)
                 ImGui::Text("Triangles: %d", level.mesh.buffer.indexCount() / 3);
                 ImGui::Text("Surfaces: %d", (int)level.mesh.surfaces.size());
                 ImGui::Text("Materials: %d", (int)level.mesh.materials.size());
-                ImGui::Text("Lightmap: %s", level.mesh.lightmap.empty() ? "no" : "yes");
+                ImGui::Text("Lightmap pages: %d", (int)level.mesh.lightmaps.size());
+                ImGui::Text("Bounds min: %.0f %.0f %.0f",
+                            level.mesh.aabb.min.x, level.mesh.aabb.min.y, level.mesh.aabb.min.z);
+                ImGui::Text("Bounds max: %.0f %.0f %.0f",
+                            level.mesh.aabb.max.x, level.mesh.aabb.max.y, level.mesh.aabb.max.z);
+                ImGui::Text("Camera: %.0f %.0f %.0f",
+                            camera->position.x, camera->position.y, camera->position.z);
+                ImGui::Combo("View", &debugMode, "Textures + Lightmap\0Lightmap\0Textures\0Solid\0UV\0");
+                ImGui::SliderFloat("Lightmap factor", &lightmapFactor, 0.0f, 2.0f, "%.2f");
                 ImGui::Separator();
                 ImGui::Text("Entities: %d", level.entityCount());
                 ImGui::Text("  Lights: %d", (int)level.lights.size());
@@ -200,6 +251,10 @@ int main(int argc, char** argv)
         scene.setCamera(camera);
         scene.beginPass();
         scene.setShader(shader);
+        shader->setVec3("u_lightDir", glm::normalize(glm::vec3(-0.45f, -1.0f, -0.25f)));
+        shader->setVec3("u_ambient", glm::vec3(0.35f, 0.36f, 0.38f));
+        shader->setInt("u_debugMode", debugMode);
+        shader->setFloat("u_lightmapFactor", lightmapFactor);
         scene.render(RenderType::Solid);
         scene.endPass();
 

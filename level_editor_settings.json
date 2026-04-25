@@ -1,0 +1,134 @@
+{
+    "assetRoot": "bin/genvs_lm_textures",
+    "assetViewMode": 2,
+    "cullMode": 2,
+    "currentTexturePath": "/media/projectos/projects/cpp/minirender/bin/genvs_lm_textures/MONITOR1.png",
+    "debugDrawNormals": false,
+    "debugDrawSelectedBounds": false,
+    "debugDrawTangents": false,
+    "debugNormalLength": 10.0,
+    "faceFrontOnly": true,
+    "faceHighlightFillAlpha": 0.30000001192092896,
+    "faceHighlightFillEnabled": false,
+    "gridSize": 16.0,
+    "lastImportDir": "",
+    "lastTerrainHeightmapDir": "",
+    "lmAmbient": 0.05000000074505806,
+    "lmAoEnabled": true,
+    "lmAoIntensity": 1.0,
+    "lmAoRadius": 10.0,
+    "lmAoSamples": 16,
+    "lmBias": 2.0,
+    "lmResolution": 1024,
+    "lmSamples": 1,
+    "perspGridSize": 16.0,
+    "perspectiveFarPlane": 8192.0,
+    "perspectiveMinDistance": 0.10000000149011612,
+    "perspectiveNearPlane": 0.10000000149011612,
+    "primPlaneDoubleSided": false,
+    "scenePath": "/media/projectos/projects/cpp/minirender/bin/genvs_from_bsp.mredb",
+    "sections": {
+        "BSP Polygon CSG": false,
+        "BSP Single-Mesh Ops": false,
+        "CSG": true,
+        "Creation Pivot": true,
+        "Debug": true,
+        "Entities": false,
+        "Faces": false,
+        "History": true,
+        "Level Stats": true,
+        "Lightmap": true,
+        "Mesh Edit": true,
+        "Mesh Objects": false,
+        "Reference Planes": false,
+        "Selected Entity": true,
+        "Selected Mesh": false,
+        "Texture": true,
+        "Tools": true,
+        "View Settings": false
+    },
+    "selectionMode": 0,
+    "showGrid": false,
+    "snapEnabled": true,
+    "snapToGeometry": false,
+    "theme": 3,
+    "transparency": 0.44999998807907104,
+    "useLightmap": true,
+    "useTransparency": true,
+    "vertexFrontOnly": true,
+    "viewLayout": 4,
+    "views": [
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                -376.0,
+                -128.0,
+                32.0
+            ],
+            "orthoSize": 2868.32421875,
+            "perspectiveDistance": 24.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 1,
+            "type": 0
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                -376.0,
+                -128.0,
+                32.0
+            ],
+            "orthoSize": 1428.1868896484375,
+            "perspectiveDistance": 24.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 1,
+            "type": 2
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                -376.0,
+                -128.0,
+                32.0
+            ],
+            "orthoSize": 2418.64697265625,
+            "perspectiveDistance": 24.0,
+            "perspectivePitch": 28.0,
+            "perspectiveYaw": 45.0,
+            "renderMode": 1,
+            "type": 5
+        },
+        {
+            "clearColor": [
+                0.11999999731779099,
+                0.11999999731779099,
+                0.14000000059604645
+            ],
+            "focus": [
+                81.4996109008789,
+                -299.0417785644531,
+                104.72036743164063
+            ],
+            "orthoSize": 256.0,
+            "perspectiveDistance": 1932.735107421875,
+            "perspectivePitch": -2.25,
+            "perspectiveYaw": -7734.94482421875,
+            "renderMode": 2,
+            "type": 6
+        }
+    ]
+}

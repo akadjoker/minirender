@@ -42,6 +42,8 @@ add_compile_options(
 
 add_executable(demos src/main.cpp)
 add_executable(m8convert src/m8convert.cpp)
+
+
  
 if (WIN32)
     target_include_directories(demos PUBLIC "${LIBS_DIR}/include" include src)

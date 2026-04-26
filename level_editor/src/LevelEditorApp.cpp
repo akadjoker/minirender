@@ -60,6 +60,7 @@ glm::mat4 meshLocalPivotTransform(const LevelMeshObject& object,
                                   const glm::vec3& rotationEuler,
                                   const glm::vec3& scale);
 bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& outRows);
+void applyTerrainTextureMapping(LevelMeshObject& object);
 void ensureTerrainLayerMask(LevelMeshObject::TerrainTextureLayer& layer, int width, int height);
 void applyTerrainLayerBrushStroke(LevelMeshObject::TerrainTextureLayer& layer,
                                   const LevelMeshObject& object,
@@ -191,6 +192,8 @@ std::string terrainCompositeSignature(const LevelMeshObject& object)
 {
     std::ostringstream stream;
     stream << "primitive=" << static_cast<int>(object.primitive) << ";";
+    stream << "mapping=" << static_cast<int>(object.terrainTextureMapping) << ";";
+    stream << "tiles=" << object.terrainTextureTileCount.x << "x" << object.terrainTextureTileCount.y << ";";
     for (const EditableFace& face : object.mesh.faces())
     {
         if (!face.materialName.empty() && face.materialName != "default")
@@ -202,9 +205,81 @@ std::string terrainCompositeSignature(const LevelMeshObject& object)
     stream << std::fixed << std::setprecision(3);
     for (const LevelMeshObject::TerrainTextureLayer& layer : object.terrainLayers)
     {
-        stream << "layer[" << layer.name << "|" << layer.texturePath << "|" << layer.opacity << "|" << (layer.visible ? 1 : 0) << "];";
+        std::uint64_t maskHash = 1469598103934665603ull;
+        for (unsigned char value : layer.maskData)
+        {
+            maskHash ^= static_cast<std::uint64_t>(value);
+            maskHash *= 1099511628211ull;
+        }
+        stream << "layer[" << layer.name << "|" << layer.texturePath << "|" << layer.opacity
+               << "|" << (layer.visible ? 1 : 0)
+               << "|" << layer.maskWidth << "x" << layer.maskHeight
+               << "|" << maskHash << "];";
     }
     return stream.str();
+}
+
+constexpr int kDefaultTerrainPaintMaskSize = 1024;
+
+Color samplePixmapRepeat(const Pixmap& pixmap, float u, float v)
+{
+    if (!pixmap.IsValid() || pixmap.width <= 0 || pixmap.height <= 0)
+        return Color(255, 255, 255, 255);
+
+    u = u - std::floor(u);
+    v = v - std::floor(v);
+    const int x = std::clamp(static_cast<int>(std::floor(u * static_cast<float>(pixmap.width))), 0, pixmap.width - 1);
+    const int y = std::clamp(static_cast<int>(std::floor(v * static_cast<float>(pixmap.height))), 0, pixmap.height - 1);
+    return pixmap.GetPixelColor(static_cast<u32>(x), static_cast<u32>(y));
+}
+
+float sampleTerrainLayerMask(const LevelMeshObject::TerrainTextureLayer& layer, float u, float v)
+{
+    if (layer.maskWidth <= 0 ||
+        layer.maskHeight <= 0 ||
+        layer.maskWidth * layer.maskHeight != static_cast<int>(layer.maskData.size()) ||
+        layer.maskData.empty())
+    {
+        return 1.0f;
+    }
+
+    const int x = std::clamp(static_cast<int>(std::lround(glm::clamp(u, 0.0f, 1.0f) * static_cast<float>(layer.maskWidth - 1))), 0, layer.maskWidth - 1);
+    const int y = std::clamp(static_cast<int>(std::lround(glm::clamp(v, 0.0f, 1.0f) * static_cast<float>(layer.maskHeight - 1))), 0, layer.maskHeight - 1);
+    const std::size_t index = static_cast<std::size_t>(y) * static_cast<std::size_t>(layer.maskWidth) + static_cast<std::size_t>(x);
+    return static_cast<float>(layer.maskData[index]) / 255.0f;
+}
+
+glm::vec2 terrainDetailTileCount(const LevelMeshObject& object)
+{
+    if (object.terrainTextureMapping != TerrainTextureMappingMode::PerTile)
+        return glm::vec2(1.0f);
+
+    if (object.terrainTextureTileCount.x > 0 && object.terrainTextureTileCount.y > 0)
+    {
+        return glm::vec2(static_cast<float>(std::max(1, object.terrainTextureTileCount.x)),
+                         static_cast<float>(std::max(1, object.terrainTextureTileCount.y)));
+    }
+
+    int cols = 0;
+    int rows = 0;
+    if (!detectTerrainGridDimensions(object.mesh, cols, rows))
+        return glm::vec2(1.0f);
+
+    return glm::vec2(std::max(1, cols - 1), std::max(1, rows - 1));
+}
+
+glm::ivec2 terrainCompositeOutputSize(const LevelMeshObject& object)
+{
+    glm::ivec2 size(kDefaultTerrainPaintMaskSize, kDefaultTerrainPaintMaskSize);
+    for (const LevelMeshObject::TerrainTextureLayer& layer : object.terrainLayers)
+    {
+        if (layer.maskWidth > 0 && layer.maskHeight > 0 && !layer.maskData.empty())
+        {
+            size.x = std::max(size.x, layer.maskWidth);
+            size.y = std::max(size.y, layer.maskHeight);
+        }
+    }
+    return size;
 }
 
 const char* viewTypeName(LevelEditorApp::ViewType type)
@@ -591,6 +666,79 @@ void smoothVertices(EditableMesh& mesh, const std::vector<int>& selectedIndices,
 // with only one other face (boundary edge), does nothing. For interior edges (shared with
 // exactly one remaining face), the edge is effectively dissolved.
 // Returns number of faces dissolved.
+int deleteMeshFacesAndCompact(EditableMesh& mesh, const std::vector<int>& faceIndices)
+{
+    if (faceIndices.empty())
+        return 0;
+
+    const int faceCount = static_cast<int>(mesh.faceCount());
+    std::vector<bool> removeFace(static_cast<std::size_t>(faceCount), false);
+    int deleteCount = 0;
+    for (int faceIndex : faceIndices)
+    {
+        if (faceIndex >= 0 && faceIndex < faceCount && !removeFace[static_cast<std::size_t>(faceIndex)])
+        {
+            removeFace[static_cast<std::size_t>(faceIndex)] = true;
+            ++deleteCount;
+        }
+    }
+    if (deleteCount == 0)
+        return 0;
+
+    const std::vector<EditableVertex>& vertices = mesh.vertices();
+    const std::vector<EditableFace>& faces = mesh.faces();
+    std::vector<bool> used(vertices.size(), false);
+    for (int faceIndex = 0; faceIndex < faceCount; ++faceIndex)
+    {
+        if (removeFace[static_cast<std::size_t>(faceIndex)])
+            continue;
+
+        for (int vertexIndex : faces[static_cast<std::size_t>(faceIndex)].indices)
+            if (vertexIndex >= 0 && vertexIndex < static_cast<int>(used.size()))
+                used[static_cast<std::size_t>(vertexIndex)] = true;
+    }
+
+    std::vector<int> remap(vertices.size(), -1);
+    std::vector<EditableVertex> keptVerts;
+    keptVerts.reserve(vertices.size());
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+    {
+        if (used[i])
+        {
+            remap[i] = static_cast<int>(keptVerts.size());
+            keptVerts.push_back(vertices[i]);
+        }
+    }
+
+    std::vector<EditableFace> keptFaces;
+    keptFaces.reserve(static_cast<std::size_t>(faceCount - deleteCount));
+    for (int faceIndex = 0; faceIndex < faceCount; ++faceIndex)
+    {
+        if (removeFace[static_cast<std::size_t>(faceIndex)])
+            continue;
+
+        EditableFace remapped = faces[static_cast<std::size_t>(faceIndex)];
+        remapped.indices.clear();
+        bool valid = true;
+        for (int vertexIndex : faces[static_cast<std::size_t>(faceIndex)].indices)
+        {
+            if (vertexIndex < 0 ||
+                vertexIndex >= static_cast<int>(remap.size()) ||
+                remap[static_cast<std::size_t>(vertexIndex)] < 0)
+            {
+                valid = false;
+                break;
+            }
+            remapped.indices.push_back(remap[static_cast<std::size_t>(vertexIndex)]);
+        }
+        if (valid && remapped.indices.size() >= 3)
+            keptFaces.push_back(std::move(remapped));
+    }
+
+    mesh.setData(keptVerts, keptFaces);
+    return deleteCount;
+}
+
 int dissolveFaces(EditableMesh& mesh, const std::vector<int>& faceIndices)
 {
     if (faceIndices.empty()) return 0;
@@ -1414,6 +1562,9 @@ void LevelEditorApp::RebuildMeshCache()
             for (const auto& v : verts) meshCenter += v.position;
             meshCenter /= static_cast<float>(verts.size());
         }
+        const bool terrainUsesComposite = object.primitive == LevelMeshPrimitive::Terrain && !object.terrainLayers.empty();
+        const BoundingBox terrainBounds = terrainUsesComposite ? editableMeshLocalBounds(object.mesh) : BoundingBox{};
+        const glm::vec3 terrainSize = terrainBounds.max - terrainBounds.min;
 
         auto emitFace = [&](std::size_t fi)
         {
@@ -1508,11 +1659,19 @@ void LevelEditorApp::RebuildMeshCache()
                 }
                 }
 
-                const glm::vec2 uvScale = face.uvScale;
-                uv *= uvScale;
-                const float ru = uv.x * cosR - uv.y * sinR;
-                const float rv = uv.x * sinR + uv.y * cosR;
-                uv = glm::vec2(ru, rv) + face.uvOffset;
+                if (terrainUsesComposite && terrainSize.x > 1e-4f && terrainSize.z > 1e-4f)
+                {
+                    uv = glm::vec2((ev.position.x - terrainBounds.min.x) / terrainSize.x,
+                                   (ev.position.z - terrainBounds.min.z) / terrainSize.z);
+                }
+                else
+                {
+                    const glm::vec2 uvScale = face.uvScale;
+                    uv *= uvScale;
+                    const float ru = uv.x * cosR - uv.y * sinR;
+                    const float rv = uv.x * sinR + uv.y * cosR;
+                    uv = glm::vec2(ru, rv) + face.uvOffset;
+                }
 
                 vert.uv = uv;
                 cached.buffer.vertices.push_back(vert);
@@ -1873,6 +2032,15 @@ void LevelEditorApp::SaveEditorSettings()
     j["faceHighlightFillAlpha"] = faceHighlightFillAlpha_;
     j["selectionMode"] = static_cast<int>(selectionMode_);
     j["primPlaneDoubleSided"] = primPlaneDoubleSided_;
+    j["terrainEditEnabled"] = terrainEditEnabled_;
+    j["terrainToolMode"] = static_cast<int>(terrainToolMode_);
+    j["terrainSculptMode"] = static_cast<int>(terrainSculptMode_);
+    j["terrainBrushRadius"] = terrainBrushRadius_;
+    j["terrainBrushStrength"] = terrainBrushStrength_;
+    j["terrainFlattenHeight"] = terrainFlattenHeight_;
+    j["terrainPaintStrength"] = terrainPaintStrength_;
+    j["primTerrainTextureMapping"] = primTerrainTextureMapping_;
+    j["primTerrainTextureTileCount"] = {primTerrainTextureTileCount_.x, primTerrainTextureTileCount_.y};
     // View types
     nlohmann::json viewsJson = nlohmann::json::array();
     for (int i = 0; i < 4; ++i)
@@ -1981,6 +2149,32 @@ void LevelEditorApp::LoadEditorSettings()
         if (sm >= 0 && sm <= 3) selectionMode_ = static_cast<SelectionMode>(sm);
     }
     if (j.contains("primPlaneDoubleSided")) primPlaneDoubleSided_ = j["primPlaneDoubleSided"].get<bool>();
+    if (j.contains("terrainEditEnabled")) terrainEditEnabled_ = j["terrainEditEnabled"].get<bool>();
+    if (j.contains("terrainToolMode"))
+    {
+        const int tm = j["terrainToolMode"].get<int>();
+        if (tm >= static_cast<int>(TerrainToolMode::Sculpt) && tm <= static_cast<int>(TerrainToolMode::Paint))
+            terrainToolMode_ = static_cast<TerrainToolMode>(tm);
+    }
+    if (j.contains("terrainSculptMode"))
+    {
+        const int sm = j["terrainSculptMode"].get<int>();
+        if (sm >= static_cast<int>(TerrainSculptMode::Raise) && sm <= static_cast<int>(TerrainSculptMode::Flatten))
+            terrainSculptMode_ = static_cast<TerrainSculptMode>(sm);
+    }
+    if (j.contains("terrainBrushRadius")) terrainBrushRadius_ = std::max(1.0f, j["terrainBrushRadius"].get<float>());
+    if (j.contains("terrainBrushStrength")) terrainBrushStrength_ = std::max(0.1f, j["terrainBrushStrength"].get<float>());
+    if (j.contains("terrainFlattenHeight")) terrainFlattenHeight_ = j["terrainFlattenHeight"].get<float>();
+    if (j.contains("terrainPaintStrength")) terrainPaintStrength_ = glm::clamp(j["terrainPaintStrength"].get<float>(), 0.01f, 1.0f);
+    if (j.contains("primTerrainTextureMapping"))
+        primTerrainTextureMapping_ = std::clamp(j["primTerrainTextureMapping"].get<int>(), 0, 1);
+    if (j.contains("primTerrainTextureTileCount") &&
+        j["primTerrainTextureTileCount"].is_array() &&
+        j["primTerrainTextureTileCount"].size() == 2)
+    {
+        primTerrainTextureTileCount_.x = std::clamp(static_cast<int>(std::lround(j["primTerrainTextureTileCount"][0].get<float>())), 1, 128);
+        primTerrainTextureTileCount_.y = std::clamp(static_cast<int>(std::lround(j["primTerrainTextureTileCount"][1].get<float>())), 1, 128);
+    }
     if (j.contains("views") && j["views"].is_array())
     {
         const auto& arr = j["views"];
@@ -2758,9 +2952,13 @@ std::unique_ptr<Pixmap> LevelEditorApp::BuildTerrainCompositePixmap(const LevelM
         return std::unique_ptr<Pixmap>(loaded->ConvertToRGBA());
     };
 
-    std::unique_ptr<Pixmap> composed = loadPixmapFromRef(baseMaterialRef, "level_face_tex::");
+    const glm::ivec2 outputSize = terrainCompositeOutputSize(object);
+    const glm::vec2 tileCount = terrainDetailTileCount(object);
+
+    std::unique_ptr<Pixmap> basePixmap = loadPixmapFromRef(baseMaterialRef, "level_face_tex::");
+    std::unique_ptr<Pixmap> composed;
     std::size_t startLayerIndex = 0;
-    if (!composed)
+    if (!basePixmap)
     {
         for (std::size_t i = 0; i < object.terrainLayers.size(); ++i)
         {
@@ -2768,8 +2966,8 @@ std::unique_ptr<Pixmap> LevelEditorApp::BuildTerrainCompositePixmap(const LevelM
             if (!layer.visible || layer.opacity <= 0.0f || layer.texturePath.empty())
                 continue;
 
-            composed = loadPixmapFromRef(layer.texturePath, "level_terrain_layer_tex::");
-            if (composed)
+            basePixmap = loadPixmapFromRef(layer.texturePath, "level_terrain_layer_tex::");
+            if (basePixmap)
             {
                 startLayerIndex = i + 1;
                 break;
@@ -2777,8 +2975,27 @@ std::unique_ptr<Pixmap> LevelEditorApp::BuildTerrainCompositePixmap(const LevelM
         }
     }
 
-    if (!composed)
+    if (!basePixmap)
         return nullptr;
+
+    composed = std::make_unique<Pixmap>(outputSize.x, outputSize.y, 4);
+    if (!composed->IsValid())
+        return nullptr;
+
+    for (int y = 0; y < composed->height; ++y)
+    {
+        const float v = (composed->height > 1)
+            ? static_cast<float>(y) / static_cast<float>(composed->height - 1)
+            : 0.0f;
+        for (int x = 0; x < composed->width; ++x)
+        {
+            const float u = (composed->width > 1)
+                ? static_cast<float>(x) / static_cast<float>(composed->width - 1)
+                : 0.0f;
+            const Color base = samplePixmapRepeat(*basePixmap, u * tileCount.x, v * tileCount.y);
+            composed->SetPixel(static_cast<u32>(x), static_cast<u32>(y), base.r, base.g, base.b, base.a);
+        }
+    }
 
     for (std::size_t i = startLayerIndex; i < object.terrainLayers.size(); ++i)
     {
@@ -2790,34 +3007,23 @@ std::unique_ptr<Pixmap> LevelEditorApp::BuildTerrainCompositePixmap(const LevelM
         if (!layerPixmap)
             continue;
 
-        if (layerPixmap->width != composed->width || layerPixmap->height != composed->height)
-            layerPixmap.reset(layerPixmap->Resize(composed->width, composed->height));
-        if (layer.maskWidth > 0 &&
-            layer.maskHeight > 0 &&
-            layer.maskWidth * layer.maskHeight == static_cast<int>(layer.maskData.size()) &&
-            !layer.maskData.empty())
+        for (int y = 0; y < composed->height; ++y)
         {
-            for (int y = 0; y < composed->height; ++y)
+            const float v = (composed->height > 1)
+                ? static_cast<float>(y) / static_cast<float>(composed->height - 1)
+                : 0.0f;
+            for (int x = 0; x < composed->width; ++x)
             {
-                const int maskY = (composed->height > 1)
-                    ? std::clamp((y * (layer.maskHeight - 1)) / std::max(1, composed->height - 1), 0, layer.maskHeight - 1)
-                    : 0;
-                for (int x = 0; x < composed->width; ++x)
-                {
-                    const int maskX = (composed->width > 1)
-                        ? std::clamp((x * (layer.maskWidth - 1)) / std::max(1, composed->width - 1), 0, layer.maskWidth - 1)
-                        : 0;
-                    const std::size_t maskIndex = static_cast<std::size_t>(maskY) * static_cast<std::size_t>(layer.maskWidth) + static_cast<std::size_t>(maskX);
-                    const float maskAlpha = (static_cast<float>(layer.maskData[maskIndex]) / 255.0f) * layer.opacity;
-                    if (maskAlpha <= 0.0f)
-                        continue;
-                    composed->BlendPixel(static_cast<u32>(x), static_cast<u32>(y), layerPixmap->GetPixelColor(static_cast<u32>(x), static_cast<u32>(y)), maskAlpha, Pixmap::BlendMode::Alpha);
-                }
+                const float u = (composed->width > 1)
+                    ? static_cast<float>(x) / static_cast<float>(composed->width - 1)
+                    : 0.0f;
+                const float maskAlpha = sampleTerrainLayerMask(layer, u, v) * layer.opacity;
+                if (maskAlpha <= 0.0f)
+                    continue;
+
+                const Color detail = samplePixmapRepeat(*layerPixmap, u * tileCount.x, v * tileCount.y);
+                composed->BlendPixel(static_cast<u32>(x), static_cast<u32>(y), detail, maskAlpha, Pixmap::BlendMode::Alpha);
             }
-        }
-        else
-        {
-            composed->DrawPixmapBlended(*layerPixmap, 0, 0, layer.opacity, Pixmap::BlendMode::Alpha);
         }
     }
 
@@ -3906,6 +4112,38 @@ bool detectTerrainGridDimensions(const EditableMesh& mesh, int& outCols, int& ou
     return true;
 }
 
+void applyTerrainTextureMapping(LevelMeshObject& object)
+{
+    if (object.primitive != LevelMeshPrimitive::Terrain)
+        return;
+
+    int cols = 0;
+    int rows = 0;
+    if (!detectTerrainGridDimensions(object.mesh, cols, rows))
+        return;
+
+    auto& vertices = object.mesh.verticesMutable();
+    if (vertices.size() != static_cast<std::size_t>(cols * rows))
+        return;
+
+    const float invCols = (cols > 1) ? (1.0f / static_cast<float>(cols - 1)) : 1.0f;
+    const float invRows = (rows > 1) ? (1.0f / static_cast<float>(rows - 1)) : 1.0f;
+    const glm::vec2 tileCount = terrainDetailTileCount(object);
+
+    for (int z = 0; z < rows; ++z)
+    {
+        for (int x = 0; x < cols; ++x)
+        {
+            EditableVertex& v = vertices[static_cast<std::size_t>(z * cols + x)];
+            const glm::vec2 normalizedUv(static_cast<float>(x) * invCols, static_cast<float>(z) * invRows);
+            if (object.terrainTextureMapping == TerrainTextureMappingMode::PerTile)
+                v.uv = normalizedUv * tileCount;
+            else
+                v.uv = normalizedUv;
+        }
+    }
+}
+
 void ensureTerrainLayerMask(LevelMeshObject::TerrainTextureLayer& layer, int width, int height)
 {
     width = std::max(1, width);
@@ -4598,6 +4836,10 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
             LevelMeshObject object;
             object.primitive = LevelMeshPrimitive::Terrain;
             object.name = "Terrain " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+            object.terrainTextureMapping = (primTerrainTextureMapping_ == 1)
+                ? TerrainTextureMappingMode::PerTile
+                : TerrainTextureMappingMode::WholeTerrain;
+            object.terrainTextureTileCount = glm::max(primTerrainTextureTileCount_, glm::ivec2(1));
             object.mesh = EditableMesh::MakeTerrain(
                 glm::vec3(0.0f),
                 primPlaneW_,
@@ -4606,6 +4848,7 @@ void LevelEditorApp::ShowTerrainRawHeightmapDialog()
                 primSubdivZ_,
                 terrainRawPreviewHeights_,
                 primHeightScale_);
+            applyTerrainTextureMapping(object);
 
             scene_.meshObjects().push_back(std::move(object));
             SetSingleSelectedMesh(static_cast<int>(scene_.meshObjects().size()) - 1);
@@ -4912,57 +5155,20 @@ void LevelEditorApp::HandleToolShortcuts()
         {
             PushUndoState();
             LevelMeshObject& obj = scene_.meshObjects()[(size_t)selectedMeshIndex_];
-            auto& faces = obj.mesh.facesMutable();
             std::vector<int> toDelete = selectedFaceIndices_;
             if (toDelete.empty())
                 toDelete.push_back(selectedFaceIndex_);
-            std::sort(toDelete.begin(), toDelete.end(), std::greater<int>());
-            toDelete.erase(std::unique(toDelete.begin(), toDelete.end()), toDelete.end());
-            for (int faceIndex : toDelete)
+
+            const int deleted = deleteMeshFacesAndCompact(obj.mesh, toDelete);
+            if (deleted > 0)
             {
-                if (faceIndex >= 0 && faceIndex < static_cast<int>(faces.size()))
-                    faces.erase(faces.begin() + faceIndex);
+                meshCacheValid_ = false;
+                selectedFaceIndex_ = -1;
+                selectedFaceIndices_.clear();
+                selectedVertexIndices_.clear();
+                sceneDirty_ = true;
+                sceneStatusMessage_ = "Deleted " + std::to_string(deleted) + " faces";
             }
-
-            std::vector<bool> used(obj.mesh.vertexCount(), false);
-            for (const auto& f : obj.mesh.faces())
-                for (int idx : f.indices)
-                    if (idx >= 0 && idx < static_cast<int>(used.size()))
-                        used[(size_t)idx] = true;
-
-            std::vector<int> remap(obj.mesh.vertexCount(), -1);
-            std::vector<EditableVertex> keptVerts;
-            for (std::size_t i = 0; i < used.size(); ++i)
-            {
-                if (used[i])
-                {
-                    remap[i] = static_cast<int>(keptVerts.size());
-                    keptVerts.push_back(obj.mesh.vertices()[i]);
-                }
-            }
-
-            std::vector<EditableFace> keptFaces;
-            for (const auto& f : obj.mesh.faces())
-            {
-                EditableFace remapped;
-                remapped.materialName = f.materialName;
-                bool valid = true;
-                for (int idx : f.indices)
-                {
-                    if (idx < 0 || idx >= static_cast<int>(remap.size()) || remap[(size_t)idx] < 0)
-                    { valid = false; break; }
-                    remapped.indices.push_back(remap[(size_t)idx]);
-                }
-                if (valid && remapped.indices.size() >= 3)
-                    keptFaces.push_back(remapped);
-            }
-
-            obj.mesh.setData(keptVerts, keptFaces);
-            meshCacheValid_ = false;
-            selectedFaceIndex_ = -1;
-            selectedFaceIndices_.clear();
-            selectedVertexIndices_.clear();
-            sceneDirty_ = true;
         }
         else if (selectionMode_ == SelectionMode::Object)
         {
@@ -6130,10 +6336,7 @@ void LevelEditorApp::HandleViewportInput(bool viewportHovered)
                 terrainPaintHasLastSample_ = false;
             }
 
-            Texture* previewTexture = ResolveTerrainCompositeTexture(selectedMeshIndex_, terrainObject);
-            const int defaultMaskWidth = (previewTexture && previewTexture->width > 0) ? previewTexture->width : 512;
-            const int defaultMaskHeight = (previewTexture && previewTexture->height > 0) ? previewTexture->height : 512;
-            ensureTerrainLayerMask(activeLayer, defaultMaskWidth, defaultMaskHeight);
+            ensureTerrainLayerMask(activeLayer, kDefaultTerrainPaintMaskSize, kDefaultTerrainPaintMaskSize);
 
             const float spacing = std::max(1.0f, terrainBrushRadius_ * 0.15f);
             const bool shouldApplySample =
@@ -9559,6 +9762,17 @@ void LevelEditorApp::ShowLeftPanel()
                 ImGui::DragInt("Subdiv X##PrimTerrainSubdivX", &primSubdivX_, 1, 1, 2048);
                 ImGui::DragInt("Subdiv Z##PrimTerrainSubdivZ", &primSubdivZ_, 1, 1, 2048);
                 ImGui::DragFloat("Height Scale##PrimTerrainScale", &primHeightScale_, 1.0f, 0.0f, 4096.0f);
+                {
+                    static const char* mappingLabels[] = {"Cover Whole Terrain", "Tiled"};
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                    ImGui::Combo("Texture Mapping##PrimTerrain", &primTerrainTextureMapping_, mappingLabels, IM_ARRAYSIZE(mappingLabels));
+                    if (primTerrainTextureMapping_ == 1)
+                    {
+                        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                        if (ImGui::SliderInt2("Tiles X/Y##PrimTerrain", &primTerrainTextureTileCount_.x, 1, 128))
+                            primTerrainTextureTileCount_ = glm::max(primTerrainTextureTileCount_, glm::ivec2(1));
+                    }
+                }
                 ImGui::TextWrapped("Image Heightmap");
                 ImGui::InputText("##PrimTerrainHeightmapPath", &primHeightmapPath_, ImGuiInputTextFlags_ReadOnly);
                 if (ImGui::Button("Choose Image##PrimTerrain"))
@@ -9748,6 +9962,10 @@ void LevelEditorApp::ShowLeftPanel()
                 {
                     object.primitive = LevelMeshPrimitive::Terrain;
                     object.name = "Terrain " + std::to_string(static_cast<int>(scene_.meshObjects().size()) + 1);
+                    object.terrainTextureMapping = (primTerrainTextureMapping_ == 1)
+                        ? TerrainTextureMappingMode::PerTile
+                        : TerrainTextureMappingMode::WholeTerrain;
+                    object.terrainTextureTileCount = glm::max(primTerrainTextureTileCount_, glm::ivec2(1));
                     std::vector<float> heights;
                     if (!primHeightmapPath_.empty())
                     {
@@ -9768,6 +9986,7 @@ void LevelEditorApp::ShowLeftPanel()
                         }
                     }
                     object.mesh = EditableMesh::MakeTerrain(glm::vec3(0.0f), primPlaneW_, primPlaneD_, primSubdivX_, primSubdivZ_, heights, primHeightScale_);
+                    applyTerrainTextureMapping(object);
                     break;
                 }
                 case PrimitiveType::Pillar:
@@ -10505,52 +10724,23 @@ void LevelEditorApp::ShowLeftPanel()
                     }
                 }
                     ImGui::SameLine();
-                if (ImGui::Button("Delete Face") &&
+                if (ImGui::Button(selectedFaceIndices_.size() > 1 ? "Delete Faces" : "Delete Face") &&
                     selectedFaceIndex_ >= 0 && selectedFaceIndex_ < static_cast<int>(meshObject.mesh.faceCount()))
                 {
                     PushUndoState("Delete Face");
-                    auto& faces = meshObject.mesh.facesMutable();
-                    faces.erase(faces.begin() + selectedFaceIndex_);
-
-                    std::vector<bool> used(meshObject.mesh.vertexCount(), false);
-                    for (const auto& f : meshObject.mesh.faces())
-                        for (int idx : f.indices)
-                            if (idx >= 0 && idx < static_cast<int>(used.size()))
-                                used[(size_t)idx] = true;
-
-                    std::vector<int> remap(meshObject.mesh.vertexCount(), -1);
-                    std::vector<EditableVertex> keptVerts;
-                    for (std::size_t i = 0; i < used.size(); ++i)
+                    std::vector<int> toDelete = selectedFaceIndices_;
+                    if (toDelete.empty())
+                        toDelete.push_back(selectedFaceIndex_);
+                    const int deleted = deleteMeshFacesAndCompact(meshObject.mesh, toDelete);
+                    if (deleted > 0)
                     {
-                        if (used[i])
-                        {
-                            remap[i] = static_cast<int>(keptVerts.size());
-                            keptVerts.push_back(meshObject.mesh.vertices()[i]);
-                        }
+                        selectedFaceIndex_ = -1;
+                        selectedFaceIndices_.clear();
+                        selectedVertexIndices_.clear();
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                        sceneStatusMessage_ = "Deleted " + std::to_string(deleted) + " faces";
                     }
-
-                    std::vector<EditableFace> keptFaces;
-                    for (const auto& f : meshObject.mesh.faces())
-                    {
-                        EditableFace remapped;
-                        remapped.materialName = f.materialName;
-                        bool valid = true;
-                        for (int idx : f.indices)
-                        {
-                            if (idx < 0 || idx >= static_cast<int>(remap.size()) || remap[(size_t)idx] < 0)
-                            { valid = false; break; }
-                            remapped.indices.push_back(remap[(size_t)idx]);
-                        }
-                        if (valid && remapped.indices.size() >= 3)
-                            keptFaces.push_back(remapped);
-                    }
-
-                    meshObject.mesh.setData(keptVerts, keptFaces);
-                    selectedFaceIndex_ = -1;
-                    selectedFaceIndices_.clear();
-                    selectedVertexIndices_.clear();
-                    meshCacheValid_ = false;
-                    sceneDirty_ = true;
                 }
 
                 if (ImGui::Button("Flip Normal"))
@@ -11743,6 +11933,8 @@ void LevelEditorApp::ShowRightPanel()
             {
                 PushUndoState();
                 bakeMeshPivotIntoVertices(meshObject);
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
             }
         }
         ImGui::SameLine();
@@ -11753,6 +11945,8 @@ void LevelEditorApp::ShowRightPanel()
             {
                 PushUndoState();
                 bakeMeshRotationScaleIntoVertices(meshObject);
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
             }
         }
         ImGui::Separator();
@@ -11772,6 +11966,58 @@ void LevelEditorApp::ShowRightPanel()
                 vertexBakeTranslate_ = glm::vec3(0.0f);
                 vertexBakeRotate_ = glm::vec3(0.0f);
                 vertexBakeScale_ = glm::vec3(1.0f);
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Selection To Cursor"))
+        {
+            std::vector<int> vertexIndices;
+            const int vertexCount = static_cast<int>(meshObject.mesh.vertexCount());
+            if (selectionMode_ == SelectionMode::Vertex && !selectedVertexIndices_.empty())
+            {
+                vertexIndices = selectedVertexIndices_;
+            }
+            else if (selectionMode_ == SelectionMode::Face && !selectedFaceIndices_.empty())
+            {
+                std::set<int> uniqueVertices;
+                const auto& faces = meshObject.mesh.faces();
+                for (int faceIndex : selectedFaceIndices_)
+                {
+                    if (faceIndex < 0 || faceIndex >= static_cast<int>(faces.size()))
+                        continue;
+                    for (int vertexIndex : faces[static_cast<std::size_t>(faceIndex)].indices)
+                        if (vertexIndex >= 0 && vertexIndex < vertexCount)
+                            uniqueVertices.insert(vertexIndex);
+                }
+                vertexIndices.assign(uniqueVertices.begin(), uniqueVertices.end());
+            }
+            else
+            {
+                vertexIndices.reserve(static_cast<std::size_t>(vertexCount));
+                for (int vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex)
+                    vertexIndices.push_back(vertexIndex);
+            }
+
+            if (!vertexIndices.empty())
+            {
+                PushUndoState("Move Vertices To Cursor");
+                glm::vec3 selectionCenter(0.0f);
+                const auto& vertices = meshObject.mesh.vertices();
+                for (int vertexIndex : vertexIndices)
+                    selectionCenter += vertices[static_cast<std::size_t>(vertexIndex)].position;
+                selectionCenter /= static_cast<float>(vertexIndices.size());
+
+                const glm::vec3 cursorLocal = glm::vec3(glm::inverse(meshObjectModelMatrix(meshObject)) *
+                                                        glm::vec4(scene_.creationPivotPosition(), 1.0f));
+                const glm::vec3 delta = cursorLocal - selectionCenter;
+                for (int vertexIndex : vertexIndices)
+                    meshObject.mesh.verticesMutable()[static_cast<std::size_t>(vertexIndex)].position += delta;
+
+                meshCacheValid_ = false;
+                sceneDirty_ = true;
+                sceneStatusMessage_ = "Moved " + std::to_string(vertexIndices.size()) + " vertices to cursor";
             }
         }
         ImGui::SameLine();
@@ -11791,6 +12037,43 @@ void LevelEditorApp::ShowRightPanel()
             ImGui::Separator();
             ImGui::TextUnformatted("Terrain Edit");
             ImGui::Checkbox("Enable Terrain Edit##Terrain", &terrainEditEnabled_);
+            {
+                static const char* mappingLabels[] = {"Cover Whole Terrain", "Tiled"};
+                int mappingIndex = (meshObject.terrainTextureMapping == TerrainTextureMappingMode::PerTile) ? 1 : 0;
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                if (ImGui::Combo("Texture Mapping##TerrainObject", &mappingIndex, mappingLabels, IM_ARRAYSIZE(mappingLabels)))
+                {
+                    PushUndoState();
+                    meshObject.terrainTextureMapping = (mappingIndex == 1)
+                        ? TerrainTextureMappingMode::PerTile
+                        : TerrainTextureMappingMode::WholeTerrain;
+                    applyTerrainTextureMapping(meshObject);
+                    meshCacheValid_ = false;
+                    sceneDirty_ = true;
+                }
+                if (meshObject.terrainTextureMapping == TerrainTextureMappingMode::PerTile)
+                {
+                    glm::ivec2 tileCount = glm::max(meshObject.terrainTextureTileCount, glm::ivec2(1));
+                    if (meshObject.terrainTextureTileCount.x <= 0 || meshObject.terrainTextureTileCount.y <= 0)
+                    {
+                        const glm::vec2 fallbackTileCount = terrainDetailTileCount(meshObject);
+                        tileCount = glm::ivec2(std::max(1, static_cast<int>(std::lround(fallbackTileCount.x))),
+                                               std::max(1, static_cast<int>(std::lround(fallbackTileCount.y))));
+                    }
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                    if (ImGui::SliderInt2("Tiles X/Y##TerrainObject", &tileCount.x, 1, 128))
+                    {
+                        PushUndoState();
+                        meshObject.terrainTextureTileCount = glm::max(tileCount, glm::ivec2(1));
+                        applyTerrainTextureMapping(meshObject);
+                        auto cacheIt = terrainCompositePreviewCache_.find(selectedMeshIndex_);
+                        if (cacheIt != terrainCompositePreviewCache_.end())
+                            cacheIt->second.signature.clear();
+                        meshCacheValid_ = false;
+                        sceneDirty_ = true;
+                    }
+                }
+            }
 
             static const char* terrainToolLabels[] = {"Raise", "Lower", "Smooth", "Flatten", "Paint"};
             int terrainToolIndex = terrainToolMode_ == TerrainToolMode::Paint
@@ -11872,9 +12155,10 @@ void LevelEditorApp::ShowRightPanel()
                     {
                         layer.name = "Layer " + std::to_string(static_cast<int>(meshObject.terrainLayers.size()) + 1);
                     }
-                    ensureTerrainLayerMask(layer, 512, 512);
+                    ensureTerrainLayerMask(layer, kDefaultTerrainPaintMaskSize, kDefaultTerrainPaintMaskSize);
                     meshObject.terrainLayers.push_back(std::move(layer));
                     selectedTerrainLayerIndex_ = static_cast<int>(meshObject.terrainLayers.size()) - 1;
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
                 }
                 ImGui::SameLine();
@@ -11887,6 +12171,7 @@ void LevelEditorApp::ShowRightPanel()
                         selectedTerrainLayerIndex_ = -1;
                     else
                         selectedTerrainLayerIndex_ = std::clamp(selectedTerrainLayerIndex_, 0, static_cast<int>(meshObject.terrainLayers.size()) - 1);
+                    meshCacheValid_ = false;
                     sceneDirty_ = true;
                 }
                 ImGui::SameLine();
@@ -12602,9 +12887,10 @@ void LevelEditorApp::ShowRightPanel()
                         LevelMeshObject::TerrainTextureLayer layer;
                         layer.name = PathFilename(currentTexturePath_);
                         layer.texturePath = currentTexturePath_;
-                        ensureTerrainLayerMask(layer, 512, 512);
+                        ensureTerrainLayerMask(layer, kDefaultTerrainPaintMaskSize, kDefaultTerrainPaintMaskSize);
                         obj.terrainLayers.push_back(std::move(layer));
                         selectedTerrainLayerIndex_ = static_cast<int>(obj.terrainLayers.size()) - 1;
+                        meshCacheValid_ = false;
                     }
                     sceneDirty_ = true;
                 }

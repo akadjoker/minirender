@@ -9,6 +9,12 @@
 
 class RenderBatch;   // forward-declare so TerrainLodNode::debug can use it
 
+enum class TerrainTextureMapping
+{
+    WholeTerrain, // 1 UV domain across full terrain
+    PerTile       // UV repeats per heightmap cell
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  TerrainRaycastResult
 // ─────────────────────────────────────────────────────────────────────────────
@@ -50,10 +56,12 @@ public:
     // Load from an image file (grayscale or RGB — uses red channel).
     // scaleX/Z control world size; scaleY controls height amplitude.
     // texScaleU/V tile the base texture; detailScale tiles the detail texture.
+    // mapping controls whether base UV is continuous across whole terrain or repeats per cell.
     bool loadFromHeightmap(const std::string &path,
                            float scaleX, float scaleY, float scaleZ,
                            float texScaleU = 1.f, float texScaleV = 1.f,
-                           float detailScale = 8.f);
+                           float detailScale = 8.f,
+                           TerrainTextureMapping mapping = TerrainTextureMapping::WholeTerrain);
 
     // Queries (world space using Node3D::position + scale)
     float          getHeightAt  (float worldX, float worldZ) const;
@@ -79,6 +87,7 @@ private:
     Material                    *m_material    = nullptr;
     BoundingBox                  m_aabb;
     float                        m_detailScale = 8.f;
+    TerrainTextureMapping        m_textureMapping = TerrainTextureMapping::WholeTerrain;
 
     void         filterHeightMap();
     bool         generateBlock(TerrainBuffer *buf, BoundingBox &outAABB,
@@ -106,7 +115,8 @@ public:
     // Load heightmap.  Vertices are baked with current position+scale.
     bool loadFromHeightmap(const std::string &path,
                            float heightScale  = 1.f,
-                           int   smoothFactor = 0);
+                           int   smoothFactor = 0,
+                           TerrainTextureMapping mapping = TerrainTextureMapping::WholeTerrain);
 
     // Override setScale / setPosition to re-bake vertex positions.
     void setScale   (const glm::vec3 &s) { Node3D::setScale(s);    applyTransformation(); }
@@ -169,6 +179,7 @@ private:
     float        m_heightScale  = 1.f;
     float        m_texScale     = 1.f;
     float        m_detailScale  = 8.f;
+    TerrainTextureMapping m_textureMapping = TerrainTextureMapping::WholeTerrain;
 
     // GPU buffer — single VBO (static) + dynamic IBO
     TerrainBuffer *m_renderBuffer    = nullptr;

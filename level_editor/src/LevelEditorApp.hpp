@@ -376,6 +376,8 @@ private:
     float primPlaneD_ = 256.0f;
     int primSubdivX_ = 1;
     int primSubdivZ_ = 1;
+    int primTerrainTextureMapping_ = 0; // 0=WholeTerrain, 1=PerTile
+    glm::ivec2 primTerrainTextureTileCount_ = glm::ivec2(8, 8);
     int primPlaneOrient_ = 0; // 0=Top 1=Bottom 2=Front 3=Back 4=Left 5=Right
     bool primPlaneDoubleSided_ = false;
     std::string primHeightmapPath_;

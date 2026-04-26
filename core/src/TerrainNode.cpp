@@ -57,7 +57,8 @@ void TerrainNode::render(Shader *shader, Camera *camera)
 bool TerrainNode::loadFromHeightmap(const std::string &path,
                                     float scaleX, float scaleY, float scaleZ,
                                     float texScaleU, float texScaleV,
-                                    float detailScale)
+                                    float detailScale,
+                                    TerrainTextureMapping mapping)
 {
     Pixmap img;
     if (!img.Load(path.c_str()))
@@ -72,6 +73,7 @@ bool TerrainNode::loadFromHeightmap(const std::string &path,
     m_texScaleU    = texScaleU;
     m_texScaleV    = texScaleV;
     m_detailScale  = detailScale;
+    m_textureMapping = mapping;
 
     delete[] m_heightData;
     m_heightData = new float[m_mapW * m_mapH];
@@ -156,10 +158,17 @@ bool TerrainNode::generateBlock(TerrainBuffer *buf, BoundingBox &outAABB,
         TerrainVertex v;
         v.position = {px, h, pz};
         v.normal   = calcNormal(wx, wz);
-        // uv: texScaleU=1 → texture tiles once across full terrain
-        //     texScaleU=8 → texture repeats 8× across the terrain
-        v.uv  = {(float)wx * invW * texScaleU,
-                 (float)wz * invH * texScaleV};
+        if (m_textureMapping == TerrainTextureMapping::PerTile)
+        {
+            // One texture tile per heightmap cell.
+            v.uv = {(float)wx * texScaleU, (float)wz * texScaleV};
+        }
+        else
+        {
+            // One continuous UV domain across full terrain.
+            v.uv = {(float)wx * invW * texScaleU,
+                    (float)wz * invH * texScaleV};
+        }
         // uv2: world-space detail tiling independent of heightmap resolution
         v.uv2 = {px / m_terrainScale.x * detailScale,
                  pz / m_terrainScale.z * detailScale};
@@ -355,7 +364,8 @@ void TerrainLodNode::render(Shader *shader, Camera *camera)
 // ── Load ─────────────────────────────────────────────────────────────────────
 bool TerrainLodNode::loadFromHeightmap(const std::string &path,
                                        float heightScale,
-                                       int   smoothFactor)
+                                       int   smoothFactor,
+                                       TerrainTextureMapping mapping)
 {
     Pixmap img;
     if (!img.Load(path.c_str()))
@@ -363,6 +373,7 @@ bool TerrainLodNode::loadFromHeightmap(const std::string &path,
 
     m_size        = img.width;   // assume square
     m_heightScale = heightScale;
+    m_textureMapping = mapping;
 
     
     switch (m_patchSize)
@@ -404,7 +415,10 @@ bool TerrainLodNode::loadFromHeightmap(const std::string &path,
         TerrainVertex &v = m_sourceVerts[(size_t)z * m_size + x];   // row-major: [z*size+x]
         v.position = { fx, h, fz };        // normalised X/Z, unscaled Y
         v.normal   = { 0.f, 1.f, 0.f };
-        v.uv       = { fx * m_texScale,    fz * m_texScale  };
+        if (m_textureMapping == TerrainTextureMapping::PerTile)
+            v.uv = { (float)x * m_texScale, (float)z * m_texScale };
+        else
+            v.uv = { fx * m_texScale, fz * m_texScale };
         v.uv2      = { fx * m_detailScale, fz * m_detailScale };
     }
 

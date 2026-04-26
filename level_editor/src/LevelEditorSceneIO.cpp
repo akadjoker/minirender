@@ -8,7 +8,7 @@
 namespace
 {
 constexpr std::uint32_t kBinarySceneMagic = 0x4D524C45u; // "ELRM"
-constexpr std::uint32_t kBinarySceneVersion = 7;
+constexpr std::uint32_t kBinarySceneVersion = 10;
  
 void writeVec2(BinaryStream& stream, const glm::vec2& value)
 {
@@ -80,6 +80,9 @@ bool saveBinaryLevelEditorScene(const std::filesystem::path& path,
         stream.writeU8(object.blendEnabled ? 1u : 0u);
         stream.writeU8(object.twoSided ? 1u : 0u);
         stream.writeU32(static_cast<std::uint32_t>(object.blendMode));
+        stream.writeU32(static_cast<std::uint32_t>(object.terrainTextureMapping));
+        stream.writeI32(object.terrainTextureTileCount.x);
+        stream.writeI32(object.terrainTextureTileCount.y);
 
         const auto& vertices = object.mesh.vertices();
         stream.writeU32(static_cast<std::uint32_t>(vertices.size()));
@@ -239,6 +242,26 @@ bool loadBinaryLevelEditorScene(const std::filesystem::path& path,
             object.blendMode = (blendMode <= static_cast<std::uint32_t>(LevelMeshBlendMode::Additive))
                 ? static_cast<LevelMeshBlendMode>(blendMode)
                 : LevelMeshBlendMode::Alpha;
+        }
+        object.terrainTextureMapping = TerrainTextureMappingMode::WholeTerrain;
+        if (version >= 8)
+        {
+            const std::uint32_t mapping = stream.readU32();
+            object.terrainTextureMapping = (mapping <= static_cast<std::uint32_t>(TerrainTextureMappingMode::PerTile))
+                ? static_cast<TerrainTextureMappingMode>(mapping)
+                : TerrainTextureMappingMode::WholeTerrain;
+        }
+        object.terrainTextureTileCount = glm::ivec2(0);
+        if (version >= 10)
+        {
+            object.terrainTextureTileCount.x = stream.readI32();
+            object.terrainTextureTileCount.y = stream.readI32();
+        }
+        else if (version >= 9)
+        {
+            const glm::vec2 legacyTileCount = readVec2(stream);
+            object.terrainTextureTileCount.x = static_cast<int>(std::lround(legacyTileCount.x));
+            object.terrainTextureTileCount.y = static_cast<int>(std::lround(legacyTileCount.y));
         }
 
         std::vector<EditableVertex> vertices;

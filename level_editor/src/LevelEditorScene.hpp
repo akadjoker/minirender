@@ -60,6 +60,12 @@ enum class LevelMeshBlendMode
     PreMultipliedAlpha
 };
 
+enum class TerrainTextureMappingMode
+{
+    WholeTerrain = 0,
+    PerTile = 1
+};
+
 struct LevelMeshObject
 {
     std::string name = "Brush 01";
@@ -73,6 +79,8 @@ struct LevelMeshObject
     bool blendEnabled = false;
     bool twoSided = false;
     LevelMeshBlendMode blendMode = LevelMeshBlendMode::Alpha;
+    TerrainTextureMappingMode terrainTextureMapping = TerrainTextureMappingMode::WholeTerrain;
+    glm::ivec2 terrainTextureTileCount {1, 1};
     EditableMesh mesh = EditableMesh::MakeBox(glm::vec3(-0.5f, -0.5f, -0.5f), glm::vec3(0.5f, 0.5f, 0.5f));
     struct TerrainTextureLayer
     {

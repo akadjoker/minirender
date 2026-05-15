@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "Device.hpp"
+#include "BuGUIRenderer.hpp"
+#include <WidgetApp.hpp>
 #include "Pixmap.hpp"
 #include "Manager.hpp"
 #include "RenderState.hpp"
@@ -8,10 +10,7 @@
 #include "msf_gif.h"
 // Platform OpenGL/GLES headers — resolved centrally
 #include "Opengl.hpp"
-#include "imgui.h"
-#include "imgui_impl_sdl2.h"
-#include "imgui_impl_opengl3.h"
-#include "ImGuiFontAwesome.h"
+
 
 #include <algorithm>
 #include <cstdlib>
@@ -298,18 +297,73 @@ bool Device::Run()
     m_previous = m_current;
     m_is_resize = false;
 
+    if (m_buguiReady)
+    {
+        const double t = GetTime();
+        auto& bio = BuGUI::GetIO();
+        bio.deltaTime = static_cast<float>(t - m_buguiPrevTime);
+        m_buguiPrevTime = t;
+        int ww, wh, dw, dh;
+        SDL_GetWindowSize(m_window, &ww, &wh);
+        SDL_GL_GetDrawableSize(m_window, &dw, &dh);
+        bio.displayWidth      = static_cast<float>(ww);
+        bio.displayHeight     = static_cast<float>(wh);
+        bio.framebufferScaleX = ww > 0 ? static_cast<float>(dw) / static_cast<float>(ww) : 1.0f;
+        bio.framebufferScaleY = wh > 0 ? static_cast<float>(dh) / static_cast<float>(wh) : 1.0f;
+        BuGUI::NewFrame();
+    }
+
     SDL_Event event;
     Input::Update();
 
     while (SDL_PollEvent(&event) != 0)
     {
-        if (m_imguiReady)
-            ImGui_ImplSDL2_ProcessEvent(&event);
-
-        // When ImGui is capturing input, don't forward to the game Input system.
-        const ImGuiIO &io = ImGui::GetIO();
-        bool imguiMouse    = m_imguiReady && io.WantCaptureMouse;
-        bool imguiKeyboard = m_imguiReady && io.WantCaptureKeyboard;
+        if (m_buguiReady)
+        {
+            auto& bio = BuGUI::GetIO();
+            switch (event.type)
+            {
+            case SDL_MOUSEMOTION:
+                bio.mouseX = static_cast<float>(event.motion.x);
+                bio.mouseY = static_cast<float>(event.motion.y);
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+            case SDL_MOUSEBUTTONUP:
+            {
+                int btn = 0;
+                if (event.button.button == SDL_BUTTON_RIGHT)  btn = 1;
+                else if (event.button.button == SDL_BUTTON_MIDDLE) btn = 2;
+                bio.mouseDown[btn] = (event.type == SDL_MOUSEBUTTONDOWN);
+                break;
+            }
+            case SDL_MOUSEWHEEL:
+            {
+                float scale = (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) ? -1.0f : 1.0f;
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+                bio.mouseWheelX += event.wheel.preciseX * scale;
+                bio.mouseWheelY += event.wheel.preciseY * scale;
+#else
+                bio.mouseWheelX += static_cast<float>(event.wheel.x) * scale;
+                bio.mouseWheelY += static_cast<float>(event.wheel.y) * scale;
+#endif
+                break;
+            }
+            case SDL_KEYDOWN:
+            case SDL_KEYUP:
+            {
+                SDL_Keymod mod = (SDL_Keymod)event.key.keysym.mod;
+                bio.addKeyEvent(event.key.keysym.sym, event.key.keysym.scancode,
+                                (mod & KMOD_SHIFT) != 0, (mod & KMOD_CTRL) != 0,
+                                (mod & KMOD_ALT)   != 0, event.type == SDL_KEYDOWN);
+                break;
+            }
+            case SDL_TEXTINPUT:
+                for (const char* p = event.text.text; *p; ++p)
+                    bio.addInputCharacter(static_cast<unsigned char>(*p));
+                break;
+            default: break;
+            }
+        }
 
         switch (event.type)
         {
@@ -339,44 +393,37 @@ bool Device::Run()
                 SetShouldClose(true);
                 break;
             }
-            if (!imguiKeyboard)
-                Input::OnKeyDown(event.key);
+            Input::OnKeyDown(event.key);
             break;
         }
         case SDL_KEYUP:
         {
-            if (!imguiKeyboard)
-                Input::OnKeyUp(event.key);
+            Input::OnKeyUp(event.key);
             break;
         }
         case SDL_TEXTINPUT:
         {
-            if (!imguiKeyboard)
-                Input::OnTextInput(event.text);
+            Input::OnTextInput(event.text);
             break;
         }
         case SDL_MOUSEBUTTONDOWN:
         {
-            if (!imguiMouse)
-                Input::OnMouseDown(event.button);
+            Input::OnMouseDown(event.button);
             break;
         }
         case SDL_MOUSEBUTTONUP:
         {
-            if (!imguiMouse)
-                Input::OnMouseUp(event.button);
+            Input::OnMouseUp(event.button);
             break;
         }
         case SDL_MOUSEMOTION:
         {
-            if (!imguiMouse)
-                Input::OnMouseMove(event.motion);
+            Input::OnMouseMove(event.motion);
             break;
         }
         case SDL_MOUSEWHEEL:
         {
-            if (!imguiMouse)
-                Input::OnMouseWheel(event.wheel);
+            Input::OnMouseWheel(event.wheel);
             break;
         }
         }
@@ -393,8 +440,6 @@ int Device::PollEvents(SDL_Event *event)
     m_update = m_current - m_previous;
     m_previous = m_current;
     int ret = SDL_PollEvent(event);
-    if (ret && m_imguiReady)
-        ImGui_ImplSDL2_ProcessEvent(event);
     return ret;
 }
 
@@ -407,7 +452,7 @@ void Device::Close()
     EndFrameSequenceRecording();
     m_ready = false;
 
-    ImGuiShutdown();
+    BuGUIShutdown();
 
     TextureManager::instance().unloadAll();
     ShaderManager::instance().unloadAll();
@@ -426,11 +471,10 @@ void Device::Close()
 
 void Device::Flip()
 {
-    if (m_imguiReady)
+    if (m_buguiReady)
     {
-        ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        RenderState::instance().useProgram(0);
+        const BuGUI::DrawData* dd = BuGUI::GetDrawData();
+        if (dd) m_buguiRenderer->render(*dd);
     }
 
     CaptureGifFrame();
@@ -463,44 +507,117 @@ bool Device::IsRunning() const
     return m_ready && !m_shouldclose;
 }
 
-void Device::ImGuiInit(const char *glsl_version)
+void Device::BuGUIInit()
 {
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO &io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    ImFont *baseFont = io.Fonts->Fonts.empty() ? io.Fonts->AddFontDefault() : io.Fonts->Fonts[0];
-    const bool iconsLoaded = ImGuiFontAwesome::MergeSolid(io, baseFont, 13.0f);
-    ImGui::StyleColorsDark();
-    ImGui_ImplSDL2_InitForOpenGL(m_window, m_context);
-    ImGui_ImplOpenGL3_Init(glsl_version);
-    m_imguiReady = true;
-    SDL_Log("[DEVICE] ImGui initialised (%s)", glsl_version);
-    SDL_Log("[DEVICE] ImGui FontAwesome: %s", iconsLoaded ? "loaded" : "not loaded");
+    if (m_buguiReady) return;  // already initialised
+    m_buguiRenderer = std::make_unique<BuGUIRenderer>();
+    if (!m_buguiRenderer->init())
+    {
+        SDL_Log("[DEVICE] BuGUIRenderer init failed");
+        m_buguiRenderer.reset();
+        return;
+    }
+
+    BuGUI::SetCurrentContext(BuGUI::CreateContext());
+
+    m_fontAtlas = std::make_unique<BuGUI::FontAtlas>();
+    if (!m_fontAtlas->buildDefault())
+    {
+        SDL_Log("[DEVICE] BuGUI FontAtlas build failed");
+        BuGUI::DestroyContext(BuGUI::GetCurrentContext());
+        m_buguiRenderer.reset();
+        m_fontAtlas.reset();
+        return;
+    }
+
+    const BuGUI::TextureHandle atlasHandle = m_buguiRenderer->createTexture(
+        m_fontAtlas->width(), m_fontAtlas->height(), m_fontAtlas->pixels());
+    m_fontAtlas->setTexture(atlasHandle);
+    BuGUI::SetWhitePixel(atlasHandle, m_fontAtlas->whitePixelUV());
+
+    auto& io = BuGUI::GetIO();
+    io.setClipboardText = [](const char* text) { SDL_SetClipboardText(text); };
+    io.getClipboardText = []() -> std::string {
+        char* clip = SDL_GetClipboardText();
+        std::string result = clip ? clip : "";
+        SDL_free(clip);
+        return result;
+    };
+    io.readFile = [](const std::string& path) -> std::string {
+        SDL_RWops* rw = SDL_RWFromFile(path.c_str(), "rb");
+        if (!rw) return "";
+        Sint64 size = SDL_RWsize(rw);
+        if (size <= 0) { SDL_RWclose(rw); return ""; }
+        std::string buf(static_cast<size_t>(size), '\0');
+        SDL_RWread(rw, &buf[0], 1, buf.size());
+        SDL_RWclose(rw);
+        return buf;
+    };
+    io.writeFile = [](const std::string& path, const std::string& data) -> bool {
+        SDL_RWops* rw = SDL_RWFromFile(path.c_str(), "wb");
+        if (!rw) return false;
+        size_t written = SDL_RWwrite(rw, data.c_str(), 1, data.size());
+        SDL_RWclose(rw);
+        return written == data.size();
+    };
+
+    m_buguiPrevTime = GetTime();
+
+    // ── WidgetApp ────────────────────────────────────────────────────────
+    BuGUI::WidgetApp::instance().setTextureUpload([this](const unsigned char* rgba, int w, int h) {
+        return m_buguiRenderer->createTexture(w, h, rgba);
+    });
+    BuGUI::WidgetApp::instance().setTextureDestroy([this](BuGUI::TextureHandle tex) {
+        m_buguiRenderer->destroyTexture(tex);
+    });
+    BuGUI::WidgetApp::instance().init();
+    // Transparent background — the 3-D scene shows through the widget overlay
+    BuGUI::WidgetApp::instance().setDrawBackground(false);
+
+    m_buguiReady = true;
+    SDL_Log("[DEVICE] BuGUI initialised");
 }
 
-void Device::ImGuiBegin()
+void Device::BuGUIBegin()
 {
-    if (!m_imguiReady) return;
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
+    if (!m_buguiReady) return;
+    BuGUI::WidgetApp::instance().update(BuGUI::GetIO());
+    // Block 3D-scene mouse input while the cursor is over a GUI widget.
+    Input::SetGuiBlocked(BuGUI::WidgetApp::instance().wantsMouse());
 }
 
-void Device::ImGuiEnd()
+void Device::BuGUIEnd()
 {
-    // Rendering is done in Flip() so the draw data is submitted
-    // right before SDL_GL_SwapWindow — nothing needed here.
+    if (!m_buguiReady) return;
+    BuGUI::WidgetApp::instance().paint(*BuGUI::GetDrawData(), &m_fontAtlas->defaultFont());
+    BuGUI::Render();
 }
 
-void Device::ImGuiShutdown()
+void Device::BuGUIShutdown()
 {
-    if (!m_imguiReady) return;
-    m_imguiReady = false;
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
-    ImGui::DestroyContext();
-    SDL_Log("[DEVICE] ImGui shut down");
+    if (!m_buguiReady) return;
+    m_buguiReady = false;
+    BuGUI::WidgetApp::instance().shutdown();
+    if (m_fontAtlas)
+    {
+        m_buguiRenderer->destroyTexture(m_fontAtlas->texture());
+        m_fontAtlas.reset();
+    }
+    m_buguiRenderer.reset();
+    BuGUI::DestroyContext(BuGUI::GetCurrentContext());
+    SDL_Log("[DEVICE] BuGUI shut down");
+}
+
+BuGUI::TextureHandle Device::BuGUICreateTexture(int w, int h, const unsigned char* rgba)
+{
+    if (!m_buguiReady) return {};
+    return m_buguiRenderer->createTexture(w, h, rgba);
+}
+
+void Device::BuGUIDestroyTexture(BuGUI::TextureHandle handle)
+{
+    if (!m_buguiReady) return;
+    m_buguiRenderer->destroyTexture(handle);
 }
 
 Pixmap *Device::CaptureFramebuffer()

@@ -33,6 +33,7 @@ set(SOURCES
     src/Animator.cpp
     src/Batch.cpp
     src/BinaryStream.cpp
+    src/BuGUIRenderer.cpp
     src/Camera.cpp
     src/Collision.cpp
     src/Color.cpp
@@ -77,6 +78,7 @@ set(SOURCES
     src/Utils.cpp
     src/Vertex.cpp
     src/VertexAnimation.cpp
+    src/ViewportWidget.cpp
     src/glad.cpp
     src/pch.cpp
 )
@@ -87,7 +89,7 @@ if (WIN32)
     target_include_directories(core PUBLIC "${LIBS_DIR}/include" include src)
 else() 
     target_include_directories(core PUBLIC  include src
-    ${CMAKE_SOURCE_DIR}/vendor/imgui
+    ${CMAKE_SOURCE_DIR}/vendor/widgets/include
 )
 endif()
 
@@ -98,7 +100,7 @@ target_include_directories(core PRIVATE
 )
 
 target_link_libraries(core 
-    imgui
+    bugui_widgets
     OpenGL::GL
     ${SDL2_LIBRARIES}
     glm::glm

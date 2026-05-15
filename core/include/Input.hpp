@@ -236,6 +236,11 @@ public:
     static void Update();
     static void Init();
 
+    /// @brief Block all mouse queries (buttons, delta, scroll) when GUI has focus.
+    static void SetGuiBlocked(bool blocked) { s_guiBlocked = blocked; }
+    /// @brief Returns true if mouse input is currently blocked by the GUI.
+    static bool IsGuiBlocked() { return s_guiBlocked; }
+
 private:
     static constexpr int MAX_MOUSE_BUTTONS = 3;
     static constexpr int MAX_KEYBOARD_KEYS = 512;
@@ -244,6 +249,9 @@ private:
     static constexpr int MAX_GAMEPAD_AXIS = 8;
     static constexpr int MAX_KEY_PRESSED_QUEUE = 16;
     static constexpr int MAX_CHAR_PRESSED_QUEUE = 16;
+
+    // GUI focus block
+    static bool s_guiBlocked;
 
     // Estados mouse
     static bool currentMouseState[MAX_MOUSE_BUTTONS];

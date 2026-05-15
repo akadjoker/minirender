@@ -6,7 +6,9 @@
 #include "Demo.hpp"
 #include "Effects.hpp"
 #include "ParticleNode.hpp"
-#include "imgui.h"
+#include <WidgetApp.hpp>
+#include <ViewWidgets.hpp>
+#include <BasicWidgets.hpp>
 
 class EffectsDemo : public IDemo
 {
@@ -91,6 +93,15 @@ private:
     float decalTimer_;
     float time_;
     float flareYaw_;
+
+    // Retained widgets
+    BuGUI::FloatWindow* fw_  = nullptr;
+    BuGUI::Label* smokeLabel_  = nullptr;
+    BuGUI::Label* sparkLabel_  = nullptr;
+    BuGUI::Label* decalLabel_  = nullptr;
+    BuGUI::Label* grassLabel_  = nullptr;
+    BuGUI::Label* manualLabel_ = nullptr;
+    BuGUI::Label* ribbonLabel_ = nullptr;
 };
 
 inline EffectsDemo::EffectsDemo()
@@ -165,6 +176,42 @@ inline bool EffectsDemo::setup(Device &device)
 
     syncVisibility();
     resetCamera();
+
+    // ── Retained UI ────────────────────────────────────────────────
+    fw_ = BuGUI::WidgetApp::instance().addFloat<BuGUI::FloatWindow>("Effects");
+    fw_->setFloatPos(16.0f, 72.0f);
+    fw_->setFloatSize(280.0f, 320.0f);
+    fw_->setClosable(false);
+    fw_->setResizable(false);
+
+    auto* vbox = fw_->setContent<BuGUI::BoxLayout>(BuGUI::LayoutDir::Vertical);
+    vbox->setSpacing(4.0f);
+    vbox->setPadding(4.0f);
+
+    vbox->createChild<BuGUI::Label>(description());
+
+    auto* btnReset = vbox->createChild<BuGUI::Button>("Reset Camera");
+    btnReset->clicked.connect([this]() { resetCamera(); });
+
+    auto mkCheck = [&](const char* text, bool& flag) {
+        auto* cb = vbox->createChild<BuGUI::CheckBox>(text);
+        cb->setChecked(flag);
+        cb->toggled.connect([this, &flag](bool v) { flag = v; syncVisibility(); });
+    };
+    mkCheck("Particles",    showParticles_);
+    mkCheck("Decals",       showDecals_);
+    mkCheck("Grass",        showGrass_);
+    mkCheck("Lens Flare",   showLensFlare_);
+    mkCheck("Manual Mesh",  showManualMesh_);
+    mkCheck("Ribbon Trail", showRibbonTrail_);
+
+    smokeLabel_  = vbox->createChild<BuGUI::Label>("Smoke: 0");
+    sparkLabel_  = vbox->createChild<BuGUI::Label>("Spark: 0");
+    decalLabel_  = vbox->createChild<BuGUI::Label>("Decals: 0");
+    grassLabel_  = vbox->createChild<BuGUI::Label>("Grass: 0");
+    manualLabel_ = vbox->createChild<BuGUI::Label>("Manual verts: 0");
+    ribbonLabel_ = vbox->createChild<BuGUI::Label>("Ribbon chains: 0");
+
     return true;
 }
 
@@ -212,45 +259,12 @@ inline void EffectsDemo::update(float dt)
 
 inline void EffectsDemo::drawGui()
 {
-    ImGui::SetNextWindowPos(ImVec2(16, 72), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Once);
-    if (!ImGui::Begin("Effects Lab"))
-    {
-        ImGui::End();
-        return;
-    }
-
-    ImGui::TextWrapped("%s", description());
-    ImGui::TextWrapped("Assets root: %s", assetRoot_.c_str());
-
-    if (ImGui::Button("Reset Camera"))
-        resetCamera();
-
-    if (ImGui::Checkbox("Particles", &showParticles_))
-        syncVisibility();
-    if (ImGui::Checkbox("Decals", &showDecals_))
-        syncVisibility();
-    if (ImGui::Checkbox("Grass", &showGrass_))
-        syncVisibility();
-    if (ImGui::Checkbox("Lens Flare", &showLensFlare_))
-        syncVisibility();
-    if (ImGui::Checkbox("Manual Mesh", &showManualMesh_))
-        syncVisibility();
-    if (ImGui::Checkbox("Ribbon Trail", &showRibbonTrail_))
-        syncVisibility();
-
-    ImGui::SeparatorText("Stats");
-    ImGui::Text("Smoke particles: %d", smokeEmitter_ ? smokeEmitter_->activeCount() : 0);
-    ImGui::Text("Spark particles: %d", sparkEmitter_ ? sparkEmitter_->activeCount() : 0);
-    ImGui::Text("Decals active: %d", decalNode_ ? decalNode_->activeCount() : 0);
-    ImGui::Text("Grass clumps: %d", grassNode_ ? grassNode_->clumpCount() : 0);
-    ImGui::Text("Manual mesh verts: %d", manualMeshNode_ ? manualMeshNode_->vertexCount() : 0);
-    ImGui::Text("Ribbon chains: %d", ribbonTrailNode_ ? ribbonTrailNode_->activeChainCount() : 0);
-
-    ImGui::SeparatorText("Notes");
-    ImGui::TextWrapped("Particles usam RenderType::Transparent, decals ficam em Special, grass em Terrain e lens flare em Overlay para separar shaders no pipeline atual.");
-
-    ImGui::End();
+    if (smokeLabel_)  smokeLabel_ ->setText("Smoke: "  + std::to_string(smokeEmitter_    ? smokeEmitter_->activeCount()        : 0));
+    if (sparkLabel_)  sparkLabel_ ->setText("Spark: "  + std::to_string(sparkEmitter_    ? sparkEmitter_->activeCount()        : 0));
+    if (decalLabel_)  decalLabel_ ->setText("Decals: " + std::to_string(decalNode_        ? decalNode_->activeCount()           : 0));
+    if (grassLabel_)  grassLabel_ ->setText("Grass: "  + std::to_string(grassNode_        ? grassNode_->clumpCount()            : 0));
+    if (manualLabel_) manualLabel_->setText("Manual verts: " + std::to_string(manualMeshNode_ ? manualMeshNode_->vertexCount() : 0));
+    if (ribbonLabel_) ribbonLabel_->setText("Ribbon chains: " + std::to_string(ribbonTrailNode_? ribbonTrailNode_->activeChainCount() : 0));
 }
 
 inline void EffectsDemo::render()
@@ -285,6 +299,9 @@ inline void EffectsDemo::shutdown()
 {
     scene_.clear();
     unloadDemoAssets();
+
+    if (fw_) { BuGUI::WidgetApp::instance().removeFloat(fw_); fw_ = nullptr; }
+    smokeLabel_ = sparkLabel_ = decalLabel_ = grassLabel_ = manualLabel_ = ribbonLabel_ = nullptr;
 
     camera_ = nullptr;
     litShader_ = nullptr;

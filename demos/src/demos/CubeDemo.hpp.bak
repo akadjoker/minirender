@@ -1,0 +1,255 @@
+#pragma once
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+
+#include "Demo.hpp"
+#include <WidgetApp.hpp>
+#include <BasicWidgets.hpp>
+#include <InputWidgets.hpp>
+#include <ViewWidgets.hpp>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CubeDemo – a spinning cube with a BuGUI panel for live 3D-widget testing.
+// ─────────────────────────────────────────────────────────────────────────────
+class CubeDemo : public IDemo
+{
+public:
+    const char *title()       const override { return "Cube Demo"; }
+    const char *description() const override { return "Spinning cube – 3D widget test bench"; }
+
+    bool setup(Device &device) override;
+    void update(float dt)      override;
+    void drawGui()             override;
+    void render()              override;
+    void shutdown()            override;
+
+private:
+    static Shader *createShader();
+    void           resetCamera();
+
+    Device   *device_     = nullptr;
+    Scene     scene_;
+    Camera   *camera_     = nullptr;
+    MeshNode *cubeNode_   = nullptr;
+    MeshNode *groundNode_ = nullptr;
+    Shader   *shader_     = nullptr;
+
+    // Animation state
+    float yaw_        = 0.0f;   // degrees
+    bool  autoRotate_ = true;
+    float rotSpeed_   = 45.0f;  // degrees per second
+
+    // Cube appearance
+    glm::vec4 cubeColor_   = {0.35f, 0.60f, 1.00f, 1.0f};
+    float     cubeScale_   = 1.0f;
+
+    // GUI handles
+    BuGUI::FloatWindow *fw_        = nullptr;
+    BuGUI::Label       *infoLabel_ = nullptr;
+};
+
+// ─── setup ───────────────────────────────────────────────────────────────────
+inline bool CubeDemo::setup(Device &device)
+{
+    device_ = &device;
+
+    shader_ = createShader();
+    if (!shader_)
+        return false;
+
+    camera_ = scene_.createFreeCamera("cube_cam",
+                                      device.GetWidth(), device.GetHeight(),
+                                      glm::vec3(4.0f, 3.0f, 6.0f),
+                                      glm::vec3(0.0f, 0.0f, 0.0f),
+                                      6.0f, 0.18f, 3.0f);
+    if (!camera_)
+        return false;
+
+    camera_->clearColorVal = glm::vec4(0.10f, 0.10f, 0.15f, 1.0f);
+
+    Mesh *cubeMesh   = MeshManager::instance().create_cube("cube_demo_mesh", 1.0f);
+    Mesh *groundMesh = MeshManager::instance().create_plane("cube_ground_mesh", 14.0f, 14.0f, 1);
+    if (!cubeMesh || !groundMesh)
+        return false;
+
+    cubeNode_  = scene_.createMeshNode("cube_demo_node",   cubeMesh);
+    groundNode_ = scene_.createMeshNode("cube_ground_node", groundMesh);
+    if (!cubeNode_ || !groundNode_)
+        return false;
+
+    // Ground sits just below the cube (cube centre is at origin, half-height = 0.5)
+    groundNode_->setPosition(0.0f, -0.5f, 0.0f);
+    groundNode_->renderType = RenderType::Special;
+
+    // ── Build the FloatWindow ────────────────────────────────────────────────
+    fw_ = BuGUI::WidgetApp::instance().addFloat<BuGUI::FloatWindow>("Cube Controls");
+    fw_->setFloatPos(16.0f, 72.0f);
+    fw_->setFloatSize(230.0f, 360.0f);
+    fw_->setClosable(false);
+    fw_->setResizable(false);
+
+    auto *vbox = fw_->setContent<BuGUI::BoxLayout>(BuGUI::LayoutDir::Vertical);
+    vbox->setSpacing(4.0f);
+    vbox->setPadding(4.0f);
+
+    // Colour – individual R/G/B sliders
+    vbox->createChild<BuGUI::Label>("Color R");
+    auto *sR = vbox->createChild<BuGUI::Slider>(0.0f, 1.0f, cubeColor_.r);
+    sR->onValueChanged.connect([this](float v) { cubeColor_.r = v; });
+
+    vbox->createChild<BuGUI::Label>("Color G");
+    auto *sG = vbox->createChild<BuGUI::Slider>(0.0f, 1.0f, cubeColor_.g);
+    sG->onValueChanged.connect([this](float v) { cubeColor_.g = v; });
+
+    vbox->createChild<BuGUI::Label>("Color B");
+    auto *sB = vbox->createChild<BuGUI::Slider>(0.0f, 1.0f, cubeColor_.b);
+    sB->onValueChanged.connect([this](float v) { cubeColor_.b = v; });
+
+    // Rotation speed
+    vbox->createChild<BuGUI::Label>("Rot speed (deg/s)");
+    auto *sSpd = vbox->createChild<BuGUI::Slider>(-180.0f, 180.0f, rotSpeed_);
+    sSpd->onValueChanged.connect([this](float v) { rotSpeed_ = v; });
+
+    // Scale
+    vbox->createChild<BuGUI::Label>("Scale");
+    auto *sSc = vbox->createChild<BuGUI::Slider>(0.1f, 5.0f, cubeScale_);
+    sSc->onValueChanged.connect([this](float v) { cubeScale_ = v; });
+
+    // Auto-rotate checkbox
+    auto *cbAuto = vbox->createChild<BuGUI::CheckBox>("Auto-rotate");
+    cbAuto->setChecked(autoRotate_);
+    cbAuto->toggled.connect([this](bool v) { autoRotate_ = v; });
+
+    // Reset camera button
+    auto *btnReset = vbox->createChild<BuGUI::Button>("Reset Camera");
+    btnReset->clicked.connect([this]() { resetCamera(); });
+
+    // Info label (updated each frame in drawGui)
+    infoLabel_ = vbox->createChild<BuGUI::Label>("yaw: 0.0  scale: 1.00");
+
+    return true;
+}
+
+// ─── update ──────────────────────────────────────────────────────────────────
+inline void CubeDemo::update(float dt)
+{
+    if (autoRotate_)
+        yaw_ = std::fmod(yaw_ + rotSpeed_ * dt, 360.0f);
+
+    if (cubeNode_)
+    {
+        cubeNode_->setRotationEuler(glm::vec3(0.0f, yaw_, 0.0f));
+        cubeNode_->setScale(cubeScale_);
+    }
+
+    if (camera_)
+        camera_->setViewport(0, 0, device_->GetWidth(), device_->GetHeight());
+
+    scene_.update(dt);
+}
+
+// ─── drawGui ─────────────────────────────────────────────────────────────────
+inline void CubeDemo::drawGui()
+{
+    if (infoLabel_)
+    {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "yaw: %.1f  scale: %.2f", yaw_, cubeScale_);
+        infoLabel_->setText(buf);
+    }
+}
+
+// ─── render ──────────────────────────────────────────────────────────────────
+inline void CubeDemo::render()
+{
+    if (!camera_)
+        return;
+
+    const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.25f));
+    const glm::vec3 ambient  = glm::vec3(0.18f, 0.18f, 0.22f);
+
+    scene_.setCamera(camera_);
+    scene_.beginPass();
+
+    scene_.setShader(shader_);
+
+    // Cube – user-controlled colour
+    shader_->setVec4("u_color",    cubeColor_);
+    shader_->setVec3("u_lightDir", lightDir);
+    shader_->setVec3("u_ambient",  ambient);
+    scene_.render(RenderType::Solid);
+
+    // Ground – fixed dark grey
+    shader_->setVec4("u_color",    glm::vec4(0.30f, 0.32f, 0.28f, 1.0f));
+    shader_->setVec3("u_lightDir", lightDir);
+    shader_->setVec3("u_ambient",  ambient);
+    scene_.render(RenderType::Special);
+
+    scene_.endPass();
+}
+
+// ─── shutdown ────────────────────────────────────────────────────────────────
+inline void CubeDemo::shutdown()
+{
+    scene_.clear();
+    unloadDemoAssets();
+
+    if (fw_) { BuGUI::WidgetApp::instance().removeFloat(fw_); fw_ = nullptr; }
+    infoLabel_ = nullptr;
+    camera_    = nullptr;
+    shader_    = nullptr;
+    cubeNode_  = nullptr;
+    groundNode_ = nullptr;
+}
+
+// ─── resetCamera ─────────────────────────────────────────────────────────────
+inline void CubeDemo::resetCamera()
+{
+    if (!camera_)
+        return;
+    camera_->setPosition(glm::vec3(4.0f, 3.0f, 6.0f));
+    camera_->lookAt(glm::vec3(0.0f, 0.0f, 0.0f));
+    camera_->updateMatrices();
+}
+
+// ─── createShader ────────────────────────────────────────────────────────────
+inline Shader *CubeDemo::createShader()
+{
+    const char *vert = GLSL(
+        layout(location = 0) in vec3 position;
+        layout(location = 1) in vec3 normal;
+
+        uniform mat4 u_model;
+        uniform mat4 u_view;
+        uniform mat4 u_projection;
+        uniform mat3 u_normalMatrix;
+
+        out vec3 v_normal;
+
+        void main()
+        {
+            v_normal    = normalize(u_normalMatrix * normal);
+            gl_Position = u_projection * u_view * u_model * vec4(position, 1.0);
+        });
+
+    const char *frag = GLSL(
+        in  vec3 v_normal;
+        out vec4 FragColor;
+
+        uniform vec4 u_color;
+        uniform vec3 u_lightDir;
+        uniform vec3 u_ambient;
+
+        void main()
+        {
+            vec3  N    = normalize(v_normal);
+            vec3  L    = normalize(-u_lightDir);
+            float diff = max(dot(N, L), 0.0);
+            vec3  lit  = u_color.rgb * (u_ambient + vec3(0.9 * diff));
+            FragColor  = vec4(lit, u_color.a);
+        });
+
+    return ShaderManager::instance().loadFromSource("cube_demo_shader", vert, frag);
+}

@@ -4,6 +4,7 @@
 
 bool Input::currentMouseState[MAX_MOUSE_BUTTONS] = {false};
 bool Input::previousMouseState[MAX_MOUSE_BUTTONS] = {false};
+bool Input::s_guiBlocked = false;
 glm::vec2 Input::mousePosition = {0.0f, 0.0f};
 glm::vec2 Input::mousePreviousPosition = {0.0f, 0.0f};
 glm::vec2 Input::mouseOffset = {0.0f, 0.0f};
@@ -179,19 +180,19 @@ void Input::OnKeyUp(const SDL_KeyboardEvent &event)
 
 bool Input::IsMousePressed(MouseButton button)
 {
-    bool pressed = false;
-    if ((currentMouseState[button] == true) && (previousMouseState[button] == false))
-        pressed = true;
-    return pressed;
+    if (s_guiBlocked) return false;
+    return currentMouseState[button] && !previousMouseState[button];
 }
 
 bool Input::IsMouseDown(MouseButton button)
 {
+    if (s_guiBlocked) return false;
     return currentMouseState[button];
 }
 
 bool Input::IsMouseReleased(MouseButton button)
 {
+    if (s_guiBlocked) return false;
     return !currentMouseState[button] && previousMouseState[button];
 }
 
@@ -207,6 +208,7 @@ glm::vec2 Input::GetMousePosition()
 
 glm::vec2 Input::GetMouseDelta()
 {
+    if (s_guiBlocked) return {0.0f, 0.0f};
     return {mousePosition.x - mousePreviousPosition.x, mousePosition.y - mousePreviousPosition.y};
 }
 
@@ -237,11 +239,13 @@ void Input::SetMouseScale(float scaleX, float scaleY)
 
 glm::vec2 Input::GetMouseWheelMove()
 {
+    if (s_guiBlocked) return {0.0f, 0.0f};
     return mouseWheel;
 }
 
 float Input::GetMouseWheelMoveV()
 {
+    if (s_guiBlocked) return 0.0f;
     return mouseWheel.y;
 }
 

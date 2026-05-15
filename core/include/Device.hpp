@@ -1,13 +1,13 @@
 #pragma once
 
 #include "Config.hpp"
+#include <BuGUI.hpp>
 #include <SDL2/SDL.h>
 #include <memory>
 #include <string>
 
-// Forward-declare so Device.hpp doesn't pull all of imgui.h into every TU
-struct ImGuiContext;
 class Pixmap;
+class BuGUIRenderer;
 
 class     Device final
 {
@@ -66,15 +66,25 @@ public:
     SDL_Window*   GetWindow() const { return m_window; }
     SDL_GLContext  GetGLContext() const { return m_context; }
 
-    // ── ImGui integration ────────────────────────────────────────
-    // Call once after Create().  glsl_version e.g. "#version 300 es"
-    void ImGuiInit(const char *glsl_version = "#version 300 es");
-    // Call at the start of render — opens a new ImGui frame
-    void ImGuiBegin();
-    // Call at the end of render — renders ImGui draw data
-    void ImGuiEnd();
-    // Called automatically by Close(), but safe to call manually
-    void ImGuiShutdown();
+    // ── BuGUI integration ────────────────────────────────────────
+    // Call once after Create().  Builds the default font atlas and
+    // wires up SDL clipboard / file-I/O callbacks.
+    void BuGUIInit();
+    // Call at the start of each frame — feeds SDL events into BuGUI
+    // IO and calls BuGUI::NewFrame().
+    void BuGUIBegin();
+    // Call after all widget draw calls — calls BuGUI::Render().
+    // The actual GPU render happens inside Flip().
+    void BuGUIEnd();
+    // Called automatically by Close(), but safe to call manually.
+    void BuGUIShutdown();
+
+    // Upload an RGBA image to a BuGUI texture handle.
+    BuGUI::TextureHandle BuGUICreateTexture(int w, int h, const unsigned char* rgba);
+    void                 BuGUIDestroyTexture(BuGUI::TextureHandle handle);
+
+    // Access to the default font atlas (valid after BuGUIInit()).
+    const BuGUI::FontAtlas* GetBuGUIFontAtlas() const { return m_fontAtlas.get(); }
 
     static Device& Instance();
     static Device* InstancePtr();
@@ -100,7 +110,10 @@ private:
     bool m_vsyncEnabled;
     bool m_ready;
     Sint32 m_closekey;
-    bool m_imguiReady = false;
+    bool m_buguiReady  = false;
+    double m_buguiPrevTime = 0.0;
+    std::unique_ptr<BuGUIRenderer>    m_buguiRenderer;
+    std::unique_ptr<BuGUI::FontAtlas> m_fontAtlas;
     std::unique_ptr<GifRecordingState> m_gifRecording;
     std::unique_ptr<FrameSequenceRecordingState> m_frameSequenceRecording;
     std::string m_lastFrameSequenceDirectory;

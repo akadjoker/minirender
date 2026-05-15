@@ -1,5 +1,4 @@
 project(spritegen)
-cmake_policy(SET CMP0072 NEW)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,40 +24,26 @@ add_compile_options(
     -funsigned-char
 )
 
+# Reuse the original SpritePreviewRenderer (no ImGui deps)
+set(ORIG_SRC ${CMAKE_SOURCE_DIR}/_spritegen/src)
 
 add_executable(spritegen
-    src/SpriteGeneratorApp.cpp
-    src/SpritePreviewRenderer.cpp
-    src/SpriteTheme.cpp
     src/main.cpp
+    ${ORIG_SRC}/SpritePreviewRenderer.cpp
 )
 
-if (WIN32)
-    set(LIBS_DIR "E:/windows/libs")
-    target_include_directories(spritegen PUBLIC "${LIBS_DIR}/include" include src)
-else()
-    target_include_directories(spritegen PUBLIC
-        include
-        src
-        ${CMAKE_SOURCE_DIR}/vendor/imgui
-        ${CMAKE_SOURCE_DIR}/vendor/nlohmann
-    )
-endif()
+target_include_directories(spritegen PRIVATE
+    src
+    ${ORIG_SRC}
+    ${CMAKE_SOURCE_DIR}/vendor/widgets/include
+    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+    ${SDL2_INCLUDE_DIRS}
+)
 
-if(CMAKE_BUILD_TYPE MATCHES Debug)
-    if (UNIX)
-        target_compile_options(spritegen PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
-        target_link_options(spritegen PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
-    endif()
-elseif(CMAKE_BUILD_TYPE MATCHES Release)
-    target_compile_options(spritegen PRIVATE -O3 -DNDEBUG)
-    target_link_options(spritegen PRIVATE -O3 -DNDEBUG)
-endif()
-
-if (WIN32)
-    target_link_libraries(spritegen core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib" Winmm.lib opengl32.lib)
-endif()
-
-if (UNIX)
-    target_link_libraries(spritegen core imgui m SDL2 GL)
-endif()
+target_link_libraries(spritegen PRIVATE
+    core
+    bugui_widgets
+    ${SDL2_LIBRARIES}
+    OpenGL::GL
+    m
+)

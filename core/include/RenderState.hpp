@@ -19,6 +19,7 @@ public:
     void setCullFace(GLenum mode);
     void setBlend(bool enabled);
     void setBlendFunc(GLenum src, GLenum dst);
+    void setBlendEquation(GLenum mode);
     void setScissorTest(bool enabled);
     void setScissor(GLint x, GLint y, GLsizei width, GLsizei height);
 
@@ -51,6 +52,9 @@ private:
     bool blendFuncKnown_ = false;
     GLenum blendSrc_ = GL_ONE;
     GLenum blendDst_ = GL_ZERO;
+
+    bool blendEqKnown_ = false;
+    GLenum blendEq_ = GL_FUNC_ADD;
 
     bool scissorTestKnown_ = false;
     bool scissorTestEnabled_ = false;

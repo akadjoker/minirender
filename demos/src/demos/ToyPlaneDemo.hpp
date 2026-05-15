@@ -8,7 +8,10 @@
 
 #include "Demo.hpp"
 #include "Effects.hpp"
-#include "imgui.h"
+#include <WidgetApp.hpp>
+#include <ViewWidgets.hpp>
+#include <BasicWidgets.hpp>
+#include <InputWidgets.hpp>
 
 class ToyPlaneDemo : public IDemo
 {
@@ -94,6 +97,12 @@ private:
     bool showPlane_;
     bool showRope_;
     bool showTrail_;
+
+    // Retained widgets
+    BuGUI::FloatWindow* fw_         = nullptr;
+    BuGUI::Label*       framesLabel_ = nullptr;
+    BuGUI::Label*       samplesLabel_= nullptr;
+    BuGUI::Label*       orbitLabel_  = nullptr;
 };
 
 inline ToyPlaneDemo::ToyPlaneDemo()
@@ -218,6 +227,70 @@ inline bool ToyPlaneDemo::setup(Device &device)
     }
 
     resetCamera();
+
+    // ── Retained UI ────────────────────────────────────────────
+    fw_ = BuGUI::WidgetApp::instance().addFloat<BuGUI::FloatWindow>("ToyPlane");
+    fw_->setFloatPos(16.0f, 72.0f);
+    fw_->setFloatSize(300.0f, 480.0f);
+    fw_->setClosable(false);
+    fw_->setResizable(false);
+
+    auto* vbox = fw_->setContent<BuGUI::BoxLayout>(BuGUI::LayoutDir::Vertical);
+    vbox->setSpacing(4.0f);
+    vbox->setPadding(4.0f);
+
+    // Camera / Trail reset buttons side by side
+    auto* hrow = vbox->createChild<BuGUI::BoxLayout>(BuGUI::LayoutDir::Horizontal);
+    hrow->setSpacing(4.0f);
+    auto* btnCam = hrow->createChild<BuGUI::Button>("Reset Camera");
+    btnCam->clicked.connect([this]() { resetCamera(); });
+    auto* btnTrail = hrow->createChild<BuGUI::Button>("Reset Trail");
+    btnTrail->clicked.connect([this]() { if (trailNode_) trailNode_->clearSamples(); });
+
+    auto mkCheck = [&](const char* text, bool& flag) {
+        auto* cb = vbox->createChild<BuGUI::CheckBox>(text);
+        cb->setChecked(flag);
+        cb->toggled.connect([&flag](bool v) { flag = v; });
+    };
+    mkCheck("Play",  play_);
+    mkCheck("Plane", showPlane_);
+    mkCheck("Rope",  showRope_);
+    {
+        auto* cb = vbox->createChild<BuGUI::CheckBox>("Trail");
+        cb->setChecked(showTrail_);
+        cb->toggled.connect([this](bool v) {
+            showTrail_ = v;
+            if (!v && trailNode_) trailNode_->clearSamples();
+        });
+    }
+
+    auto mkSlider = [&](const char* /*label*/, float& var, float lo, float hi) {
+        auto* s = vbox->createChild<BuGUI::Slider>(lo, hi, var);
+        s->onValueChanged.connect([&var](float v) { var = v; });
+    };
+    mkSlider("Speed Ratio",    speedRatio_,           0.0f,   1.2f);
+    mkSlider("Orbit Speed",    orbitSpeed_,           45.0f, 540.0f);
+    mkSlider("Bank Angle",     bankAngle_,             0.0f,  75.0f);
+    mkSlider("Mast Height",    mastHeight_,            3.0f,  18.0f);
+    mkSlider("Rope Length",    ropeLength_,            2.0f,  10.0f);
+    mkSlider("Heading Offset", headingOffset_,       -180.0f, 180.0f);
+    mkSlider("Plane Scale",    planeScale_,           0.04f,   0.22f);
+    mkSlider("Trail Lifetime", trailLifetime_,         0.15f,   1.5f);
+    mkSlider("Sample Dist",    trailSampleDistance_,  0.01f,   0.35f);
+    mkSlider("Wing Half Span", wingHalfSpan_,          5.0f,  80.0f);
+    mkSlider("Wing Height",    wingHeightBias_,      -20.0f,  20.0f);
+    mkSlider("Wing Depth",     wingDepthBias_,       -20.0f,  20.0f);
+    mkSlider("Mesh Offset X",  planeVisualOffset_.x, -80.0f,  80.0f);
+    mkSlider("Mesh Offset Y",  planeVisualOffset_.y, -80.0f,  80.0f);
+    mkSlider("Mesh Offset Z",  planeVisualOffset_.z, -80.0f,  80.0f);
+    mkSlider("Mesh Yaw",       meshYawOffset_,      -180.0f, 180.0f);
+    mkSlider("Mesh Pitch",     meshPitchOffset_,    -180.0f, 180.0f);
+    mkSlider("Mesh Roll",      meshRollOffset_,     -180.0f, 180.0f);
+
+    framesLabel_  = vbox->createChild<BuGUI::Label>("MD2 frames: 0");
+    samplesLabel_ = vbox->createChild<BuGUI::Label>("Trail samples: 0");
+    orbitLabel_   = vbox->createChild<BuGUI::Label>("Orbit angle: 0.0");
+
     return true;
 }
 
@@ -501,59 +574,19 @@ inline void ToyPlaneDemo::rebuildRope()
 
 inline void ToyPlaneDemo::drawGui()
 {
-    ImGui::SetNextWindowPos(ImVec2(16, 72), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Once);
-    if (!ImGui::Begin("Toy Plane"))
-    {
-        ImGui::End();
-        return;
+    char buf[64];
+    if (framesLabel_) {
+        std::snprintf(buf, sizeof(buf), "MD2 frames: %d", planeMesh_ ? planeMesh_->frameCount() : 0);
+        framesLabel_->setText(buf);
     }
-
-    ImGui::TextWrapped("%s", description());
-    ImGui::TextWrapped("Toyplane root: %s", toyRoot_.c_str());
-
-    if (ImGui::Button("Reset Camera"))
-        resetCamera();
-    ImGui::SameLine();
-    if (ImGui::Button("Reset Trail") && trailNode_)
-        trailNode_->clearSamples();
-
-    ImGui::Checkbox("Play", &play_);
-    ImGui::Checkbox("Plane", &showPlane_);
-    ImGui::Checkbox("Rope", &showRope_);
-    if (ImGui::Checkbox("Trail", &showTrail_) && !showTrail_ && trailNode_)
-        trailNode_->clearSamples();
-
-    ImGui::SeparatorText("Flight");
-    ImGui::SliderFloat("Speed Ratio", &speedRatio_, 0.0f, 1.2f, "%.2f");
-    ImGui::SliderFloat("Orbit Speed", &orbitSpeed_, 45.0f, 540.0f, "%.1f deg/s");
-    ImGui::SliderFloat("Bank Angle", &bankAngle_, 0.0f, 75.0f, "%.1f deg");
-    ImGui::SliderFloat("Mast Height", &mastHeight_, 3.0f, 18.0f, "%.2f");
-    ImGui::SliderFloat("Rope Length", &ropeLength_, 2.0f, 10.0f, "%.2f");
-    ImGui::SliderFloat("Heading Offset", &headingOffset_, -180.0f, 180.0f, "%.1f deg");
-    ImGui::SliderFloat("Plane Scale", &planeScale_, 0.04f, 0.22f, "%.3f");
-
-    ImGui::SeparatorText("Trail");
-    ImGui::SliderFloat("Trail Lifetime", &trailLifetime_, 0.15f, 1.5f, "%.2f s");
-    ImGui::SliderFloat("Sample Distance", &trailSampleDistance_, 0.01f, 0.35f, "%.2f");
-    ImGui::SliderFloat("Wing Half Span", &wingHalfSpan_, 5.0f, 80.0f, "%.1f");
-    ImGui::SliderFloat("Wing Height", &wingHeightBias_, -20.0f, 20.0f, "%.2f");
-    ImGui::SliderFloat("Wing Depth", &wingDepthBias_, -20.0f, 20.0f, "%.2f");
-
-    ImGui::SeparatorText("Mesh Align");
-    ImGui::SliderFloat("Mesh Offset X", &planeVisualOffset_.x, -80.0f, 80.0f, "%.2f");
-    ImGui::SliderFloat("Mesh Offset Y", &planeVisualOffset_.y, -80.0f, 80.0f, "%.2f");
-    ImGui::SliderFloat("Mesh Offset Z", &planeVisualOffset_.z, -80.0f, 80.0f, "%.2f");
-    ImGui::SliderFloat("Mesh Yaw", &meshYawOffset_, -180.0f, 180.0f, "%.1f deg");
-    ImGui::SliderFloat("Mesh Pitch", &meshPitchOffset_, -180.0f, 180.0f, "%.1f deg");
-    ImGui::SliderFloat("Mesh Roll", &meshRollOffset_, -180.0f, 180.0f, "%.1f deg");
-
-    ImGui::SeparatorText("Stats");
-    ImGui::Text("MD2 frames: %d", planeMesh_ ? planeMesh_->frameCount() : 0);
-    ImGui::Text("Trail samples: %d", trailNode_ ? trailNode_->sampleCount() : 0);
-    ImGui::Text("Orbit angle: %.1f", orbitAngle_);
-
-    ImGui::End();
+    if (samplesLabel_) {
+        std::snprintf(buf, sizeof(buf), "Trail samples: %d", trailNode_ ? trailNode_->sampleCount() : 0);
+        samplesLabel_->setText(buf);
+    }
+    if (orbitLabel_) {
+        std::snprintf(buf, sizeof(buf), "Orbit angle: %.1f", orbitAngle_);
+        orbitLabel_->setText(buf);
+    }
 }
 
 inline void ToyPlaneDemo::render()
@@ -592,6 +625,9 @@ inline void ToyPlaneDemo::shutdown()
 {
     scene_.clear();
     unloadDemoAssets();
+
+    if (fw_) { BuGUI::WidgetApp::instance().removeFloat(fw_); fw_ = nullptr; }
+    framesLabel_ = samplesLabel_ = orbitLabel_ = nullptr;
 
     camera_ = nullptr;
     litShader_ = nullptr;

@@ -7,7 +7,11 @@
 #include "Demo.hpp"
 #include "Manager.hpp"
 #include "TerrainNode.hpp"
-#include "imgui.h"
+#include <WidgetApp.hpp>
+#include <ViewWidgets.hpp>
+#include <BasicWidgets.hpp>
+#include <InputWidgets.hpp>
+#include <ComboBox.hpp>
 
 class TerrainDemo : public IDemo
 {
@@ -90,6 +94,15 @@ private:
     float probeZ_;
     float sampledHeight_;
     glm::vec3 sampledNormal_;
+
+    // Retained widgets
+    BuGUI::FloatWindow* fw_         = nullptr;
+    BuGUI::ComboBox*    terrainCombo_ = nullptr;
+    BuGUI::CheckBox*    lodDebugCbx_  = nullptr;
+    BuGUI::Slider*      probeXSlider_ = nullptr;
+    BuGUI::Slider*      probeZSlider_ = nullptr;
+    BuGUI::Label*       heightLabel_  = nullptr;
+    BuGUI::Label*       normalLabel_  = nullptr;
 };
 
 inline TerrainDemo::TerrainDemo()
@@ -146,6 +159,54 @@ inline bool TerrainDemo::setup(Device &device)
 
     debugBatch_.Init();
     setActiveTerrain(TerrainHeightmap, true);
+
+    // ── Retained UI ───────────────────────────────────────────────
+    fw_ = BuGUI::WidgetApp::instance().addFloat<BuGUI::FloatWindow>("Terrain");
+    fw_->setFloatPos(16.0f, 72.0f);
+    fw_->setFloatSize(300.0f, 340.0f);
+    fw_->setClosable(false);
+    fw_->setResizable(false);
+
+    auto* vbox = fw_->setContent<BuGUI::BoxLayout>(BuGUI::LayoutDir::Vertical);
+    vbox->setSpacing(4.0f);
+    vbox->setPadding(4.0f);
+
+    terrainCombo_ = vbox->createChild<BuGUI::ComboBox>();
+    terrainCombo_->addItem("Flat");
+    terrainCombo_->addItem("HeightMap");
+    terrainCombo_->addItem("Tiled");
+    terrainCombo_->addItem("Infinite LOD");
+    terrainCombo_->setSelectedIndex(activeTerrain_);
+    terrainCombo_->selectionChanged.connect([this](int idx) {
+        setActiveTerrain(idx, true);
+        if (lodDebugCbx_) lodDebugCbx_->setVisible(activeTerrain_ == TerrainLod);
+        ProbeRange r = probeRange();
+        if (probeXSlider_) probeXSlider_->setRange(r.minX, r.maxX);
+        if (probeZSlider_) probeZSlider_->setRange(r.minZ, r.maxZ);
+    });
+
+    auto* probeCbx = vbox->createChild<BuGUI::CheckBox>("Show Probe");
+    probeCbx->setChecked(showProbe_);
+    probeCbx->toggled.connect([this](bool v) { showProbe_ = v; });
+
+    lodDebugCbx_ = vbox->createChild<BuGUI::CheckBox>("Show LOD Debug");
+    lodDebugCbx_->setChecked(showLodDebug_);
+    lodDebugCbx_->toggled.connect([this](bool v) { showLodDebug_ = v; });
+    lodDebugCbx_->setVisible(activeTerrain_ == TerrainLod);
+
+    auto* btnReset = vbox->createChild<BuGUI::Button>("Reset Camera");
+    btnReset->clicked.connect([this]() { resetCameraForCurrentTerrain(); });
+
+    ProbeRange r = probeRange();
+    probeXSlider_ = vbox->createChild<BuGUI::Slider>(r.minX, r.maxX, probeX_);
+    probeXSlider_->onValueChanged.connect([this](float v) { probeX_ = v; syncProbe(); });
+
+    probeZSlider_ = vbox->createChild<BuGUI::Slider>(r.minZ, r.maxZ, probeZ_);
+    probeZSlider_->onValueChanged.connect([this](float v) { probeZ_ = v; syncProbe(); });
+
+    heightLabel_ = vbox->createChild<BuGUI::Label>("Height: 0.000");
+    normalLabel_ = vbox->createChild<BuGUI::Label>("Normal: 0 1 0");
+
     return true;
 }
 
@@ -163,61 +224,16 @@ inline void TerrainDemo::update(float dt)
 
 inline void TerrainDemo::drawGui()
 {
-    ImGui::SetNextWindowPos(ImVec2(16, 72), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Once);
-    if (!ImGui::Begin("Terrain Tests"))
-    {
-        ImGui::End();
-        return;
+    char buf[64];
+    if (heightLabel_) {
+        std::snprintf(buf, sizeof(buf), "Height: %.3f", sampledHeight_);
+        heightLabel_->setText(buf);
     }
-
-    int selected = activeTerrain_;
-    if (ImGui::BeginCombo("Teste", terrainCaseName(activeTerrain_)))
-    {
-        for (int i = 0; i < 4; ++i)
-        {
-            const bool isSelected = (i == activeTerrain_);
-            if (ImGui::Selectable(terrainCaseName(i), isSelected))
-                selected = i;
-            if (isSelected)
-                ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
+    if (normalLabel_) {
+        std::snprintf(buf, sizeof(buf), "Normal: %.3f %.3f %.3f",
+                      sampledNormal_.x, sampledNormal_.y, sampledNormal_.z);
+        normalLabel_->setText(buf);
     }
-
-    if (selected != activeTerrain_)
-        setActiveTerrain(selected, true);
-
-    ImGui::TextWrapped("%s", terrainCaseDescription(activeTerrain_));
-    ImGui::TextWrapped("Assets root: %s", assetRoot_.c_str());
-
-    if (ImGui::Button("Reset Camera"))
-        resetCameraForCurrentTerrain();
-
-    ImGui::Checkbox("Show Probe", &showProbe_);
-    if (activeTerrain_ == TerrainLod)
-        ImGui::Checkbox("Show LOD Debug", &showLodDebug_);
-
-    ProbeRange range = probeRange();
-    if (ImGui::SliderFloat("Probe X", &probeX_, range.minX, range.maxX))
-        syncProbe();
-    if (ImGui::SliderFloat("Probe Z", &probeZ_, range.minZ, range.maxZ))
-        syncProbe();
-
-    ImGui::SeparatorText("Sample");
-    ImGui::Text("Height: %.3f", sampledHeight_);
-    ImGui::Text("Normal: %.3f %.3f %.3f", sampledNormal_.x, sampledNormal_.y, sampledNormal_.z);
-
-    if (terrainNode_)
-        ImGui::TextDisabled("TerrainNode: %s", terrainNode_->visible ? "active" : "hidden");
-    if (terrainLodNode_)
-        ImGui::TextDisabled("TerrainLodNode: %s", terrainLodNode_->visible ? "active" : "hidden");
-    if (tiledTerrainNode_)
-        ImGui::TextDisabled("TiledTerrainNode: %s", tiledTerrainNode_->visible ? "active" : "hidden");
-    if (infiniteTerrainNode_)
-        ImGui::TextDisabled("InfiniteTerrainNode: %s", infiniteTerrainNode_->visible ? "active" : "hidden");
-
-    ImGui::End();
 }
 
 inline void TerrainDemo::render()
@@ -252,6 +268,10 @@ inline void TerrainDemo::shutdown()
     scene_.clear();
     unloadDemoAssets();
 
+    if (fw_) { BuGUI::WidgetApp::instance().removeFloat(fw_); fw_ = nullptr; }
+    terrainCombo_ = nullptr; lodDebugCbx_ = nullptr;
+    probeXSlider_ = probeZSlider_ = nullptr;
+    heightLabel_ = normalLabel_ = nullptr;
     camera_ = nullptr;
     terrainShader_ = nullptr;
     probeShader_ = nullptr;

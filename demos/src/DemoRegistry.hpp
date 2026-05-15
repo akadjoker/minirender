@@ -3,6 +3,8 @@
 #include <vector>
 
 #include "Demo.hpp"
+#include "demos/BuGUIDemo.hpp"
+#include "demos/CubeDemo.hpp"
 #include "demos/EffectsDemo.hpp"
 #include "demos/TerrainDemo.hpp"
 #include "demos/ToyPlaneDemo.hpp"
@@ -17,9 +19,11 @@ IDemo *createDemoInstance()
 inline const std::vector<DemoEntry> &getDemoRegistry()
 {
     static const std::vector<DemoEntry> demos = {
-        {"Effects Lab", &createDemoInstance<EffectsDemo>},
-        {"Terrain Tests", &createDemoInstance<TerrainDemo>},
-        {"Toy Plane", &createDemoInstance<ToyPlaneDemo>},
+        {"BuGUI Widgets",    &createDemoInstance<BuGUIDemo>},
+        {"Cube Demo",        &createDemoInstance<CubeDemo>},
+        {"Effects Lab",      &createDemoInstance<EffectsDemo>},
+        {"Terrain Tests",    &createDemoInstance<TerrainDemo>},
+        {"Toy Plane",        &createDemoInstance<ToyPlaneDemo>},
         {"Vertex Animation", &createDemoInstance<VertexAnimationDemo>},
     };
 

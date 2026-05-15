@@ -20,6 +20,7 @@ void RenderState::resetCache()
     cullFaceKnown_ = false;
     blendKnown_ = false;
     blendFuncKnown_ = false;
+    blendEqKnown_ = false;
     scissorTestKnown_ = false;
     scissorBoxKnown_ = false;
     programKnown_ = false;
@@ -103,6 +104,16 @@ void RenderState::setBlendFunc(GLenum src, GLenum dst)
     blendSrc_ = src;
     blendDst_ = dst;
     glBlendFunc(src, dst);
+}
+
+void RenderState::setBlendEquation(GLenum mode)
+{
+    if (blendEqKnown_ && blendEq_ == mode)
+        return;
+
+    blendEqKnown_ = true;
+    blendEq_ = mode;
+    glBlendEquation(mode);
 }
 
 void RenderState::setScissorTest(bool enabled)

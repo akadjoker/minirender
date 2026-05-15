@@ -1,5 +1,4 @@
 project(level_editor)
-cmake_policy(SET CMP0072 NEW)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,47 +24,35 @@ add_compile_options(
     -funsigned-char
 )
 
+# Reuse the editor's non-UI source files (no ImGui deps)
+set(EDITOR_SRC ${CMAKE_SOURCE_DIR}/editor/src)
+
 add_executable(level_editor
-    src/EditableMesh.cpp
-    src/LevelEditorApp.cpp
-    src/LevelEditorScene.cpp
-    src/LevelEditorSceneIO.cpp
-    src/LevelEditorTheme.cpp
-    src/LightmapBaker.cpp
-    src/MeshCSG.cpp
-    src/stb_truetype_impl.cpp
     src/main.cpp
+    ${EDITOR_SRC}/EditorBrushGeometryOps.cpp
+    ${EDITOR_SRC}/EditorBrushOps.cpp
+    ${EDITOR_SRC}/EditorConvexBrushOps.cpp
+    ${EDITOR_SRC}/EditorSceneIO.cpp
+    ${EDITOR_SRC}/EditorViewOps.cpp
 )
 
-if (WIN32)
-    set(LIBS_DIR "E:/windows/libs")
-    target_include_directories(level_editor PUBLIC "${LIBS_DIR}/include" include src)
-else()
-    target_include_directories(level_editor PUBLIC
-        ${CMAKE_SOURCE_DIR}
-        include
-        src
-        ${CMAKE_SOURCE_DIR}/vendor/imgui
-        ${CMAKE_SOURCE_DIR}/vendor/nlohmann
-        ${CMAKE_SOURCE_DIR}/vendor/stb
-    )
-endif()
+target_include_directories(level_editor PRIVATE
+    src
+    ${EDITOR_SRC}
+    ${CMAKE_SOURCE_DIR}/vendor/widgets/include
+    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+    ${SDL2_INCLUDE_DIRS}
+)
+
+target_link_libraries(level_editor PRIVATE
+    core
+    bugui_widgets
+    ${SDL2_LIBRARIES}
+    OpenGL::GL
+)
 
 if(CMAKE_BUILD_TYPE MATCHES Debug)
-    if (UNIX)
-        target_compile_options(level_editor PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
-        target_link_options(level_editor PRIVATE -fsanitize=address -fsanitize=undefined -fsanitize=leak -g -D_DEBUG)
-    endif()
-elseif(CMAKE_BUILD_TYPE MATCHES Release)
-    target_compile_options(level_editor PRIVATE -O3 -DNDEBUG)
-    target_link_options(level_editor PRIVATE -O3 -DNDEBUG)
+    target_compile_options(level_editor PRIVATE -g -O0)
+else()
+    target_compile_options(level_editor PRIVATE -O3 -march=native -mtune=native)
 endif()
-
-if (WIN32)
-    target_link_libraries(level_editor core "${LIBS_DIR}/lib/x64/SDL2main.lib" "${LIBS_DIR}/lib/x64/SDL2.lib" Winmm.lib opengl32.lib)
-endif()
-
-if (UNIX)
-    target_link_libraries(level_editor core imgui poly2tri m SDL2 GL)
-endif()
-

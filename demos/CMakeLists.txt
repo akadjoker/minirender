@@ -2,7 +2,7 @@ project(demos)
 cmake_policy(SET CMP0072 NEW)
 
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ")
 
 find_package(OpenGL REQUIRED)
@@ -48,10 +48,9 @@ if (WIN32)
     target_include_directories(m8convert PUBLIC "${LIBS_DIR}/include" include src)
 else() 
     target_include_directories(demos PUBLIC  include src
-        ${CMAKE_SOURCE_DIR}/vendor/imgui
+        ${CMAKE_SOURCE_DIR}/vendor/widgets/include
     )
     target_include_directories(m8convert PUBLIC  include src
-        ${CMAKE_SOURCE_DIR}/vendor/imgui
     )
  
 endif()
@@ -82,8 +81,8 @@ endif()
 
 
 if (UNIX)
-    target_link_libraries(demos core imgui m SDL2 GL)
-    target_link_libraries(m8convert core imgui m SDL2 GL)
+    target_link_libraries(demos core m SDL2 GL)
+    target_link_libraries(m8convert core m SDL2 GL)
  
 endif()
 

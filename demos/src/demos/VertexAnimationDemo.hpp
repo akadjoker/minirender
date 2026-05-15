@@ -5,7 +5,11 @@
 #include "Animation.hpp"
 #include "Animator.hpp"
 #include "Demo.hpp"
-#include "imgui.h"
+#include <WidgetApp.hpp>
+#include <ViewWidgets.hpp>
+#include <BasicWidgets.hpp>
+#include <InputWidgets.hpp>
+#include <ScrollWidgets.hpp>
 
 class VertexAnimationDemo : public IDemo
 {
@@ -92,6 +96,13 @@ private:
     float yaw_;
     float pitch_;
     float roll_;
+
+    // Retained widgets (dynamic labels only)
+    BuGUI::FloatWindow* fw_           = nullptr;
+    BuGUI::Label*       md2FrameLabel_ = nullptr;
+    BuGUI::Label*       md3FrameLabel_ = nullptr;
+    BuGUI::Label*       iqmAnimLabel_  = nullptr;
+    BuGUI::Label*       gltfAnimLabel_ = nullptr;
 };
 
 inline VertexAnimationDemo::VertexAnimationDemo()
@@ -412,6 +423,107 @@ inline bool VertexAnimationDemo::setup(Device &device)
     }
 
     tagBatch_.Init();
+
+    // ── Retained UI ────────────────────────────────────────────
+    fw_ = BuGUI::WidgetApp::instance().addFloat<BuGUI::FloatWindow>("Vertex Animation");
+    fw_->setFloatPos(16.0f, 72.0f);
+    fw_->setFloatSize(320.0f, 520.0f);
+    fw_->setClosable(false);
+    fw_->setResizable(true);
+
+    auto* scroll = fw_->setContent<BuGUI::ScrollView>();
+    auto* vbox   = scroll->setContent<BuGUI::BoxLayout>(BuGUI::LayoutDir::Vertical);
+    vbox->setSpacing(4.0f);
+    vbox->setPadding(4.0f);
+
+    // —— MD2 ——————————————————————————————————————————————
+    if (actor_ && md2Mesh_) {
+        auto mkCb = [&](const char* text, bool& flag) {
+            auto* cb = vbox->createChild<BuGUI::CheckBox>(text);
+            cb->setChecked(flag);
+            cb->toggled.connect([&flag](bool v) { flag = v; });
+        };
+        mkCb("MD2 Play", play_);
+        vbox->createChild<BuGUI::Slider>(1.0f, 20.0f, fps_)->onValueChanged.connect([this](float v){ fps_ = v; });
+        vbox->createChild<BuGUI::Slider>(0.02f, 0.25f, modelScale_)->onValueChanged.connect([this](float v){ modelScale_ = v; });
+        const float maxF = (float)glm::max(0, md2Mesh_->frameCount()-1);
+        auto* fs = vbox->createChild<BuGUI::Slider>(0.0f, maxF, frameSlider_);
+        fs->onValueChanged.connect([this](float v){ play_ = false; frameSlider_ = v; if (actor_) actor_->setFrame(v); });
+        md2FrameLabel_ = vbox->createChild<BuGUI::Label>("Frame: -");
+    } else {
+        auto* lbl = vbox->createChild<BuGUI::Label>("MD2: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
+    // —— MD3 ——————————————————————————————————————————————
+    if (md3Actor_ && md3Mesh_) {
+        auto mkCb = [&](const char* text, bool& flag) {
+            auto* cb = vbox->createChild<BuGUI::CheckBox>(text);
+            cb->setChecked(flag);
+            cb->toggled.connect([&flag](bool v) { flag = v; });
+        };
+        mkCb("MD3 Play",    md3Play_);
+        mkCb("Show Tags",   showMd3Tags_);
+        mkCb("Show Bounds", showSceneBounds_);
+        vbox->createChild<BuGUI::Slider>(1.0f, 20.0f, md3Fps_)->onValueChanged.connect([this](float v){ md3Fps_ = v; });
+        vbox->createChild<BuGUI::Slider>(1.0f, 20.0f, tagAxisSize_)->onValueChanged.connect([this](float v){ tagAxisSize_ = v; });
+        const float maxF = (float)glm::max(0, md3Mesh_->frameCount()-1);
+        auto* fs = vbox->createChild<BuGUI::Slider>(0.0f, maxF, md3FrameSlider_);
+        fs->onValueChanged.connect([this](float v){ md3Play_ = false; md3FrameSlider_ = v; if (md3Actor_) md3Actor_->setFrame(v); });
+        md3FrameLabel_ = vbox->createChild<BuGUI::Label>("MD3 Frame: -");
+    } else {
+        auto* lbl = vbox->createChild<BuGUI::Label>("MD3: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
+    // —— MD3 Torso ———————————————————————————————————————
+    if (md3ActorTorso_ && md3MeshTorso_) {
+        const float maxF = (float)glm::max(0, md3MeshTorso_->frameCount()-1);
+        vbox->createChild<BuGUI::Slider>(0.0f, maxF, md3TorsoFrameSlider_)
+            ->onValueChanged.connect([this](float v){ md3TorsoFrameSlider_ = v; if (md3ActorTorso_) md3ActorTorso_->setFrame(v); });
+    }
+
+    // —— B3D ——————————————————————————————————————————————
+    if (!b3dAnimatedNode_ || !b3dAnimatedMesh_) {
+        auto* lbl = vbox->createChild<BuGUI::Label>("B3D: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
+    // —— GLTF Animated ———————————————————————————————————
+    if (gltfAnimatedNode_ && gltfAnimatedMesh_) {
+        gltfAnimLabel_ = vbox->createChild<BuGUI::Label>("GLTF Anim: -");
+    } else {
+        auto* lbl = vbox->createChild<BuGUI::Label>("GLTF: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
+    // —— IQM ——————————————————————————————————————————————
+    if (iqmAnimatedNode_ && iqmAnimatedMesh_) {
+        iqmAnimLabel_ = vbox->createChild<BuGUI::Label>("IQM Anim: -");
+        auto* nextBtn = vbox->createChild<BuGUI::Button>("Next IQM Anim");
+        nextBtn->clicked.connect([this]() {
+            if (!iqmAnimatedNode_->animator || iqmAnimatedNode_->animator->layerCount() == 0) return;
+            auto* layer = iqmAnimatedNode_->animator->getLayer(0);
+            if (!layer || iqmAnimatedMesh_->animations.empty()) return;
+            int ni = findAnimationIndex(iqmAnimatedMesh_, layer->currentName());
+            ni = (ni + 1) % (int)iqmAnimatedMesh_->animations.size();
+            if (iqmAnimatedMesh_->animations[ni])
+                layer->play(iqmAnimatedMesh_->animations[ni]->name);
+        });
+        vbox->createChild<BuGUI::Slider>(-180.0f, 180.0f, yaw_)->onValueChanged.connect([this](float v){ yaw_   = v; });
+        vbox->createChild<BuGUI::Slider>(-180.0f, 180.0f, pitch_)->onValueChanged.connect([this](float v){ pitch_ = v; });
+        vbox->createChild<BuGUI::Slider>(-180.0f, 180.0f, roll_)->onValueChanged.connect([this](float v){ roll_  = v; });
+    } else {
+        auto* lbl = vbox->createChild<BuGUI::Label>("IQM: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
+    // —— BSP ——————————————————————————————————————————————
+    if (!bspNode_ || !bspMesh_) {
+        auto* lbl = vbox->createChild<BuGUI::Label>("BSP: failed to load");
+        lbl->setColor(BuGUI::Color(255,100,100,255));
+    }
+
     return true;
 }
 
@@ -441,184 +553,31 @@ inline void VertexAnimationDemo::update(float dt)
 
 inline void VertexAnimationDemo::drawGui()
 {
-    ImGui::SetNextWindowPos(ImVec2(16, 72), ImGuiCond_Once);
-    ImGui::SetNextWindowSize(ImVec2(340, 0), ImGuiCond_Once);
-    if (!ImGui::Begin("Vertex Animation"))
-    {
-        ImGui::End();
-        return;
+    // Update dynamic labels
+    if (md2FrameLabel_ && md2Mesh_) {
+        const int fi = glm::clamp((int)frameSlider_, 0, glm::max(0, md2Mesh_->frameCount()-1));
+        md2FrameLabel_->setText(fi < (int)md2Mesh_->frameNames.size()
+            ? ("Frame: " + md2Mesh_->frameNames[fi]) : "Frame: -");
     }
-
-    if (actor_ && md2Mesh_)
-    {
-        ImGui::SeparatorText("MD2");
-        ImGui::Text("Mesh: %s", md2Mesh_->name.c_str());
-        ImGui::Text("Frames: %d", md2Mesh_->frameCount());
-        ImGui::Checkbox("Play", &play_);
-        ImGui::SliderFloat("FPS", &fps_, 1.0f, 20.0f);
-        ImGui::SliderFloat("Scale", &modelScale_, 0.02f, 0.25f);
-
-        const float maxFrame = (float)glm::max(0, md2Mesh_->frameCount() - 1);
-        if (ImGui::SliderFloat("Frame", &frameSlider_, 0.0f, maxFrame))
-        {
-            play_ = false;
-            actor_->setFrame(frameSlider_);
-        }
-
-        const int frameIndex = glm::clamp((int)frameSlider_, 0, glm::max(0, md2Mesh_->frameCount() - 1));
-        if (frameIndex < (int)md2Mesh_->frameNames.size())
-            ImGui::Text("Frame name: %s", md2Mesh_->frameNames[frameIndex].c_str());
+    if (md3FrameLabel_ && md3Mesh_) {
+        const int fi = glm::clamp((int)md3FrameSlider_, 0, glm::max(0, md3Mesh_->frameCount()-1));
+        md3FrameLabel_->setText(fi < (int)md3Mesh_->frameNames.size()
+            ? ("MD3 Frame: " + md3Mesh_->frameNames[fi]) : "MD3 Frame: -");
     }
-    else
-    {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/md2/pknight.md2");
+    if (gltfAnimLabel_ && gltfAnimatedNode_ && gltfAnimatedNode_->animator
+            && gltfAnimatedNode_->animator->layerCount() > 0) {
+        auto* layer = gltfAnimatedNode_->animator->getLayer(0);
+        const std::string cur = layer ? layer->currentName() : std::string();
+        gltfAnimLabel_->setText("GLTF Anim: " + (cur.empty() ? "<none>" : cur));
     }
-
-    if (md3Actor_ && md3Mesh_)
-    {
-        ImGui::SeparatorText("MD3");
-        ImGui::Text("Mesh: %s", md3Mesh_->name.c_str());
-        ImGui::Text("Frames: %d", md3Mesh_->frameCount());
-        ImGui::Text("Tags/frame: %d", md3Mesh_->tagsPerFrame);
-        ImGui::Checkbox("Play MD3", &md3Play_);
-        ImGui::Checkbox("Show Tags", &showMd3Tags_);
-        ImGui::Checkbox("Show Bounds", &showSceneBounds_);
-        ImGui::SliderFloat("MD3 FPS", &md3Fps_, 1.0f, 20.0f);
-        ImGui::SliderFloat("Tag Axis", &tagAxisSize_, 1.0f, 20.0f);
-
-        const float maxFrame = (float)glm::max(0, md3Mesh_->frameCount() - 1);
-        if (ImGui::SliderFloat("MD3 Frame", &md3FrameSlider_, 0.0f, maxFrame))
-        {
-            md3Play_ = false;
-            md3Actor_->setFrame(md3FrameSlider_);
-        }
-
-        const int frameIndex = glm::clamp((int)md3FrameSlider_, 0, glm::max(0, md3Mesh_->frameCount() - 1));
-        if (frameIndex < (int)md3Mesh_->frameNames.size())
-            ImGui::Text("Frame name: %s", md3Mesh_->frameNames[frameIndex].c_str());
-
-        for (int i = 0; i < md3Mesh_->tagsPerFrame; ++i)
-            ImGui::Text("Tag %d: %s", i, md3Mesh_->tags[i].tag);
+    if (iqmAnimLabel_ && iqmAnimatedNode_ && iqmAnimatedNode_->animator
+            && iqmAnimatedNode_->animator->layerCount() > 0) {
+        auto* layer = iqmAnimatedNode_->animator->getLayer(0);
+        const std::string cur = layer ? layer->currentName() : std::string();
+        iqmAnimLabel_->setText("IQM Anim: " + (cur.empty() ? "<none>" : cur));
     }
-    else
-    {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/md3/sarge/lower.md3");
-    }
-
-    if (md3ActorTorso_ && md3MeshTorso_)
-    {
-        ImGui::SeparatorText("MD3 Torso");
-        ImGui::Text("Mesh: %s", md3MeshTorso_->name.c_str());
-        ImGui::Text("Frames: %d", md3MeshTorso_->frameCount());
-        ImGui::Text("Tags/frame: %d", md3MeshTorso_->tagsPerFrame);
-
-        const float maxFrame = (float)glm::max(0, md3MeshTorso_->frameCount() - 1);
-        if (ImGui::SliderFloat("MD3 Torso Frame", &md3TorsoFrameSlider_, 0.0f, maxFrame))
-            md3ActorTorso_->setFrame(md3TorsoFrameSlider_);
-
-        const int frameIndex = glm::clamp((int)md3TorsoFrameSlider_, 0, glm::max(0, md3MeshTorso_->frameCount() - 1));
-        if (frameIndex < (int)md3MeshTorso_->frameNames.size())
-            ImGui::Text("Frame name: %s", md3MeshTorso_->frameNames[frameIndex].c_str());
-    }
-
-    if (b3dAnimatedNode_ && b3dAnimatedMesh_)
-    {
-        ImGui::SeparatorText("B3D Animated");
-        ImGui::Text("Mesh: %s", b3dAnimatedMesh_->name.c_str());
-        ImGui::Text("Bones: %d", (int)b3dAnimatedMesh_->bones.size());
-        ImGui::Text("Animations: %d", (int)b3dAnimatedMesh_->animations.size());
-    }
-    else
-    {
-        ImGui::SeparatorText("B3D Animated");
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/b3d/ninja.b3d");
-    }
-
-    if (gltfNode_ && gltfMesh_)
-    {
-        ImGui::SeparatorText("GLTF / GLB");
-        ImGui::Text("Mesh: %s", gltfMesh_->name.c_str());
-        ImGui::Text("Vertices: %d", gltfMesh_->vertexCount());
-        ImGui::Text("Indices: %d", gltfMesh_->indexCount());
-        ImGui::Text("Surfaces: %d", (int)gltfMesh_->surfaces.size());
-        ImGui::Text("Materials: %d", (int)gltfMesh_->materials.size());
-    }
-    else
-    {
-        ImGui::SeparatorText("GLTF / GLB");
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/gltf/idle.glb");
-    }
-
-    if (gltfAnimatedNode_ && gltfAnimatedMesh_)
-    {
-        ImGui::SeparatorText("GLTF Animated");
-        ImGui::Text("Mesh: %s", gltfAnimatedMesh_->name.c_str());
-        ImGui::Text("Bones: %d", (int)gltfAnimatedMesh_->bones.size());
-        ImGui::Text("Animations: %d", (int)gltfAnimatedMesh_->animations.size());
-        ImGui::Text("Surfaces: %d", (int)gltfAnimatedMesh_->surfaces.size());
-        if (gltfAnimatedNode_->animator && gltfAnimatedNode_->animator->layerCount() > 0)
-        {
-            AnimationLayer *layer = gltfAnimatedNode_->animator->getLayer(0);
-            const std::string currentAnim = layer ? layer->currentName() : std::string();
-            ImGui::Text("Current: %s", currentAnim.empty() ? "<none>" : currentAnim.c_str());
-        }
-    }
-    else
-    {
-        ImGui::SeparatorText("GLTF Animated");
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load animated assets/gltf/idle.glb");
-    }
-
-    if (iqmAnimatedNode_ && iqmAnimatedMesh_)
-    {
-        ImGui::SeparatorText("IQM Animated");
-        ImGui::Text("Mesh: %s", iqmAnimatedMesh_->name.c_str());
-        ImGui::Text("Bones: %d", (int)iqmAnimatedMesh_->bones.size());
-        ImGui::Text("Animations: %d", (int)iqmAnimatedMesh_->animations.size());
-        ImGui::Text("Surfaces: %d", (int)iqmAnimatedMesh_->surfaces.size());
-        if (iqmAnimatedNode_->animator && iqmAnimatedNode_->animator->layerCount() > 0)
-        {
-            AnimationLayer *layer = iqmAnimatedNode_->animator->getLayer(0);
-            const std::string currentAnim = layer ? layer->currentName() : std::string();
-            ImGui::Text("Current: %s", currentAnim.empty() ? "<none>" : currentAnim.c_str());
-            if (ImGui::Button("Next IQM Animation") && layer && !iqmAnimatedMesh_->animations.empty())
-            {
-                int nextIndex = findAnimationIndex(iqmAnimatedMesh_, currentAnim);
-                nextIndex = (nextIndex + 1) % (int)iqmAnimatedMesh_->animations.size();
-                Animation *nextAnim = iqmAnimatedMesh_->animations[nextIndex];
-                if (nextAnim)
-                    layer->play(nextAnim->name);
-            }
-        }
-
-        ImGui::SliderFloat("Yaw", &yaw_, -180.0f, 180.0f);
-        ImGui::SliderFloat("Pitch", &pitch_, -180.0f, 180.0f);
-        ImGui::SliderFloat("Roll", &roll_, -180.0f, 180.0f);
-
+    if (iqmAnimatedNode_)
         iqmAnimatedNode_->setRotationEuler(glm::vec3(pitch_, yaw_, roll_));
-    }
-    else
-    {
-        ImGui::SeparatorText("IQM Animated");
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/iqm/erebus/erebus.iqm");
-    }
-
-    if (bspNode_ && bspMesh_)
-    {
-        ImGui::SeparatorText("BSP");
-        ImGui::Text("Mesh: %s", bspMesh_->name.c_str());
-        ImGui::Text("Vertices: %d", bspMesh_->vertexCount());
-        ImGui::Text("Indices: %d", bspMesh_->indexCount());
-        ImGui::Text("Surfaces: %d", (int)bspMesh_->surfaces.size());
-        ImGui::Text("Materials: %d", (int)bspMesh_->materials.size());
-    }
-    else
-    {
-        ImGui::SeparatorText("BSP");
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Failed to load assets/maps/oa_rpg3dm/maps/oa_rpg3dm2.bsp");
-    }
-
-    ImGui::End();
 }
 
 inline void VertexAnimationDemo::render()
@@ -672,6 +631,9 @@ inline void VertexAnimationDemo::shutdown()
 {
     scene_.clear();
     unloadDemoAssets();
+
+    if (fw_) { BuGUI::WidgetApp::instance().removeFloat(fw_); fw_ = nullptr; }
+    md2FrameLabel_ = md3FrameLabel_ = iqmAnimLabel_ = gltfAnimLabel_ = nullptr;
 
     camera_ = nullptr;
     staticShader_ = nullptr;
